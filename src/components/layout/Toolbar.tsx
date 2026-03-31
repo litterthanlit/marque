@@ -24,9 +24,7 @@ export function Toolbar() {
   )
 
   useEffect(() => {
-    function handleOpenExport() {
-      setExportOpen(true)
-    }
+    function handleOpenExport() { setExportOpen(true) }
     window.addEventListener('open-export', handleOpenExport)
     return () => window.removeEventListener('open-export', handleOpenExport)
   }, [])
@@ -50,55 +48,24 @@ export function Toolbar() {
 
   return (
     <>
-      <header className="flex items-center justify-between px-5 py-3 border-b border-neutral-200 bg-white/95 backdrop-blur">
-        <div className="flex items-center gap-4">
-          <h1 className="text-sm font-semibold tracking-tight text-neutral-900 uppercase">
-            Generative Logo System
-          </h1>
-          <div className="flex items-center gap-2 text-xs text-neutral-400">
-            <span className="rounded-full border border-neutral-200 px-2.5 py-1 font-mono">
-              Seed #{seed}
-            </span>
-            <span className="hidden sm:inline rounded-full border border-neutral-200 px-2.5 py-1 uppercase tracking-[0.2em]">
-              {mode?.name ?? modeId}
-            </span>
-            <span className="hidden lg:inline rounded-full border border-neutral-200 px-2.5 py-1 uppercase tracking-[0.2em]">
-              {styleFamily}
-            </span>
-          </div>
+      <header className="flex items-center justify-between h-11 px-4 border-b border-neutral-200 bg-white">
+        <div className="flex items-center gap-3">
+          <span className="text-[13px] font-semibold tracking-tight text-neutral-900">Dalat</span>
+          <span className="text-[11px] text-neutral-400 font-mono tabular-nums">#{seed}</span>
+          <span className="hidden sm:inline text-[11px] text-neutral-400">{mode?.name ?? modeId}</span>
+          <span className="hidden lg:inline text-[11px] text-neutral-400 capitalize">{styleFamily}</span>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => undo()}
-            disabled={!canUndo}
-            className="px-2 py-1.5 text-xs text-neutral-500 hover:text-neutral-900 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
-            title="Undo (Cmd+Z)"
-          >
-            Undo
-          </button>
-          <button
-            onClick={() => redo()}
-            disabled={!canRedo}
-            className="px-2 py-1.5 text-xs text-neutral-500 hover:text-neutral-900 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
-            title="Redo (Cmd+Shift+Z)"
-          >
-            Redo
-          </button>
-          <button
-            onClick={handleCopyShareLink}
-            className="px-2 py-1.5 text-xs text-neutral-500 hover:text-neutral-900 transition-colors"
-            title="Copy share link"
-          >
-            {shareState === 'copied'
-              ? 'Copied'
-              : shareState === 'failed'
-                ? 'Copy failed'
-                : 'Share'}
+        <div className="flex items-center gap-1">
+          <button onClick={() => undo()} disabled={!canUndo} className="px-2 py-1 text-[11px] text-neutral-400 hover:text-neutral-900 transition-colors disabled:opacity-30 disabled:cursor-default" title="Undo">Undo</button>
+          <button onClick={() => redo()} disabled={!canRedo} className="px-2 py-1 text-[11px] text-neutral-400 hover:text-neutral-900 transition-colors disabled:opacity-30 disabled:cursor-default" title="Redo">Redo</button>
+          <div className="w-px h-4 bg-neutral-200 mx-1" />
+          <button onClick={handleCopyShareLink} className="px-2 py-1 text-[11px] text-neutral-400 hover:text-neutral-900 transition-colors">
+            {shareState === 'copied' ? 'Copied!' : shareState === 'failed' ? 'Failed' : 'Share'}
           </button>
           <button
             onClick={() => setExportOpen(true)}
             disabled={!hasResult}
-            className="px-3 py-1.5 text-xs font-medium bg-neutral-900 text-white rounded-md hover:bg-neutral-700 transition-colors disabled:cursor-not-allowed disabled:bg-neutral-300"
+            className="ml-1 px-3 py-1 text-[11px] font-medium bg-neutral-900 text-white rounded hover:bg-neutral-700 transition-colors disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-default"
           >
             Export
           </button>

@@ -13,9 +13,9 @@ export function AnimationControls({ playing, canAnimate, onToggle }: AnimationCo
       aria-pressed={playing}
       aria-label={playing ? 'Pause animation' : 'Play animation'}
       title={playing ? 'Pause animation' : 'Play animation'}
-      className="absolute bottom-3 left-3 inline-flex items-center gap-2 rounded-md border border-neutral-200 bg-white/90 px-3 py-1.5 text-xs font-medium shadow-sm transition-colors hover:bg-white focus:outline-none focus:ring-2 focus:ring-neutral-400 focus:ring-offset-2"
+      className="absolute bottom-3 left-3 inline-flex items-center gap-1.5 rounded bg-neutral-900/80 backdrop-blur-sm px-2.5 py-1 text-[11px] text-white/80 hover:text-white transition-colors"
     >
-      <span className="h-1.5 w-1.5 rounded-full bg-neutral-900/70" aria-hidden="true" />
+      <span className={`w-1.5 h-1.5 rounded-full ${playing ? 'bg-green-400' : 'bg-neutral-400'}`} aria-hidden="true" />
       {playing ? 'Pause' : 'Play'}
     </button>
   )

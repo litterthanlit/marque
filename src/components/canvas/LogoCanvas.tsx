@@ -20,11 +20,9 @@ export function LogoCanvas() {
     return DissolutionProcessor.process(result, effectParams.dissolution)
   }, [result, effectParams.dissolution])
 
-  // Static render
   useEffect(() => {
     const scope = scopeRef.current
     if (!scope || !result) return
-
     renderLogoOnScope(scope, result, {
       showGrid: ui.showGrid,
       showConstruction: ui.showConstruction,
@@ -33,11 +31,9 @@ export function LogoCanvas() {
     })
   }, [result, ui.showGrid, ui.showConstruction, params.fillColor, dissolution, scopeRef])
 
-  // Animation frame callback
   const onFrame = useCallback((keyframe: AnimationKeyframe) => {
     const scope = scopeRef.current
     if (!scope) return
-
     const view = scope.view
     if (keyframe.rotation === 0 && keyframe.scale === 1) {
       view.rotation = 0
@@ -52,22 +48,15 @@ export function LogoCanvas() {
   const { playing, togglePlaying, canAnimate } = useAnimation(onFrame)
 
   return (
-    <div className="relative flex-1 overflow-hidden rounded-[32px] border border-neutral-200 bg-[radial-gradient(circle_at_top,#ffffff,rgba(255,255,255,0.94)_25%,rgba(244,241,237,0.9)_70%,rgba(229,226,221,0.85)_100%)] shadow-[0_22px_80px_rgba(15,23,42,0.08)]">
-      <div className="pointer-events-none absolute inset-0 opacity-50 [background-image:linear-gradient(rgba(15,23,42,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.035)_1px,transparent_1px)] [background-size:32px_32px]" />
-      <div className="relative flex h-full w-full items-center justify-center p-4">
+    <div className="relative w-full max-w-[680px] aspect-square rounded-xl bg-white shadow-[0_1px_3px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.04)] border border-neutral-200/60">
       <canvas
         ref={canvasRef}
-        width={600}
-        height={600}
-        className="h-full w-full max-h-[640px] max-w-[640px]"
+        width={680}
+        height={680}
+        className="h-full w-full rounded-xl"
         style={{ imageRendering: 'auto' }}
       />
-      <AnimationControls
-        playing={playing}
-        canAnimate={canAnimate}
-        onToggle={togglePlaying}
-      />
-      </div>
+      <AnimationControls playing={playing} canAnimate={canAnimate} onToggle={togglePlaying} />
     </div>
   )
 }

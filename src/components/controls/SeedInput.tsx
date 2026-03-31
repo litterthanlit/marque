@@ -6,11 +6,9 @@ export function SeedInput() {
   const randomizeSeed = useLogoStore((s) => s.randomizeSeed)
 
   return (
-    <div className="flex flex-col gap-1.5">
-      <span className="text-xs text-neutral-500 uppercase tracking-wider">
-        Seed
-      </span>
-      <div className="flex gap-2">
+    <div className="flex flex-col gap-1">
+      <span className="text-[10px] text-neutral-500 uppercase tracking-[0.15em]">Seed</span>
+      <div className="flex gap-1.5">
         <input
           type="number"
           value={seed}
@@ -18,16 +16,14 @@ export function SeedInput() {
           max={999999}
           onChange={(e) => {
             const parsed = Number.parseInt(e.target.value, 10)
-            const nextSeed = Number.isFinite(parsed)
-              ? Math.min(999999, Math.max(0, parsed))
-              : 0
+            const nextSeed = Number.isFinite(parsed) ? Math.min(999999, Math.max(0, parsed)) : 0
             setParam('seed', nextSeed)
           }}
-          className="flex-1 px-2.5 py-1.5 text-sm font-mono bg-neutral-100 border border-neutral-200 rounded-md outline-none focus:border-neutral-400 tabular-nums"
+          className="flex-1 px-2 py-1 text-[12px] font-mono bg-neutral-800 border border-neutral-700 rounded text-white outline-none focus:border-neutral-500 tabular-nums min-w-0"
         />
         <button
           onClick={randomizeSeed}
-          className="px-3 py-1.5 text-xs font-medium bg-neutral-900 text-white rounded-md hover:bg-neutral-700 transition-colors"
+          className="px-2.5 py-1 text-[11px] font-medium bg-white text-neutral-900 rounded hover:bg-neutral-200 transition-colors"
         >
           Random
         </button>

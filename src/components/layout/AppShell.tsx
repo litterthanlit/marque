@@ -2,8 +2,6 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { Toolbar } from './Toolbar.tsx'
 import { LogoCanvas } from '../canvas/LogoCanvas.tsx'
 import { ParameterPanel } from '../controls/ParameterPanel.tsx'
-import { FinalPreview } from '../preview/FinalPreview.tsx'
-import { ConstructionData } from '../preview/ConstructionData.tsx'
 import { useLogoStore } from '../../store/logoStore.ts'
 
 export function AppShell() {
@@ -16,16 +14,13 @@ export function AppShell() {
 
   useEffect(() => {
     if (!mobilePanelOpen) return
-
     closeButtonRef.current?.focus()
-
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
         event.preventDefault()
         setMobilePanelOpen(false)
       }
     }
-
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [mobilePanelOpen])
@@ -38,27 +33,18 @@ export function AppShell() {
   }, [mobilePanelOpen])
 
   return (
-    <div className="h-screen flex flex-col bg-[linear-gradient(180deg,#f7f5f2,#efedeb)]">
+    <div className="h-screen flex flex-col bg-[#f5f5f4]">
       <Toolbar />
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-        {/* Main canvas area */}
-        <div className="flex-1 flex flex-col p-4 gap-4 min-h-0">
+        <div className="flex-1 flex flex-col items-center justify-center p-6 md:p-10 min-h-0">
           {error && (
-            <div
-              role="alert"
-              className="rounded-[24px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-[0_10px_30px_rgba(217,119,6,0.08)]"
-            >
+            <div role="alert" className="mb-4 w-full max-w-[680px] rounded-lg bg-amber-950/90 px-4 py-2.5 text-sm text-amber-200">
               {error}
             </div>
           )}
           <LogoCanvas />
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-shrink-0">
-            <ConstructionData />
-            <FinalPreview />
-          </div>
         </div>
-
-        <aside className="hidden md:block w-[420px] border-l border-neutral-200 bg-white/50 backdrop-blur overflow-y-auto">
+        <aside className="hidden md:block w-[340px] flex-shrink-0 border-l border-neutral-800 bg-[#1a1a1a] overflow-y-auto">
           <ParameterPanel />
         </aside>
       </div>
@@ -67,42 +53,32 @@ export function AppShell() {
         ref={controlsButtonRef}
         type="button"
         onClick={() => setMobilePanelOpen(true)}
-        className="md:hidden fixed right-4 bottom-4 z-30 rounded-full bg-neutral-900 px-4 py-2.5 text-sm font-medium text-white shadow-lg"
+        className="md:hidden fixed right-4 bottom-4 z-30 rounded-full bg-white px-4 py-2.5 text-sm font-medium text-neutral-900 shadow-lg border border-neutral-200"
       >
         Controls
       </button>
 
       {mobilePanelOpen && (
         <div className="md:hidden fixed inset-0 z-40">
-          <div
-            className="absolute inset-0 bg-black/25"
-            onClick={() => setMobilePanelOpen(false)}
-          />
+          <div className="absolute inset-0 bg-black/50" onClick={() => setMobilePanelOpen(false)} />
           <aside
             role="dialog"
             aria-modal="true"
             aria-labelledby={titleId}
-            className="absolute inset-x-0 bottom-0 max-h-[78vh] rounded-t-3xl border-t border-neutral-200 bg-neutral-50 shadow-2xl overflow-hidden"
+            className="absolute inset-x-0 bottom-0 max-h-[78vh] rounded-t-2xl bg-[#1a1a1a] shadow-2xl overflow-hidden"
           >
-            <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-200 bg-white">
-              <div>
-                <div className="text-xs uppercase tracking-[0.2em] text-neutral-400">
-                  Controls
-                </div>
-                <div id={titleId} className="text-sm font-medium text-neutral-900">
-                  Tune the logo
-                </div>
-              </div>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-800">
+              <span id={titleId} className="text-sm font-medium text-neutral-300">Controls</span>
               <button
                 ref={closeButtonRef}
                 type="button"
                 onClick={() => setMobilePanelOpen(false)}
-                className="rounded-full border border-neutral-200 px-3 py-1.5 text-xs text-neutral-600"
+                className="rounded-md px-2.5 py-1 text-xs text-neutral-400 hover:text-white transition-colors"
               >
-                Close
+                Done
               </button>
             </div>
-            <div className="max-h-[calc(78vh-73px)] overflow-y-auto">
+            <div className="max-h-[calc(78vh-48px)] overflow-y-auto">
               <ParameterPanel />
             </div>
           </aside>
