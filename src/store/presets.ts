@@ -298,4 +298,67 @@ export const PRESETS: Preset[] = [
       },
     },
   },
+  {
+    id: 'wave-signal',
+    modeId: 'wave-arc',
+    name: 'Signal',
+    description: 'Bilateral crescents radiating like a broadcast signal.',
+    styleFamily: 'minimal',
+    params: {
+      modeId: 'wave-arc',
+      generatorId: 'wave-arc',
+      styleFamily: 'minimal',
+      seed: 256,
+      fillColor: '#161616',
+      rotation: 0,
+      modeParams: {
+        'wave-arc': {
+          arcCount: 4, spreadAngle: 120, gapRatio: 0.3, taperAmount: 0.7,
+          arcSymmetry: 'bilateral', symmetryFolds: 4,
+        },
+      },
+    },
+  },
+  {
+    id: 'wave-radial-pulse',
+    modeId: 'wave-arc',
+    name: 'Radial Pulse',
+    description: 'Radial crescents fanning out from the center.',
+    styleFamily: 'tech',
+    params: {
+      modeId: 'wave-arc',
+      generatorId: 'wave-arc',
+      styleFamily: 'tech',
+      seed: 733,
+      fillColor: '#0f172a',
+      rotation: 0,
+      modeParams: {
+        'wave-arc': {
+          arcCount: 3, spreadAngle: 160, gapRatio: 0.25, taperAmount: 0.95,
+          arcSymmetry: 'radial', symmetryFolds: 6,
+        },
+      },
+    },
+  },
+  {
+    id: 'wave-ripple',
+    modeId: 'wave-arc',
+    name: 'Ripple',
+    description: 'Dense bilateral waves with blunt, even strokes.',
+    styleFamily: 'heritage',
+    params: {
+      modeId: 'wave-arc',
+      generatorId: 'wave-arc',
+      styleFamily: 'heritage',
+      seed: 488,
+      fillColor: '#6f4627',
+      rotation: 0,
+      modeParams: {
+        'wave-arc': {
+          arcCount: 7, spreadAngle: 90, gapRatio: 0.15, taperAmount: 0.3,
+          arcSymmetry: 'bilateral', symmetryFolds: 4,
+        },
+      },
+    },
+  },
 ]

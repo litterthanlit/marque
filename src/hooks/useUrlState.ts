@@ -215,7 +215,7 @@ function decodeParamsInner(
 
   const limits = getModeParamLimits(modeId)
   const modeDefaults = getModeParamDefaults(modeId)
-  const sanitizedModeParams: Record<string, number> = { ...modeDefaults }
+  const sanitizedModeParams: Record<string, number | string> = { ...modeDefaults }
 
   for (const [key, value] of Object.entries(rawModeParams)) {
     const limit = limits[key]
