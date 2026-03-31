@@ -1,10 +1,12 @@
 import { useEffect } from 'react'
 import { AppShell } from './components/layout/AppShell.tsx'
 import { useGeneration } from './hooks/useGeneration.ts'
+import { useUrlState } from './hooks/useUrlState.ts'
 import { useLogoStore } from './store/logoStore.ts'
 
 function App() {
   useGeneration()
+  useUrlState()
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
