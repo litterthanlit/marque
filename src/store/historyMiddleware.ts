@@ -2,10 +2,13 @@ import { temporal } from 'zundo'
 import type { LogoParams } from '../engine/types.ts'
 
 export function paramsEqual(
-  pastState: { params: LogoParams },
-  currentState: { params: LogoParams },
+  pastState: { params: LogoParams; effectParams?: Record<string, unknown> },
+  currentState: { params: LogoParams; effectParams?: Record<string, unknown> },
 ): boolean {
-  return stableParamsString(pastState.params) === stableParamsString(currentState.params)
+  return (
+    stableParamsString(pastState.params) === stableParamsString(currentState.params) &&
+    JSON.stringify(pastState.effectParams) === JSON.stringify(currentState.effectParams)
+  )
 }
 
 export { temporal }

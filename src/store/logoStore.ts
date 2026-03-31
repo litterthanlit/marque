@@ -7,6 +7,8 @@ import type {
   StyleFamily,
 } from '../engine/types.ts'
 import { DEFAULT_PARAMS } from '../engine/types.ts'
+import type { DissolutionParams, EffectParamsMap } from '../engine/effects/types.ts'
+import { DEFAULT_DISSOLUTION_PARAMS } from '../engine/effects/types.ts'
 import { paramsEqual } from './historyMiddleware.ts'
 import {
   getAllModeParamDefaults,
@@ -26,6 +28,7 @@ interface LogoStore {
   result: GenerationResult | null
   error: string | null
   ui: UIState
+  effectParams: EffectParamsMap
 
   setParam: <K extends keyof LogoParams>(key: K, value: LogoParams[K]) => void
   setParams: (updates: Partial<LogoParams>) => void
@@ -39,6 +42,8 @@ interface LogoStore {
   toggleGrid: () => void
   toggleConstruction: () => void
   applyPreset: (params: Partial<LogoParams>) => void
+  setEffectParam: <K extends keyof DissolutionParams>(key: K, value: DissolutionParams[K]) => void
+  toggleDissolution: () => void
 }
 
 export const useLogoStore = create<LogoStore>()(
@@ -53,6 +58,9 @@ export const useLogoStore = create<LogoStore>()(
       ui: {
         showGrid: true,
         showConstruction: true,
+      },
+      effectParams: {
+        dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
       },
 
       setParam: (key, value) =>
@@ -154,10 +162,32 @@ export const useLogoStore = create<LogoStore>()(
         set((state) => ({
           params: mergeLogoParams(state.params, presetParams),
         })),
+
+      setEffectParam: (key, value) =>
+        set((state) => ({
+          effectParams: {
+            ...state.effectParams,
+            dissolution: {
+              ...state.effectParams.dissolution,
+              [key]: value,
+            },
+          },
+        })),
+
+      toggleDissolution: () =>
+        set((state) => ({
+          effectParams: {
+            ...state.effectParams,
+            dissolution: {
+              ...state.effectParams.dissolution,
+              enabled: !state.effectParams.dissolution.enabled,
+            },
+          },
+        })),
     }),
     {
       equality: paramsEqual,
-      partialize: (state) => ({ params: state.params }),
+      partialize: (state) => ({ params: state.params, effectParams: state.effectParams }),
       limit: 50,
     },
   ),
