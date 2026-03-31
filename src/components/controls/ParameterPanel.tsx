@@ -393,6 +393,74 @@ export function ParameterPanel() {
             />
           </>
         )}
+
+        {params.modeId === 'wave-arc' && (
+          <>
+            <SliderControl
+              label="Arc Count"
+              value={activeModeParams.arcCount ?? 4}
+              min={2}
+              max={8}
+              step={1}
+              onChange={(value) => setModeParam('arcCount', value)}
+            />
+            <SliderControl
+              label="Spread Angle"
+              value={activeModeParams.spreadAngle ?? 120}
+              min={30}
+              max={180}
+              step={1}
+              onChange={(value) => setModeParam('spreadAngle', value)}
+            />
+            <SliderControl
+              label="Gap Ratio"
+              value={activeModeParams.gapRatio ?? 0.3}
+              min={0.1}
+              max={0.8}
+              step={0.01}
+              onChange={(value) => setModeParam('gapRatio', value)}
+            />
+            <SliderControl
+              label="Taper Amount"
+              value={activeModeParams.taperAmount ?? 0.7}
+              min={0.2}
+              max={1}
+              step={0.01}
+              onChange={(value) => setModeParam('taperAmount', value)}
+            />
+            <div className="flex flex-col gap-2">
+              <div className="text-xs uppercase tracking-[0.24em] text-neutral-500">
+                Symmetry
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {(['bilateral', 'radial'] as const).map((sym) => (
+                  <button
+                    key={sym}
+                    type="button"
+                    onClick={() => setModeParam('arcSymmetry', sym)}
+                    className={`rounded-full border px-3 py-2 text-xs uppercase tracking-[0.18em] transition ${
+                      ((params.modeParams[params.modeId] as Record<string, string | number> | undefined)?.arcSymmetry ?? 'bilateral') === sym
+                        ? 'border-neutral-900 bg-neutral-950 text-white'
+                        : 'border-neutral-200 bg-neutral-50 text-neutral-500 hover:border-neutral-300'
+                    }`}
+                  >
+                    {sym}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {((params.modeParams[params.modeId] as Record<string, string | number> | undefined)?.arcSymmetry ?? 'bilateral') === 'radial' && (
+              <SliderControl
+                label="Symmetry Folds"
+                value={activeModeParams.symmetryFolds ?? 4}
+                min={2}
+                max={12}
+                step={1}
+                onChange={(value) => setModeParam('symmetryFolds', value)}
+              />
+            )}
+          </>
+        )}
       </PanelSection>
 
       <PanelSection

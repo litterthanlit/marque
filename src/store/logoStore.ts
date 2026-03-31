@@ -32,7 +32,7 @@ interface LogoStore {
   setMode: (modeId: string) => void
   setStyleFamily: (styleFamily: StyleFamily) => void
   setBrandInput: (updates: Partial<BrandInput>) => void
-  setModeParam: (key: string, value: number) => void
+  setModeParam: (key: string, value: number | string) => void
   randomizeSeed: () => void
   setResult: (result: GenerationResult | null) => void
   setError: (error: string | null) => void
