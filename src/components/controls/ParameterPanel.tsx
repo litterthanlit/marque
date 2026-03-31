@@ -72,6 +72,15 @@ export function ParameterPanel() {
         onChange={(v) => setParam('rotation', v)}
       />
 
+      <SliderControl
+        label="Animation Speed"
+        value={params.animationSpeed}
+        min={0}
+        max={5}
+        step={0.1}
+        onChange={(v) => setParam('animationSpeed', v)}
+      />
+
       <ColorPicker />
 
       <div className="flex flex-col gap-3 pt-3 border-t border-neutral-200">
