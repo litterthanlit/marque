@@ -32,7 +32,14 @@ export function createPrimitivePath(
     case 'circle':
       return circlePath(cx, cy, radius)
     case 'rectangle':
-      return rectanglePath(cx, cy, radius, rotation)
+      return rectanglePath(
+        cx,
+        cy,
+        radius,
+        rotation,
+        params.widthScale ?? 1,
+        params.heightScale ?? 0.7,
+      )
     case 'triangle':
       return trianglePath(cx, cy, radius, rotation)
     case 'polygon':

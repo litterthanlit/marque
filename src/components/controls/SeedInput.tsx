@@ -14,7 +14,15 @@ export function SeedInput() {
         <input
           type="number"
           value={seed}
-          onChange={(e) => setParam('seed', parseInt(e.target.value) || 0)}
+          min={0}
+          max={999999}
+          onChange={(e) => {
+            const parsed = Number.parseInt(e.target.value, 10)
+            const nextSeed = Number.isFinite(parsed)
+              ? Math.min(999999, Math.max(0, parsed))
+              : 0
+            setParam('seed', nextSeed)
+          }}
           className="flex-1 px-2.5 py-1.5 text-sm font-mono bg-neutral-100 border border-neutral-200 rounded-md outline-none focus:border-neutral-400 tabular-nums"
         />
         <button

@@ -17,6 +17,7 @@ const MAX_SHAPES = 256
 
 export const ModularGenerator: LogoGenerator = {
   id: 'modular',
+  modeId: 'modular',
   name: 'Modular Grid',
   description: 'Tile/repeat grid patterns with optional circular clipping',
   version: '1.0',
@@ -28,9 +29,10 @@ export const ModularGenerator: LogoGenerator = {
   getAnimationKeyframes: generateModularKeyframes,
 
   generate(params: LogoParams, rng: SeededRandom): GenerationResult {
-    const columns = params.extra.columns ?? 4
-    const rows = params.extra.rows ?? 4
-    const useClip = (params.extra.circleClip ?? 1) > 0.5
+    const modularParams = params.modeParams.modular ?? {}
+    const columns = modularParams.columns ?? 4
+    const rows = modularParams.rows ?? 4
+    const useClip = (modularParams.circleClip ?? 1) > 0.5
 
     const gridPoints = generateModularGrid(
       {
@@ -132,7 +134,8 @@ export const ModularGenerator: LogoGenerator = {
         viewBox: boolResult.viewBox,
       },
       constructionData: {
-        gridLines: [],
+        gridCircles: [],
+        guideLines: buildGridGuideLines(columns, rows, CANVAS_SIZE),
         stats: {
           totalShapes: rotatedShapes.length,
           additiveCount: addCount,
@@ -143,4 +146,42 @@ export const ModularGenerator: LogoGenerator = {
       warnings: [...warnings, ...boolResult.warnings],
     }
   },
+}
+
+function buildGridGuideLines(
+  columns: number,
+  rows: number,
+  canvasSize: number,
+): GenerationResult['constructionData']['guideLines'] {
+  const width = canvasSize * 0.72
+  const height = canvasSize * 0.72
+  const cellWidth = width / columns
+  const cellHeight = height / rows
+  const left = -width / 2
+  const top = -height / 2
+  const lines: GenerationResult['constructionData']['guideLines'] = []
+
+  for (let column = 0; column <= columns; column++) {
+    const x = Math.round((left + cellWidth * column) * 100) / 100
+    lines.push({
+      x1: x,
+      y1: top,
+      x2: x,
+      y2: top + height,
+      kind: 'grid',
+    })
+  }
+
+  for (let row = 0; row <= rows; row++) {
+    const y = Math.round((top + cellHeight * row) * 100) / 100
+    lines.push({
+      x1: left,
+      y1: y,
+      x2: left + width,
+      y2: y,
+      kind: 'grid',
+    })
+  }
+
+  return lines
 }

@@ -17,6 +17,7 @@ const MAX_SHAPES = 360
 
 export const GeometricRadialGenerator: LogoGenerator = {
   id: 'geometric-radial',
+  modeId: 'geometric-radial',
   name: 'Geometric Radial',
   description:
     'Concentric grid with N-fold radial symmetry and boolean composition',
@@ -131,7 +132,18 @@ export const GeometricRadialGenerator: LogoGenerator = {
         viewBox: boolResult.viewBox,
       },
       constructionData: {
-        gridLines,
+        gridCircles: gridLines,
+        guideLines: Array.from({ length: params.symmetryFolds }, (_, i) => {
+          const angle = (2 * Math.PI * i) / params.symmetryFolds
+          const maxR = gridLines[gridLines.length - 1]?.r ?? CANVAS_SIZE * 0.4
+          return {
+            x1: 0,
+            y1: 0,
+            x2: Math.round(Math.cos(angle) * maxR * 100) / 100,
+            y2: Math.round(Math.sin(angle) * maxR * 100) / 100,
+            kind: 'radial' as const,
+          }
+        }),
         stats: {
           totalShapes: rotatedShapes.length,
           additiveCount: addCount,

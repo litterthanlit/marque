@@ -1,5 +1,18 @@
 import type { AnimationKeyframe } from './animation/types.ts'
 
+export type StyleFamily =
+  | 'minimal'
+  | 'heritage'
+  | 'luxe'
+  | 'playful'
+  | 'tech'
+
+export interface BrandInput {
+  initials?: string
+}
+
+export type ModeParamMap = Record<string, Record<string, number>>
+
 export interface LogoParams {
   seed: number
   gridRings: number // 1-8
@@ -10,8 +23,11 @@ export interface LogoParams {
   symmetryFolds: number // 1-12
   fillColor: string // hex
   animationSpeed: number // 0 = static
+  modeId: string
+  styleFamily: StyleFamily
+  brandInput: BrandInput
   generatorId: string
-  extra: Record<string, number>
+  modeParams: ModeParamMap
 }
 
 export interface PersistedLogoState {
@@ -19,6 +35,10 @@ export interface PersistedLogoState {
   params: LogoParams
 }
 
+/**
+ * All fields must be structured-clone safe (plain data only, no class
+ * instances or functions) to allow future Web Worker migration.
+ */
 export interface ShapeNode {
   id: string
   type: 'circle' | 'rectangle' | 'triangle' | 'polygon' | 'blob'
@@ -37,6 +57,24 @@ export interface CompositeLayer {
   fillRule: 'nonzero' | 'evenodd'
 }
 
+export interface ConstructionCircle {
+  cx: number
+  cy: number
+  r: number
+}
+
+export interface ConstructionLine {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  kind: 'radial' | 'grid' | 'mirror' | 'frame'
+}
+
+/**
+ * All fields must be structured-clone safe (plain strings, numbers, arrays,
+ * and plain objects only) to allow future Web Worker migration.
+ */
 export interface GenerationResult {
   shapes: ShapeNode[]
   mark: {
@@ -46,7 +84,8 @@ export interface GenerationResult {
     viewBox: { x: number; y: number; width: number; height: number }
   }
   constructionData: {
-    gridLines: { cx: number; cy: number; r: number }[]
+    gridCircles: ConstructionCircle[]
+    guideLines: ConstructionLine[]
     stats: {
       totalShapes: number
       additiveCount: number
@@ -75,12 +114,16 @@ export interface SeededRandom {
 
 export interface LogoGenerator {
   id: string
+  modeId?: string
   name: string
   description: string
   version: string
   extraParams: ParamDefinition[]
   generate(params: LogoParams, rng: SeededRandom): GenerationResult
-  getAnimationKeyframes?: (params: LogoParams, rng: SeededRandom) => AnimationKeyframe[]
+  getAnimationKeyframes?: (
+    params: LogoParams,
+    rng: SeededRandom,
+  ) => AnimationKeyframe[]
 }
 
 export interface GridPoint {
@@ -101,6 +144,9 @@ export const DEFAULT_PARAMS: LogoParams = {
   symmetryFolds: 6,
   fillColor: '#000000',
   animationSpeed: 0,
+  modeId: 'geometric-radial',
+  styleFamily: 'minimal',
+  brandInput: {},
   generatorId: 'geometric-radial',
-  extra: {},
+  modeParams: {},
 }

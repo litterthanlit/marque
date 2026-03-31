@@ -7,9 +7,11 @@ export function rectanglePath(
   cy: number,
   r: number,
   rotation: number,
+  widthScale = 1,
+  heightScale = 0.7,
 ): string {
-  const hw = r
-  const hh = r * 0.7
+  const hw = r * widthScale
+  const hh = r * heightScale
 
   // Corner points before rotation
   const corners = [

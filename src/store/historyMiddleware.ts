@@ -1,10 +1,6 @@
 import { temporal } from 'zundo'
 import type { LogoParams } from '../engine/types.ts'
 
-/**
- * Equality check: only snapshot when params change, not UI state.
- * Compares serialized params to avoid unnecessary history entries.
- */
 export function paramsEqual(
   pastState: { params: LogoParams },
   currentState: { params: LogoParams },
@@ -17,8 +13,20 @@ export { temporal }
 function stableParamsString(params: LogoParams): string {
   return JSON.stringify({
     ...params,
-    extra: Object.fromEntries(
-      Object.entries(params.extra).sort(([a], [b]) => a.localeCompare(b)),
+    brandInput: Object.fromEntries(
+      Object.entries(params.brandInput ?? {}).sort(([a], [b]) =>
+        a.localeCompare(b),
+      ),
+    ),
+    modeParams: Object.fromEntries(
+      Object.entries(params.modeParams)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([modeId, values]) => [
+          modeId,
+          Object.fromEntries(
+            Object.entries(values).sort(([a], [b]) => a.localeCompare(b)),
+          ),
+        ]),
     ),
   })
 }

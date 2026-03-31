@@ -44,12 +44,14 @@ export function LogoCanvas() {
   const { playing, togglePlaying, canAnimate } = useAnimation(onFrame)
 
   return (
-    <div className="flex-1 flex items-center justify-center bg-white relative">
+    <div className="relative flex-1 overflow-hidden rounded-[32px] border border-neutral-200 bg-[radial-gradient(circle_at_top,#ffffff,rgba(255,255,255,0.94)_25%,rgba(244,241,237,0.9)_70%,rgba(229,226,221,0.85)_100%)] shadow-[0_22px_80px_rgba(15,23,42,0.08)]">
+      <div className="pointer-events-none absolute inset-0 opacity-50 [background-image:linear-gradient(rgba(15,23,42,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.035)_1px,transparent_1px)] [background-size:32px_32px]" />
+      <div className="relative flex h-full w-full items-center justify-center p-4">
       <canvas
         ref={canvasRef}
         width={600}
         height={600}
-        className="w-full h-full max-w-[600px] max-h-[600px]"
+        className="h-full w-full max-h-[640px] max-w-[640px]"
         style={{ imageRendering: 'auto' }}
       />
       <AnimationControls
@@ -57,6 +59,7 @@ export function LogoCanvas() {
         canAnimate={canAnimate}
         onToggle={togglePlaying}
       />
+      </div>
     </div>
   )
 }

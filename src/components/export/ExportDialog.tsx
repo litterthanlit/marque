@@ -9,6 +9,8 @@ interface ExportDialogProps {
 export function ExportDialog({ open, onClose }: ExportDialogProps) {
   const { exportSVG, exportPNG, canExport } = useExport()
   const [pngScale, setPngScale] = useState(2)
+  const [artboardMode, setArtboardMode] = useState<'tight' | 'square'>('tight')
+  const [paddingMode, setPaddingMode] = useState<'none' | 'compact' | 'presentation'>('compact')
   const titleId = useId()
   const closeButtonRef = useRef<HTMLButtonElement>(null)
 
@@ -42,8 +44,47 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
         <h2 id={titleId} className="text-sm font-semibold text-neutral-900 mb-4">Export Logo</h2>
 
         <div className="flex flex-col gap-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-2">
+              <label className="text-[11px] uppercase tracking-[0.24em] text-neutral-400">
+                Artboard
+              </label>
+              <select
+                value={artboardMode}
+                onChange={(event) =>
+                  setArtboardMode(event.target.value as 'tight' | 'square')
+                }
+                className="rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700"
+              >
+                <option value="tight">Tight bounds</option>
+                <option value="square">Square artboard</option>
+              </select>
+            </div>
+            <div className="flex flex-col gap-2">
+              <label className="text-[11px] uppercase tracking-[0.24em] text-neutral-400">
+                Padding
+              </label>
+              <select
+                value={paddingMode}
+                onChange={(event) =>
+                  setPaddingMode(
+                    event.target.value as 'none' | 'compact' | 'presentation',
+                  )
+                }
+                className="rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm text-neutral-700"
+              >
+                <option value="none">None</option>
+                <option value="compact">Compact</option>
+                <option value="presentation">Presentation</option>
+              </select>
+            </div>
+          </div>
+
           <button
-            onClick={() => { exportSVG(); onClose() }}
+            onClick={() => {
+              exportSVG({ artboardMode, paddingMode })
+              onClose()
+            }}
             disabled={!canExport}
             className="w-full px-4 py-2.5 text-sm font-medium bg-neutral-900 text-white rounded-lg hover:bg-neutral-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
@@ -52,7 +93,10 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
 
           <div className="flex gap-2">
             <button
-              onClick={() => { exportPNG(pngScale); onClose() }}
+              onClick={() => {
+                exportPNG(pngScale, { artboardMode, paddingMode })
+                onClose()
+              }}
               disabled={!canExport}
               className="flex-1 px-4 py-2.5 text-sm font-medium border border-neutral-200 rounded-lg hover:bg-neutral-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
@@ -69,7 +113,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
             </select>
           </div>
           <p className="text-[11px] leading-4 text-neutral-500">
-            PNG export preserves the logo&apos;s aspect ratio and keeps the background transparent.
+            PNG export preserves the logo&apos;s aspect ratio, supports square or tight artboards, and keeps the background transparent.
           </p>
         </div>
 

@@ -1,5 +1,7 @@
 import type { LogoGenerator } from '../types.ts'
 import { GeometricRadialGenerator } from './GeometricRadialGenerator.ts'
+import { GridSystemGenerator } from './GridSystemGenerator.ts'
+import { MonogramGenerator } from './MonogramGenerator.ts'
 import { ModularGenerator } from './ModularGenerator.ts'
 
 const registry = new Map<string, LogoGenerator>()
@@ -18,4 +20,6 @@ export function listGenerators(): LogoGenerator[] {
 
 // Register built-in generators
 registerGenerator(GeometricRadialGenerator)
+registerGenerator(GridSystemGenerator)
+registerGenerator(MonogramGenerator)
 registerGenerator(ModularGenerator)

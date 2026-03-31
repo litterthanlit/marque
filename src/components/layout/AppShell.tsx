@@ -38,7 +38,7 @@ export function AppShell() {
   }, [mobilePanelOpen])
 
   return (
-    <div className="h-screen flex flex-col bg-neutral-50">
+    <div className="h-screen flex flex-col bg-[linear-gradient(180deg,#f7f5f2,#efedeb)]">
       <Toolbar />
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
         {/* Main canvas area */}
@@ -46,7 +46,7 @@ export function AppShell() {
           {error && (
             <div
               role="alert"
-              className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+              className="rounded-[24px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-[0_10px_30px_rgba(217,119,6,0.08)]"
             >
               {error}
             </div>
@@ -58,7 +58,7 @@ export function AppShell() {
           </div>
         </div>
 
-        <aside className="hidden md:block w-64 border-l border-neutral-200 bg-neutral-50 overflow-y-auto">
+        <aside className="hidden md:block w-[420px] border-l border-neutral-200 bg-white/50 backdrop-blur overflow-y-auto">
           <ParameterPanel />
         </aside>
       </div>

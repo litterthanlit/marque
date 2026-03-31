@@ -17,8 +17,8 @@ export function FinalPreview() {
   }, [result, fillColor, scopeRef])
 
   return (
-    <div className="border border-neutral-200 rounded-lg bg-white p-2">
-      <div className="text-xs text-neutral-400 uppercase tracking-wider mb-2">
+    <div className="rounded-[24px] border border-neutral-200 bg-white/90 p-3 shadow-[0_12px_40px_rgba(15,23,42,0.05)]">
+      <div className="mb-2 text-[11px] uppercase tracking-[0.28em] text-neutral-400">
         Final Logo
       </div>
       <canvas

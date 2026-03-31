@@ -42,6 +42,10 @@ function pathFromSVG(
   }
 }
 
+/**
+ * Boolean composition via Paper.js. Paper objects are used internally only;
+ * all returned data is structured-clone safe (plain strings/numbers/objects).
+ */
 export function composeBooleanResult(inputs: BooleanInput[]): BooleanResult {
   const warnings: string[] = []
   const scope = getScope()
