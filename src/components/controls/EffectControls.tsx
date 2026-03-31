@@ -1,5 +1,6 @@
 import { useLogoStore } from '../../store/logoStore.ts'
 import { SliderControl } from './SliderControl.tsx'
+import { cn } from '../../lib/utils.ts'
 
 export function EffectControls() {
   const dissolution = useLogoStore((s) => s.effectParams.dissolution)
@@ -7,43 +8,51 @@ export function EffectControls() {
   const setEffectParam = useLogoStore((s) => s.setEffectParam)
 
   return (
-    <div className="flex flex-col gap-2.5">
+    <div className="flex flex-col gap-2">
       <button
         type="button"
         onClick={toggleDissolution}
-        className={`flex items-center justify-between px-2.5 py-1.5 rounded text-[11px] transition-colors ${
-          dissolution.enabled ? 'bg-white text-neutral-900 font-medium' : 'bg-neutral-800 text-neutral-400 hover:text-white'
-        }`}
+        className={cn(
+          'flex items-center justify-between h-7 px-2.5 rounded-md text-xs',
+          dissolution.enabled ? 'bg-white text-neutral-900 font-medium' : 'bg-white/5 text-sidebar-text hover:bg-white/10',
+        )}
       >
-        Dissolution
-        <span className={`w-1.5 h-1.5 rounded-full ${dissolution.enabled ? 'bg-green-500' : 'bg-neutral-600'}`} />
+        <span>Dissolution</span>
+        <span className={cn('size-1.5 rounded-full', dissolution.enabled ? 'bg-emerald-500' : 'bg-sidebar-muted')} />
       </button>
 
       {dissolution.enabled && (
-        <>
+        <div className="flex flex-col gap-2 pl-1">
           <SliderControl label="Threshold" value={dissolution.threshold} min={0.01} max={1} step={0.01} onChange={(v) => setEffectParam('threshold', v)} />
           <SliderControl label="Cell Size" value={dissolution.cellSize} min={4} max={32} step={1} onChange={(v) => setEffectParam('cellSize', v)} />
-          <div className="flex flex-col gap-1">
-            <div className="text-[10px] uppercase tracking-[0.15em] text-neutral-500">Shape</div>
-            <div className="flex gap-1">
-              {(['square', 'circle'] as const).map((shape) => (
-                <button
-                  key={shape}
-                  type="button"
-                  onClick={() => setEffectParam('shape', shape)}
-                  className={`flex-1 px-2 py-1 rounded text-[11px] transition-colors ${
-                    dissolution.shape === shape ? 'bg-white text-neutral-900 font-medium' : 'bg-neutral-800 text-neutral-400 hover:text-white'
-                  }`}
-                >
-                  {shape}
-                </button>
-              ))}
-            </div>
-          </div>
+          <SegmentRow label="Shape" value={dissolution.shape} options={['square', 'circle']} onChange={(v) => setEffectParam('shape', v as 'square' | 'circle')} />
           <SliderControl label="Scatter" value={dissolution.scatter} min={0} max={1} step={0.01} onChange={(v) => setEffectParam('scatter', v)} />
           <SliderControl label="Size Var" value={dissolution.sizeVariation} min={0} max={1} step={0.01} onChange={(v) => setEffectParam('sizeVariation', v)} />
-        </>
+        </div>
       )}
+    </div>
+  )
+}
+
+function SegmentRow({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (v: string) => void }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-sidebar-text shrink-0">{label}</span>
+      <div className="flex gap-0.5 flex-1">
+        {options.map((opt) => (
+          <button
+            key={opt}
+            type="button"
+            onClick={() => onChange(opt)}
+            className={cn(
+              'flex-1 h-6 rounded text-[11px] capitalize',
+              value === opt ? 'bg-white text-neutral-900 font-medium' : 'bg-white/5 text-sidebar-muted hover:text-white',
+            )}
+          >
+            {opt}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }

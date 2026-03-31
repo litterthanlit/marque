@@ -5,17 +5,15 @@ export function ColorPicker() {
   const setParam = useLogoStore((s) => s.setParam)
 
   return (
-    <div className="flex flex-col gap-1">
-      <span className="text-[10px] text-neutral-500 uppercase tracking-[0.15em]">Color</span>
-      <div className="flex items-center gap-2">
-        <input
-          type="color"
-          value={fillColor}
-          onChange={(e) => setParam('fillColor', e.target.value)}
-          className="w-6 h-6 rounded border border-neutral-700 cursor-pointer bg-transparent"
-        />
-        <span className="text-[11px] font-mono text-neutral-500">{fillColor}</span>
-      </div>
+    <div className="flex items-center gap-2">
+      <label className="text-xs text-sidebar-text shrink-0">Color</label>
+      <input
+        type="color"
+        value={fillColor}
+        onChange={(e) => setParam('fillColor', e.target.value)}
+        className="size-6 rounded border border-sidebar-border cursor-pointer bg-transparent"
+      />
+      <span className="text-xs font-mono text-sidebar-muted tabular-nums">{fillColor}</span>
     </div>
   )
 }

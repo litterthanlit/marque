@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { ExportDialog } from '../export/ExportDialog.tsx'
 import { getModeDefinition } from '../../store/modes.ts'
+import { cn } from '../../lib/utils.ts'
 
 export function Toolbar() {
   const seed = useLogoStore((s) => s.params.seed)
@@ -48,24 +49,32 @@ export function Toolbar() {
 
   return (
     <>
-      <header className="flex items-center justify-between h-11 px-4 border-b border-neutral-200 bg-white">
-        <div className="flex items-center gap-3">
-          <span className="text-[13px] font-semibold tracking-tight text-neutral-900">Dalat</span>
-          <span className="text-[11px] text-neutral-400 font-mono tabular-nums">#{seed}</span>
-          <span className="hidden sm:inline text-[11px] text-neutral-400">{mode?.name ?? modeId}</span>
-          <span className="hidden lg:inline text-[11px] text-neutral-400 capitalize">{styleFamily}</span>
+      <header className="flex items-center justify-between h-12 px-4 border-b border-border bg-surface-raised">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="text-sm font-semibold text-neutral-900">Dalat</span>
+          <div className="hidden sm:flex items-center gap-1.5 text-xs text-neutral-500">
+            <span>/</span>
+            <span>{mode?.name ?? modeId}</span>
+            <span>/</span>
+            <span className="capitalize">{styleFamily}</span>
+          </div>
+          <span className="text-xs text-neutral-400 font-mono tabular-nums">#{seed}</span>
         </div>
-        <div className="flex items-center gap-1">
-          <button onClick={() => undo()} disabled={!canUndo} className="px-2 py-1 text-[11px] text-neutral-400 hover:text-neutral-900 transition-colors disabled:opacity-30 disabled:cursor-default" title="Undo">Undo</button>
-          <button onClick={() => redo()} disabled={!canRedo} className="px-2 py-1 text-[11px] text-neutral-400 hover:text-neutral-900 transition-colors disabled:opacity-30 disabled:cursor-default" title="Redo">Redo</button>
-          <div className="w-px h-4 bg-neutral-200 mx-1" />
-          <button onClick={handleCopyShareLink} className="px-2 py-1 text-[11px] text-neutral-400 hover:text-neutral-900 transition-colors">
+        <div className="flex items-center gap-0.5">
+          <ToolbarButton onClick={() => undo()} disabled={!canUndo} title="Undo (Cmd+Z)">Undo</ToolbarButton>
+          <ToolbarButton onClick={() => redo()} disabled={!canRedo} title="Redo (Cmd+Shift+Z)">Redo</ToolbarButton>
+          <div className="w-px h-4 bg-border mx-1" />
+          <ToolbarButton onClick={handleCopyShareLink}>
             {shareState === 'copied' ? 'Copied!' : shareState === 'failed' ? 'Failed' : 'Share'}
-          </button>
+          </ToolbarButton>
           <button
             onClick={() => setExportOpen(true)}
             disabled={!hasResult}
-            className="ml-1 px-3 py-1 text-[11px] font-medium bg-neutral-900 text-white rounded hover:bg-neutral-700 transition-colors disabled:bg-neutral-200 disabled:text-neutral-400 disabled:cursor-default"
+            className={cn(
+              'ml-1 h-7 px-3 text-xs font-medium rounded-md',
+              'bg-neutral-900 text-white hover:bg-neutral-800',
+              'disabled:bg-neutral-100 disabled:text-neutral-400 disabled:cursor-default',
+            )}
           >
             Export
           </button>
@@ -73,5 +82,21 @@ export function Toolbar() {
       </header>
       <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
     </>
+  )
+}
+
+function ToolbarButton({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      {...props}
+      className={cn(
+        'h-7 px-2 text-xs text-neutral-500 rounded-md',
+        'hover:bg-neutral-100 hover:text-neutral-900',
+        'disabled:opacity-40 disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-neutral-500',
+        props.className,
+      )}
+    >
+      {children}
+    </button>
   )
 }
