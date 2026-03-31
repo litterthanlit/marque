@@ -48,11 +48,11 @@ export function LogoCanvas() {
   const { playing, togglePlaying, canAnimate } = useAnimation(onFrame)
 
   return (
-    <div className="relative w-full max-w-xl aspect-square bg-white rounded-lg border border-border shadow-sm">
+    <div className="relative w-full max-w-2xl aspect-square bg-white rounded-lg border border-border shadow-sm">
       <canvas
         ref={canvasRef}
-        width={680}
-        height={680}
+        width={600}
+        height={600}
         className="size-full rounded-lg"
         style={{ imageRendering: 'auto' }}
       />
