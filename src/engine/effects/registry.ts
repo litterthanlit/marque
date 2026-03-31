@@ -14,3 +14,6 @@ export function registerEffect<P, R>(effect: EffectProcessor<P, R>): void {
 export function getEffect(id: string): EffectProcessor<unknown, unknown> | undefined {
   return registry.get(id)
 }
+
+// Auto-register built-in effects
+import './dissolution.ts'
