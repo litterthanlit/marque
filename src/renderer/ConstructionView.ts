@@ -14,7 +14,7 @@ export function renderConstruction(
 
   if (showGrid) {
     // Draw concentric grid circles
-    for (const gridLine of result.constructionData.gridLines) {
+    for (const gridLine of result.constructionData.gridCircles) {
       const circle = new scope.Path.Circle(
         new scope.Point(center.x + gridLine.cx, center.y + gridLine.cy),
         gridLine.r,
@@ -24,23 +24,27 @@ export function renderConstruction(
       circle.fillColor = null
     }
 
-    // Draw radial guide lines
-    const maxR =
-      result.constructionData.gridLines[
-        result.constructionData.gridLines.length - 1
-      ]?.r ?? 100
-    const folds = result.constructionData.stats.symmetryFolds
-    for (let i = 0; i < folds; i++) {
-      const angle = (2 * Math.PI * i) / folds
+    for (const guideLine of result.constructionData.guideLines) {
       const line = new scope.Path.Line(
-        center,
         new scope.Point(
-          center.x + Math.cos(angle) * maxR,
-          center.y + Math.sin(angle) * maxR,
+          center.x + guideLine.x1,
+          center.y + guideLine.y1,
+        ),
+        new scope.Point(
+          center.x + guideLine.x2,
+          center.y + guideLine.y2,
         ),
       )
-      line.strokeColor = new scope.Color(0.85, 0.6, 0.6, 0.25)
-      line.strokeWidth = 0.5
+      line.strokeWidth = guideLine.kind === 'mirror' ? 0.75 : 0.5
+      line.strokeColor =
+        guideLine.kind === 'mirror'
+          ? new scope.Color(0.18, 0.53, 0.92, 0.38)
+          : guideLine.kind === 'frame'
+            ? new scope.Color(0.4, 0.4, 0.4, 0.3)
+            : new scope.Color(0.85, 0.6, 0.6, 0.22)
+      if (guideLine.kind === 'mirror') {
+        line.dashArray = [6, 5]
+      }
     }
   }
 

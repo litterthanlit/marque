@@ -48,6 +48,28 @@ export function generateModularKeyframes(
   return keyframes
 }
 
+export function generateWaveArcKeyframes(
+  params: LogoParams,
+  _rng: SeededRandom,
+  frameCount = 60,
+): AnimationKeyframe[] {
+  const speed = params.animationSpeed
+  if (speed === 0) return []
+
+  const keyframes: AnimationKeyframe[] = []
+  for (let i = 0; i <= frameCount; i++) {
+    const t = i / frameCount
+    keyframes.push({
+      time: t,
+      rotation: Math.sin(t * Math.PI * 2) * Math.PI * 0.12 * speed,
+      scale: 1 + Math.sin(t * Math.PI * 2) * 0.03 * speed,
+      opacity: 1,
+    })
+  }
+
+  return keyframes
+}
+
 /**
  * Interpolates between keyframes at a given normalized time (0-1).
  */

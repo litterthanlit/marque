@@ -1,3 +1,5 @@
+import { cn } from '../../lib/utils.ts'
+
 interface AnimationControlsProps {
   playing: boolean
   canAnimate: boolean
@@ -12,10 +14,13 @@ export function AnimationControls({ playing, canAnimate, onToggle }: AnimationCo
       onClick={onToggle}
       aria-pressed={playing}
       aria-label={playing ? 'Pause animation' : 'Play animation'}
-      title={playing ? 'Pause animation' : 'Play animation'}
-      className="absolute bottom-3 left-3 inline-flex items-center gap-2 rounded-md border border-neutral-200 bg-white/90 px-3 py-1.5 text-xs font-medium shadow-sm transition-colors hover:bg-white focus:outline-none focus:ring-2 focus:ring-neutral-400 focus:ring-offset-2"
+      className={cn(
+        'absolute bottom-2.5 left-2.5 inline-flex items-center gap-1.5',
+        'h-7 px-2.5 rounded-md text-xs',
+        'bg-neutral-900/80 text-white/90 hover:bg-neutral-900',
+      )}
     >
-      <span className="h-1.5 w-1.5 rounded-full bg-neutral-900/70" aria-hidden="true" />
+      <span className={cn('size-1.5 rounded-full', playing ? 'bg-emerald-400' : 'bg-neutral-400')} aria-hidden="true" />
       {playing ? 'Pause' : 'Play'}
     </button>
   )

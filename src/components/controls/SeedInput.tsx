@@ -6,24 +6,25 @@ export function SeedInput() {
   const randomizeSeed = useLogoStore((s) => s.randomizeSeed)
 
   return (
-    <div className="flex flex-col gap-1.5">
-      <span className="text-xs text-neutral-500 uppercase tracking-wider">
-        Seed
-      </span>
-      <div className="flex gap-2">
-        <input
-          type="number"
-          value={seed}
-          onChange={(e) => setParam('seed', parseInt(e.target.value) || 0)}
-          className="flex-1 px-2.5 py-1.5 text-sm font-mono bg-neutral-100 border border-neutral-200 rounded-md outline-none focus:border-neutral-400 tabular-nums"
-        />
-        <button
-          onClick={randomizeSeed}
-          className="px-3 py-1.5 text-xs font-medium bg-neutral-900 text-white rounded-md hover:bg-neutral-700 transition-colors"
-        >
-          Random
-        </button>
-      </div>
+    <div className="flex items-center gap-1.5">
+      <label className="text-xs text-sidebar-text shrink-0">Seed</label>
+      <input
+        type="number"
+        value={seed}
+        min={0}
+        max={999999}
+        onChange={(e) => {
+          const parsed = Number.parseInt(e.target.value, 10)
+          setParam('seed', Number.isFinite(parsed) ? Math.min(999999, Math.max(0, parsed)) : 0)
+        }}
+        className="flex-1 min-w-0 h-7 px-2 text-xs font-mono tabular-nums bg-transparent border border-sidebar-border rounded-md text-white outline-none focus:border-neutral-500"
+      />
+      <button
+        onClick={randomizeSeed}
+        className="h-7 px-2.5 text-xs font-medium bg-white/10 text-white rounded-md hover:bg-white/15"
+      >
+        Random
+      </button>
     </div>
   )
 }
