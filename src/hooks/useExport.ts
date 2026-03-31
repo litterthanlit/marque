@@ -1,5 +1,7 @@
 import { useLogoStore } from '../store/logoStore.ts'
 import { getGenerator } from '../engine/generators/registry.ts'
+import { DissolutionProcessor } from '../engine/effects/dissolution.ts'
+import type { DissolutionResult } from '../engine/effects/types.ts'
 
 export type ArtboardMode = 'tight' | 'square'
 export type PaddingMode = 'none' | 'compact' | 'presentation'
@@ -49,18 +51,45 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url)
 }
 
-export function useExport() {
+export function useExport(dissolution?: DissolutionResult | null) {
   const result = useLogoStore((s) => s.result)
   const params = useLogoStore((s) => s.params)
+  const effectParams = useLogoStore((s) => s.effectParams)
   const generator = getGenerator(params.generatorId)
   const filenameBase = `logo-${params.seed}-${params.modeId}-${generator?.version ?? 'v0'}`
 
+  // Compute dissolution from the store if not explicitly provided
+  const activeDissolution: DissolutionResult | null | undefined =
+    dissolution !== undefined
+      ? dissolution
+      : result && effectParams.dissolution.enabled
+        ? DissolutionProcessor.process(result, effectParams.dissolution)
+        : null
+
+  function getExportPaths(): { pathData: string; fillRule: 'nonzero' | 'evenodd' } | null {
+    if (!result || !result.mark.compoundPathData) return null
+
+    if (activeDissolution) {
+      const parts: string[] = []
+      if (activeDissolution.solidCorePath) parts.push(activeDissolution.solidCorePath)
+      if (activeDissolution.particlePathData) parts.push(activeDissolution.particlePathData)
+      if (parts.length === 0) return null
+      return { pathData: parts.join(' '), fillRule: 'evenodd' }
+    }
+
+    return {
+      pathData: result.mark.compoundPathData,
+      fillRule: result.mark.fillRule,
+    }
+  }
+
   function exportSVG(options: ExportOptions = {}) {
-    if (!result || !result.mark.compoundPathData) return
+    const paths = getExportPaths()
+    if (!paths) return
     const svg = generateSVGString(
-      result.mark.compoundPathData,
-      result.mark.fillRule,
-      result.mark.viewBox,
+      paths.pathData,
+      paths.fillRule,
+      result!.mark.viewBox,
       params.fillColor,
       options,
     )
@@ -69,16 +98,17 @@ export function useExport() {
   }
 
   function exportPNG(scale = 2, options: ExportOptions = {}) {
-    if (!result || !result.mark.compoundPathData) return
+    const paths = getExportPaths()
+    if (!paths) return
     const normalizedViewBox = normalizeViewBox(
-      result.mark.viewBox,
+      result!.mark.viewBox,
       options.artboardMode ?? 'tight',
       options.paddingMode ?? 'compact',
     )
     const svg = generateSVGString(
-      result.mark.compoundPathData,
-      result.mark.fillRule,
-      result.mark.viewBox,
+      paths.pathData,
+      paths.fillRule,
+      result!.mark.viewBox,
       params.fillColor,
       options,
     )
@@ -110,7 +140,7 @@ export function useExport() {
     img.src = url
   }
 
-  return { exportSVG, exportPNG, canExport: !!result?.mark.compoundPathData }
+  return { exportSVG, exportPNG, canExport: !!getExportPaths(), hasDissolution: !!activeDissolution }
 }
 
 function normalizeViewBox(

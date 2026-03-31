@@ -7,7 +7,7 @@ interface ExportDialogProps {
 }
 
 export function ExportDialog({ open, onClose }: ExportDialogProps) {
-  const { exportSVG, exportPNG, canExport } = useExport()
+  const { exportSVG, exportPNG, canExport, hasDissolution } = useExport()
   const [pngScale, setPngScale] = useState(2)
   const [artboardMode, setArtboardMode] = useState<'tight' | 'square'>('tight')
   const [paddingMode, setPaddingMode] = useState<'none' | 'compact' | 'presentation'>('compact')
@@ -79,6 +79,13 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
               </select>
             </div>
           </div>
+
+          {hasDissolution && (
+            <div className="flex items-center gap-2 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
+              <span className="font-medium">Dissolution applied</span>
+              <span className="text-amber-500">Export includes the dissolved effect.</span>
+            </div>
+          )}
 
           <button
             onClick={() => {
