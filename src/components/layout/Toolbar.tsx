@@ -6,6 +6,9 @@ export function Toolbar() {
   const seed = useLogoStore((s) => s.params.seed)
   const [exportOpen, setExportOpen] = useState(false)
 
+  const undo = useLogoStore.temporal.getState().undo
+  const redo = useLogoStore.temporal.getState().redo
+
   return (
     <>
       <header className="flex items-center justify-between px-5 py-3 border-b border-neutral-200 bg-white">
@@ -17,12 +20,28 @@ export function Toolbar() {
             Seed #{seed}
           </span>
         </div>
-        <button
-          onClick={() => setExportOpen(true)}
-          className="px-3 py-1.5 text-xs font-medium bg-neutral-900 text-white rounded-md hover:bg-neutral-700 transition-colors"
-        >
-          Export
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => undo()}
+            className="px-2 py-1.5 text-xs text-neutral-500 hover:text-neutral-900 transition-colors"
+            title="Undo (Cmd+Z)"
+          >
+            Undo
+          </button>
+          <button
+            onClick={() => redo()}
+            className="px-2 py-1.5 text-xs text-neutral-500 hover:text-neutral-900 transition-colors"
+            title="Redo (Cmd+Shift+Z)"
+          >
+            Redo
+          </button>
+          <button
+            onClick={() => setExportOpen(true)}
+            className="px-3 py-1.5 text-xs font-medium bg-neutral-900 text-white rounded-md hover:bg-neutral-700 transition-colors"
+          >
+            Export
+          </button>
+        </div>
       </header>
       <ExportDialog open={exportOpen} onClose={() => setExportOpen(false)} />
     </>
