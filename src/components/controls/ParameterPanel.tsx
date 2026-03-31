@@ -14,6 +14,7 @@ export function ParameterPanel() {
   const toggleConstruction = useLogoStore((s) => s.toggleConstruction)
 
   const currentGenerator = getGenerator(params.generatorId)
+  const isModularGenerator = params.generatorId === 'modular'
 
   return (
     <div className="flex flex-col gap-5 p-5 overflow-y-auto">
@@ -36,23 +37,27 @@ export function ParameterPanel() {
         />
       ))}
 
-      <SliderControl
-        label="Grid Rings"
-        value={params.gridRings}
-        min={1}
-        max={8}
-        step={1}
-        onChange={(v) => setParam('gridRings', v)}
-      />
+      {!isModularGenerator && (
+        <>
+          <SliderControl
+            label="Grid Rings"
+            value={params.gridRings}
+            min={1}
+            max={8}
+            step={1}
+            onChange={(v) => setParam('gridRings', v)}
+          />
 
-      <SliderControl
-        label="Symmetry Folds"
-        value={params.symmetryFolds}
-        min={1}
-        max={12}
-        step={1}
-        onChange={(v) => setParam('symmetryFolds', v)}
-      />
+          <SliderControl
+            label="Symmetry Folds"
+            value={params.symmetryFolds}
+            min={1}
+            max={12}
+            step={1}
+            onChange={(v) => setParam('symmetryFolds', v)}
+          />
+        </>
+      )}
 
       <SliderControl
         label="Additive Ratio"
@@ -90,14 +95,16 @@ export function ParameterPanel() {
         onChange={(v) => setParam('rotation', v)}
       />
 
-      <SliderControl
-        label="Animation Speed"
-        value={params.animationSpeed}
-        min={0}
-        max={5}
-        step={0.1}
-        onChange={(v) => setParam('animationSpeed', v)}
-      />
+      {!isModularGenerator && (
+        <SliderControl
+          label="Animation Speed"
+          value={params.animationSpeed}
+          min={0}
+          max={5}
+          step={0.1}
+          onChange={(v) => setParam('animationSpeed', v)}
+        />
+      )}
 
       <ColorPicker />
 

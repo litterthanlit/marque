@@ -48,12 +48,15 @@ function encodeParams(params: LogoParams): string {
   return searchParams.toString()
 }
 
-function decodeParams(hash: string): Partial<LogoParams> | null {
-  if (!hash || hash === '#') return null
+function decodeParams(
+  hash: string,
+): { params: Partial<LogoParams> | null; error: string | null } {
+  if (!hash || hash === '#') return { params: null, error: null }
 
   const searchParams = new URLSearchParams(hash.replace(/^#/, ''))
   const rawUpdates: Partial<LogoParams> = {}
   const rawExtra: Record<string, number> = {}
+  const rawVersion = searchParams.get('v')
 
   for (const [key, value] of searchParams.entries()) {
     if (key === 'v') continue // version, not a param
@@ -79,12 +82,13 @@ function decodeParams(hash: string): Partial<LogoParams> | null {
     }
   }
 
-  return sanitizeDecodedParams(rawUpdates, rawExtra)
+  return sanitizeDecodedParams(rawUpdates, rawExtra, rawVersion)
 }
 
 export function useUrlState() {
   const params = useLogoStore((s) => s.params)
   const setParams = useLogoStore((s) => s.setParams)
+  const setError = useLogoStore((s) => s.setError)
   const initialized = useRef(false)
 
   // On mount: read URL hash and apply params
@@ -93,10 +97,13 @@ export function useUrlState() {
     initialized.current = true
 
     const decoded = decodeParams(window.location.hash)
-    if (decoded) {
-      setParams(decoded)
+    if (decoded?.error) {
+      setError(decoded.error)
     }
-  }, [setParams])
+    if (decoded?.params) {
+      setParams(decoded.params)
+    }
+  }, [setError, setParams])
 
   // On param change: update URL hash
   useEffect(() => {
@@ -112,13 +119,20 @@ export function useUrlState() {
 function sanitizeDecodedParams(
   updates: Partial<LogoParams>,
   extra: Record<string, number>,
-): Partial<LogoParams> | null {
+  version: string | null,
+): { params: Partial<LogoParams> | null; error: string | null } {
   const sanitized: Partial<LogoParams> = {}
   const generatorId =
     typeof updates.generatorId === 'string' && getGenerator(updates.generatorId)
       ? updates.generatorId
       : DEFAULT_PARAMS.generatorId
   const generator = getGenerator(generatorId)
+  let error: string | null = null
+
+  if (version && generator && version !== generator.version) {
+    error = `This shared link was created for generator version ${version}, but ${generator.name} is now on ${generator.version}. Defaults were kept to avoid loading incompatible state.`
+    return { params: null, error }
+  }
 
   if (generatorId !== DEFAULT_PARAMS.generatorId || updates.generatorId) {
     sanitized.generatorId = generatorId
@@ -159,7 +173,10 @@ function sanitizeDecodedParams(
     }
   }
 
-  return Object.keys(sanitized).length > 0 ? sanitized : null
+  return {
+    params: Object.keys(sanitized).length > 0 ? sanitized : null,
+    error,
+  }
 }
 
 function clampNumber(value: number, min: number, max: number): number {

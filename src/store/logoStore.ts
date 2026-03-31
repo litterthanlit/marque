@@ -12,12 +12,14 @@ interface UIState {
 interface LogoStore {
   params: LogoParams
   result: GenerationResult | null
+  error: string | null
   ui: UIState
 
   setParam: <K extends keyof LogoParams>(key: K, value: LogoParams[K]) => void
   setParams: (updates: Partial<LogoParams>) => void
   randomizeSeed: () => void
-  setResult: (result: GenerationResult) => void
+  setResult: (result: GenerationResult | null) => void
+  setError: (error: string | null) => void
   toggleGrid: () => void
   toggleConstruction: () => void
   applyPreset: (params: Partial<LogoParams>) => void
@@ -28,6 +30,7 @@ export const useLogoStore = create<LogoStore>()(
     (set) => ({
       params: { ...DEFAULT_PARAMS },
       result: null,
+      error: null,
       ui: {
         showGrid: true,
         showConstruction: true,
@@ -52,6 +55,7 @@ export const useLogoStore = create<LogoStore>()(
         })),
 
       setResult: (result) => set({ result }),
+      setError: (error) => set({ error }),
 
       toggleGrid: () =>
         set((state) => ({

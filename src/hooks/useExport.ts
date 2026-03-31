@@ -10,10 +10,20 @@ function generateSVGString(
   const padding = 20
   const vb = `${viewBox.x - padding} ${viewBox.y - padding} ${viewBox.width + padding * 2} ${viewBox.height + padding * 2}`
   return [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vb}" preserveAspectRatio="xMidYMid meet">`,
     `  <path d="${compoundPathData}" fill="${fillColor}" fill-rule="${fillRule}" />`,
     `</svg>`,
   ].join('\n')
+}
+
+function getPngCanvasSize(
+  viewBox: { x: number; y: number; width: number; height: number },
+  scale: number,
+): { width: number; height: number } {
+  const padding = 20
+  const width = Math.max(1, Math.round((viewBox.width + padding * 2) * scale))
+  const height = Math.max(1, Math.round((viewBox.height + padding * 2) * scale))
+  return { width, height }
 }
 
 function downloadBlob(blob: Blob, filename: string) {
@@ -60,13 +70,12 @@ export function useExport() {
 
     img.onload = () => {
       const canvas = document.createElement('canvas')
-      const size = 1024 * scale
-      canvas.width = size
-      canvas.height = size
+      const { width, height } = getPngCanvasSize(result.mark.viewBox, scale)
+      canvas.width = width
+      canvas.height = height
       const ctx = canvas.getContext('2d')!
-      ctx.fillStyle = '#ffffff'
-      ctx.fillRect(0, 0, size, size)
-      ctx.drawImage(img, 0, 0, size, size)
+      ctx.clearRect(0, 0, width, height)
+      ctx.drawImage(img, 0, 0, width, height)
       URL.revokeObjectURL(url)
 
       canvas.toBlob((blob) => {

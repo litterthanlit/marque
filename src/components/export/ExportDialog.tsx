@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useExport } from '../../hooks/useExport.ts'
 
 interface ExportDialogProps {
@@ -9,14 +9,37 @@ interface ExportDialogProps {
 export function ExportDialog({ open, onClose }: ExportDialogProps) {
   const { exportSVG, exportPNG, canExport } = useExport()
   const [pngScale, setPngScale] = useState(2)
+  const titleId = useId()
+  const closeButtonRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+
+    closeButtonRef.current?.focus()
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [onClose, open])
 
   if (!open) return null
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/20" onClick={onClose} />
-      <div className="relative bg-white rounded-xl shadow-xl p-6 w-80">
-        <h2 className="text-sm font-semibold text-neutral-900 mb-4">Export Logo</h2>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        className="relative bg-white rounded-xl shadow-xl p-6 w-80"
+      >
+        <h2 id={titleId} className="text-sm font-semibold text-neutral-900 mb-4">Export Logo</h2>
 
         <div className="flex flex-col gap-3">
           <button
@@ -33,7 +56,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
               disabled={!canExport}
               className="flex-1 px-4 py-2.5 text-sm font-medium border border-neutral-200 rounded-lg hover:bg-neutral-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
-              Download PNG
+              Transparent PNG
             </button>
             <select
               value={pngScale}
@@ -45,9 +68,13 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
               <option value={4}>4x</option>
             </select>
           </div>
+          <p className="text-[11px] leading-4 text-neutral-500">
+            PNG export preserves the logo&apos;s aspect ratio and keeps the background transparent.
+          </p>
         </div>
 
         <button
+          ref={closeButtonRef}
           onClick={onClose}
           className="mt-4 w-full px-4 py-2 text-xs text-neutral-500 hover:text-neutral-700 transition-colors"
         >
