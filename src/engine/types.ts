@@ -150,3 +150,5 @@ export const DEFAULT_PARAMS: LogoParams = {
   generatorId: 'geometric-radial',
   modeParams: {},
 }
+
+export type { EffectParamsMap } from './effects/types.ts'
