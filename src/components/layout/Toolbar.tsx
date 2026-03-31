@@ -49,31 +49,33 @@ export function Toolbar() {
 
   return (
     <>
-      <header className="flex items-center justify-between h-12 px-4 border-b border-border bg-surface-raised">
-        <div className="flex items-center gap-3 min-w-0">
-          <span className="text-sm font-semibold text-neutral-900">Dalat</span>
-          <div className="hidden sm:flex items-center gap-1.5 text-xs text-neutral-500">
-            <span>/</span>
-            <span>{mode?.name ?? modeId}</span>
-            <span>/</span>
-            <span className="capitalize">{styleFamily}</span>
-          </div>
-          <span className="text-xs text-neutral-400 font-mono tabular-nums">#{seed}</span>
+      <header className="flex items-center justify-between h-11 px-4 border-b border-border bg-surface-raised">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-[13px] font-semibold text-white tracking-tight">dalat</span>
+          <span className="text-sidebar-muted">/</span>
+          <span className="hidden sm:inline text-xs text-sidebar-text">{mode?.name ?? modeId}</span>
+          <span className="hidden lg:inline text-sidebar-muted">/</span>
+          <span className="hidden lg:inline text-xs text-sidebar-muted capitalize">{styleFamily}</span>
+          <span className="text-[10px] text-sidebar-muted font-mono tabular-nums ml-1">#{seed}</span>
         </div>
-        <div className="flex items-center gap-0.5">
-          <ToolbarButton onClick={() => undo()} disabled={!canUndo} title="Undo (Cmd+Z)">Undo</ToolbarButton>
-          <ToolbarButton onClick={() => redo()} disabled={!canRedo} title="Redo (Cmd+Shift+Z)">Redo</ToolbarButton>
-          <div className="w-px h-4 bg-border mx-1" />
+        <div className="flex items-center gap-1">
+          <ToolbarButton onClick={() => undo()} disabled={!canUndo} title="Undo (Cmd+Z)">
+            <UndoIcon />
+          </ToolbarButton>
+          <ToolbarButton onClick={() => redo()} disabled={!canRedo} title="Redo (Cmd+Shift+Z)">
+            <RedoIcon />
+          </ToolbarButton>
+          <div className="w-px h-3.5 bg-border mx-1" />
           <ToolbarButton onClick={handleCopyShareLink}>
-            {shareState === 'copied' ? 'Copied!' : shareState === 'failed' ? 'Failed' : 'Share'}
+            {shareState === 'copied' ? 'Copied' : 'Share'}
           </ToolbarButton>
           <button
             onClick={() => setExportOpen(true)}
             disabled={!hasResult}
             className={cn(
-              'ml-1 h-7 px-3 text-xs font-medium rounded-md',
-              'bg-neutral-900 text-white hover:bg-neutral-800',
-              'disabled:bg-neutral-100 disabled:text-neutral-400 disabled:cursor-default',
+              'ml-1 h-7 px-3 text-xs font-medium rounded-md transition-colors',
+              'bg-white text-neutral-900 hover:bg-neutral-200',
+              'disabled:bg-white/5 disabled:text-neutral-600 disabled:cursor-default',
             )}
           >
             Export
@@ -90,13 +92,31 @@ function ToolbarButton({ children, ...props }: React.ButtonHTMLAttributes<HTMLBu
     <button
       {...props}
       className={cn(
-        'h-7 px-2 text-xs text-neutral-500 rounded-md',
-        'hover:bg-neutral-100 hover:text-neutral-900',
-        'disabled:opacity-40 disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-neutral-500',
+        'h-7 px-2 text-xs text-sidebar-muted rounded-md transition-colors',
+        'hover:bg-white/5 hover:text-white',
+        'disabled:opacity-30 disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-sidebar-muted',
         props.className,
       )}
     >
       {children}
     </button>
+  )
+}
+
+function UndoIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 7h7a4 4 0 0 1 0 8H7" />
+      <path d="M6 4L3 7l3 3" />
+    </svg>
+  )
+}
+
+function RedoIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M13 7H6a4 4 0 0 0 0 8h3" />
+      <path d="M10 4l3 3-3 3" />
+    </svg>
   )
 }

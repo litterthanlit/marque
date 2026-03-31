@@ -24,28 +24,21 @@ export function ParameterPanel() {
   const activeMode = getModeDefinition(params.modeId) ?? modes[0]
   const activeModeParams = (params.modeParams[params.modeId] ?? {}) as Record<string, number>
 
-  const STYLE_DOTS: Record<string, string> = {
-    minimal: 'bg-neutral-600',
-    heritage: 'bg-amber-700',
-    luxe: 'bg-neutral-900',
-    playful: 'bg-cyan-500',
-    tech: 'bg-blue-600',
-  }
-
   return (
     <div className="flex flex-col text-sm">
       {/* Mode selector */}
-      <div className="p-3 border-b border-sidebar-border">
-        <div className="flex flex-wrap gap-0.5">
+      <div className="p-3 border-b border-border">
+        <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Mode</div>
+        <div className="grid grid-cols-3 gap-1">
           {modes.map((mode) => (
             <button
               key={mode.id}
               type="button"
               onClick={() => setMode(mode.id)}
               className={cn(
-                'h-7 px-2.5 rounded-md text-xs',
+                'h-8 px-2 rounded-lg text-xs transition-colors',
                 mode.id === params.modeId
-                  ? 'bg-white text-neutral-900 font-medium'
+                  ? 'bg-white/10 text-white font-medium ring-1 ring-white/10'
                   : 'text-sidebar-muted hover:text-white hover:bg-white/5',
               )}
             >
@@ -56,47 +49,46 @@ export function ParameterPanel() {
       </div>
 
       {/* Style family */}
-      <div className="flex items-center gap-3 p-3 border-b border-sidebar-border">
-        <span className="text-xs text-sidebar-muted shrink-0">Style</span>
-        <div className="flex items-center gap-1.5">
+      <div className="p-3 border-b border-border">
+        <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Style</div>
+        <div className="flex items-center gap-1">
           {STYLE_FAMILIES.map((family) => (
             <button
               key={family.id}
               type="button"
               onClick={() => setStyleFamily(family.id)}
               title={family.label}
-              className="group flex flex-col items-center gap-0.5"
+              className={cn(
+                'flex-1 h-8 rounded-lg text-xs transition-all',
+                family.id === params.styleFamily
+                  ? 'bg-white/10 text-white font-medium ring-1 ring-white/10'
+                  : 'text-sidebar-muted hover:text-white hover:bg-white/5',
+              )}
             >
-              <div className={cn(
-                'size-5 rounded-full border',
-                STYLE_DOTS[family.id] ?? 'bg-neutral-500',
-                family.id === params.styleFamily ? 'border-white ring-1 ring-white/20' : 'border-transparent',
-              )} />
-              <span className={cn('text-[9px]', family.id === params.styleFamily ? 'text-white' : 'text-sidebar-muted')}>
-                {family.label}
-              </span>
+              {family.label}
             </button>
           ))}
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        <Section title="Generation" defaultOpen>
+        {/* Seed + Color — always visible, no collapsible */}
+        <div className="p-3 border-b border-border flex flex-col gap-3">
           <SeedInput />
           <ColorPicker />
           {activeMode.sharedControls.includes('brandInput') && (
             <div className="flex items-center gap-2">
-              <label className="text-xs text-sidebar-text shrink-0">Initials</label>
+              <label className="text-[10px] uppercase tracking-widest text-sidebar-muted shrink-0">Initials</label>
               <input
                 value={params.brandInput.initials ?? ''}
                 onChange={(e) => setBrandInput({ initials: e.target.value.toUpperCase() })}
                 maxLength={3}
                 placeholder="MM"
-                className="h-7 w-16 px-2 text-xs font-mono bg-transparent border border-sidebar-border rounded-md text-white outline-none focus:border-neutral-500"
+                className="flex-1 h-8 px-2.5 text-xs font-mono bg-white/5 border border-border rounded-lg text-white outline-none focus:border-sidebar-muted transition-colors"
               />
             </div>
           )}
-        </Section>
+        </div>
 
         <Section title="Shape" defaultOpen>
           {activeMode.sharedControls.includes('gridRings') && (
@@ -124,7 +116,7 @@ export function ParameterPanel() {
 
         <Section title={activeMode.name} defaultOpen>
           {params.modeId === 'geometric-radial' && (
-            <p className="text-xs text-sidebar-muted text-pretty">Controlled by shape parameters above.</p>
+            <p className="text-xs text-sidebar-muted">Controlled by shape parameters above.</p>
           )}
           {params.modeId === 'modular' && (
             <>
@@ -142,7 +134,7 @@ export function ParameterPanel() {
               <SliderControl label="Density" value={activeModeParams.density ?? 0.55} min={0.2} max={0.9} step={0.01} onChange={(v) => setModeParam('density', v)} />
               <SliderControl label="Inset" value={activeModeParams.cellInset ?? 0.12} min={0} max={0.32} step={0.01} onChange={(v) => setModeParam('cellInset', v)} />
               <SliderControl label="Stroke" value={activeModeParams.strokeBias ?? 0.5} min={0} max={1} step={0.01} onChange={(v) => setModeParam('strokeBias', v)} />
-              <div className="flex gap-1.5">
+              <div className="flex gap-1">
                 <ToggleRow label="Mirror X" checked={(activeModeParams.mirrorX ?? 1) > 0.5} onChange={(c) => setModeParam('mirrorX', c ? 1 : 0)} />
                 <ToggleRow label="Mirror Y" checked={(activeModeParams.mirrorY ?? 0) > 0.5} onChange={(c) => setModeParam('mirrorY', c ? 1 : 0)} />
               </div>
@@ -181,8 +173,8 @@ export function ParameterPanel() {
           <EffectControls />
         </Section>
 
-        <Section title="View">
-          <div className="flex gap-1.5">
+        <Section title="Overlays">
+          <div className="flex gap-1">
             <ToggleRow label="Grid" checked={ui.showGrid} onChange={toggleGrid} />
             <ToggleRow label="Construction" checked={ui.showConstruction} onChange={toggleConstruction} />
           </div>
@@ -203,18 +195,18 @@ export function ParameterPanel() {
 function Section({ title, defaultOpen = false, children }: { title: string; defaultOpen?: boolean; children: ReactNode }) {
   const [open, setOpen] = useState(defaultOpen)
   return (
-    <div className="border-b border-sidebar-border">
+    <div className="border-b border-border">
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex items-center justify-between w-full px-3 py-2.5 text-xs text-sidebar-muted hover:text-white"
+        className="flex items-center justify-between w-full px-3 py-2.5 text-[10px] uppercase tracking-widest text-sidebar-muted hover:text-white transition-colors"
       >
         <span>{title}</span>
-        <svg className={cn('size-3', open && 'rotate-180')} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <svg className={cn('size-3 transition-transform', open && 'rotate-180')} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
           <path d="M3 4.5L6 7.5L9 4.5" />
         </svg>
       </button>
-      {open && <div className="px-3 pb-3 flex flex-col gap-2">{children}</div>}
+      {open && <div className="px-3 pb-3 flex flex-col gap-2.5">{children}</div>}
     </div>
   )
 }
@@ -225,8 +217,10 @@ function ToggleRow({ label, checked, onChange }: { label: string; checked: boole
       type="button"
       onClick={() => onChange(!checked)}
       className={cn(
-        'flex-1 h-7 px-2.5 rounded-md text-xs',
-        checked ? 'bg-white text-neutral-900 font-medium' : 'bg-white/5 text-sidebar-muted hover:text-white',
+        'flex-1 h-8 px-2.5 rounded-lg text-xs transition-all',
+        checked
+          ? 'bg-white/10 text-white font-medium ring-1 ring-white/10'
+          : 'bg-white/[0.03] text-sidebar-muted hover:text-white hover:bg-white/5',
       )}
     >
       {label}
@@ -236,15 +230,17 @@ function ToggleRow({ label, checked, onChange }: { label: string; checked: boole
 
 function SegmentRow({ value, options, onChange }: { value: number; options: Array<{ l: string; v: number }>; onChange: (v: number) => void }) {
   return (
-    <div className="flex gap-0.5">
+    <div className="flex gap-1 p-0.5 bg-white/[0.03] rounded-lg">
       {options.map((opt) => (
         <button
           key={opt.v}
           type="button"
           onClick={() => onChange(opt.v)}
           className={cn(
-            'flex-1 h-7 rounded-md text-xs',
-            value === opt.v ? 'bg-white text-neutral-900 font-medium' : 'bg-white/5 text-sidebar-muted hover:text-white',
+            'flex-1 h-7 rounded-md text-xs transition-all',
+            value === opt.v
+              ? 'bg-white/10 text-white font-medium shadow-sm'
+              : 'text-sidebar-muted hover:text-white',
           )}
         >
           {opt.l}

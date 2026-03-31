@@ -6,13 +6,19 @@ export function ColorPicker() {
 
   return (
     <div className="flex items-center gap-2">
-      <label className="text-xs text-sidebar-text shrink-0">Color</label>
-      <input
-        type="color"
-        value={fillColor}
-        onChange={(e) => setParam('fillColor', e.target.value)}
-        className="size-6 rounded border border-sidebar-border cursor-pointer bg-transparent"
-      />
+      <label className="text-[10px] uppercase tracking-widest text-sidebar-muted shrink-0">Color</label>
+      <div className="relative">
+        <input
+          type="color"
+          value={fillColor}
+          onChange={(e) => setParam('fillColor', e.target.value)}
+          className="absolute inset-0 opacity-0 cursor-pointer"
+        />
+        <div
+          className="size-8 rounded-lg border border-border"
+          style={{ backgroundColor: fillColor }}
+        />
+      </div>
       <span className="text-xs font-mono text-sidebar-muted tabular-nums">{fillColor}</span>
     </div>
   )
