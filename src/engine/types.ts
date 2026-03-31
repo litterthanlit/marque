@@ -11,7 +11,7 @@ export interface BrandInput {
   initials?: string
 }
 
-export type ModeParamMap = Record<string, Record<string, number>>
+export type ModeParamMap = Record<string, Record<string, number | string>>
 
 export interface LogoParams {
   seed: number
@@ -41,7 +41,7 @@ export interface PersistedLogoState {
  */
 export interface ShapeNode {
   id: string
-  type: 'circle' | 'rectangle' | 'triangle' | 'polygon' | 'blob'
+  type: 'circle' | 'rectangle' | 'triangle' | 'polygon' | 'blob' | 'ellipse'
   role: 'prototype' | 'symmetry-instance'
   operation: 'add' | 'subtract'
   center: { x: number; y: number }

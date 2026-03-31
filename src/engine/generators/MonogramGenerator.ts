@@ -23,7 +23,7 @@ export const MonogramGenerator: LogoGenerator = {
   extraParams: [],
   generate(params: LogoParams, rng: SeededRandom): GenerationResult {
     const initials = (params.brandInput.initials ?? 'MM').slice(0, 3) || 'MM'
-    const modeParams = params.modeParams.monogram ?? {}
+    const modeParams = (params.modeParams.monogram ?? {}) as Record<string, number>
     const strokeWeight = modeParams.strokeWeight ?? 1.15
     const contrast = modeParams.contrast ?? 0.45
     const cornerStyle = Math.round(modeParams.cornerStyle ?? 0)

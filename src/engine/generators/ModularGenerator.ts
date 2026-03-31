@@ -29,7 +29,7 @@ export const ModularGenerator: LogoGenerator = {
   getAnimationKeyframes: generateModularKeyframes,
 
   generate(params: LogoParams, rng: SeededRandom): GenerationResult {
-    const modularParams = params.modeParams.modular ?? {}
+    const modularParams = (params.modeParams.modular ?? {}) as Record<string, number>
     const columns = modularParams.columns ?? 4
     const rows = modularParams.rows ?? 4
     const useClip = (modularParams.circleClip ?? 1) > 0.5

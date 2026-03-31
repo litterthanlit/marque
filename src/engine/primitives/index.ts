@@ -4,8 +4,9 @@ import { rectanglePath } from './rectangle.ts'
 import { trianglePath } from './triangle.ts'
 import { polygonPath } from './polygon.ts'
 import { blobPath, blobPathFromDisplacements } from './blob.ts'
+import { ellipsePath } from './ellipse.ts'
 
-export type PrimitiveType = 'circle' | 'rectangle' | 'triangle' | 'polygon' | 'blob'
+export type PrimitiveType = 'circle' | 'rectangle' | 'triangle' | 'polygon' | 'blob' | 'ellipse'
 
 const PRIMITIVE_TYPES: PrimitiveType[] = [
   'circle',
@@ -55,6 +56,13 @@ export function createPrimitivePath(
       }
       if (!rng) return circlePath(cx, cy, radius)
       return blobPath(cx, cy, radius, rotation, rng)
+    case 'ellipse':
+      return ellipsePath(
+        cx, cy,
+        radius * (params.widthScale ?? 1),
+        radius * (params.heightScale ?? 1),
+        rotation,
+      )
     default:
       return circlePath(cx, cy, radius)
   }

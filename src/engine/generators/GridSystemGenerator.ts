@@ -20,7 +20,7 @@ export const GridSystemGenerator: LogoGenerator = {
   version: '1.0',
   extraParams: [],
   generate(params: LogoParams, rng: SeededRandom): GenerationResult {
-    const modeParams = params.modeParams['grid-system'] ?? {}
+    const modeParams = (params.modeParams['grid-system'] ?? {}) as Record<string, number>
     const columns = Math.round(modeParams.columns ?? 6)
     const rows = Math.round(modeParams.rows ?? 6)
     const density = modeParams.density ?? 0.55

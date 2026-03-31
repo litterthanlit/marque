@@ -24,7 +24,7 @@ export function ParameterPanel() {
 
   const modes = useMemo(() => listModes(), [])
   const activeMode = getModeDefinition(params.modeId) ?? modes[0]
-  const activeModeParams = params.modeParams[params.modeId] ?? {}
+  const activeModeParams = (params.modeParams[params.modeId] ?? {}) as Record<string, number>
 
   return (
     <div className="flex flex-col gap-5 p-4 md:p-5 overflow-y-auto bg-[linear-gradient(180deg,rgba(250,250,250,0.96),rgba(245,245,245,0.96))]">

@@ -437,7 +437,7 @@ export function getModeGeneratorId(modeId: string): string {
 }
 
 export function getModeParamDefaults(modeId: string): Record<string, number> {
-  return { ...(DEFAULT_MODE_PARAMS[modeId] ?? {}) }
+  return { ...(DEFAULT_MODE_PARAMS[modeId] ?? {}) } as Record<string, number>
 }
 
 export function getModeParamLimits(
