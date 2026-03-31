@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { ExportDialog } from '../export/ExportDialog.tsx'
 
@@ -8,6 +8,14 @@ export function Toolbar() {
 
   const undo = useLogoStore.temporal.getState().undo
   const redo = useLogoStore.temporal.getState().redo
+
+  useEffect(() => {
+    function handleOpenExport() {
+      setExportOpen(true)
+    }
+    window.addEventListener('open-export', handleOpenExport)
+    return () => window.removeEventListener('open-export', handleOpenExport)
+  }, [])
 
   return (
     <>
