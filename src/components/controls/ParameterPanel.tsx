@@ -5,6 +5,7 @@ import { SeedInput } from './SeedInput.tsx'
 import { ColorPicker } from './ColorPicker.tsx'
 import { PresetSelector } from './PresetSelector.tsx'
 import { SavedVariationsRail } from './SavedVariationsRail.tsx'
+import { EffectControls } from './EffectControls.tsx'
 import {
   getModeDefinition,
   listModes,
@@ -482,6 +483,14 @@ export function ParameterPanel() {
             onChange={toggleConstruction}
           />
         </div>
+      </PanelSection>
+
+      <PanelSection
+        eyebrow="Effects"
+        title="Post-processing"
+        description="Effects apply to any mode's output without changing the underlying generation."
+      >
+        <EffectControls />
       </PanelSection>
 
       <PresetSelector />
