@@ -12,6 +12,9 @@ import {
   normalizeInitials,
   STYLE_FAMILIES,
 } from '../store/modes.ts'
+import { DEFAULT_DISSOLUTION_PARAMS } from '../engine/effects/types.ts'
+import type { DissolutionParams } from '../engine/effects/types.ts'
+import type { EffectParamsMap } from '../engine/effects/types.ts'
 
 const PARAM_KEYS: Array<
   | 'seed'
@@ -50,6 +53,8 @@ export function useUrlState() {
   const params = useLogoStore((s) => s.params)
   const setParams = useLogoStore((s) => s.setParams)
   const setError = useLogoStore((s) => s.setError)
+  const effectParams = useLogoStore((s) => s.effectParams)
+  const setEffectParam = useLogoStore((s) => s.setEffectParam)
   const initialized = useRef(false)
 
   useEffect(() => {
@@ -63,20 +68,25 @@ export function useUrlState() {
     if (decoded.params) {
       setParams(decoded.params)
     }
-  }, [setError, setParams])
+    if (decoded.effectParams) {
+      for (const [key, value] of Object.entries(decoded.effectParams)) {
+        setEffectParam(key as keyof DissolutionParams, value as DissolutionParams[keyof DissolutionParams])
+      }
+    }
+  }, [setError, setParams, setEffectParam])
 
   useEffect(() => {
     if (!initialized.current) return
 
-    const encoded = encodeParams(params)
+    const encoded = encodeParams(params, effectParams)
     const nextHash = encoded ? `#${encoded}` : ''
     if (window.location.hash !== nextHash) {
       window.history.replaceState(null, '', nextHash || window.location.pathname)
     }
-  }, [params])
+  }, [params, effectParams])
 }
 
-function encodeParams(params: LogoParams): string {
+function encodeParams(params: LogoParams, effectParams: EffectParamsMap): string {
   const searchParams = new URLSearchParams()
   const generator = getGenerator(params.generatorId)
 
@@ -119,19 +129,32 @@ function encodeParams(params: LogoParams): string {
     }
   }
 
+  // Encode effect params (e. prefix)
+  if (effectParams.dissolution.enabled) {
+    searchParams.set('e.dissolve', '1')
+    const dp = effectParams.dissolution
+    const dd = DEFAULT_DISSOLUTION_PARAMS
+    if (dp.threshold !== dd.threshold) searchParams.set('e.threshold', String(dp.threshold))
+    if (dp.cellSize !== dd.cellSize) searchParams.set('e.cellSize', String(dp.cellSize))
+    if (dp.shape !== dd.shape) searchParams.set('e.shape', dp.shape)
+    if (dp.scatter !== dd.scatter) searchParams.set('e.scatter', String(dp.scatter))
+    if (dp.sizeVariation !== dd.sizeVariation) searchParams.set('e.sizeVariation', String(dp.sizeVariation))
+  }
+
   return searchParams.toString()
 }
 
 function decodeParams(
   hash: string,
-): { params: Partial<LogoParams> | null; error: string | null } {
-  if (!hash || hash === '#') return { params: null, error: null }
+): { params: Partial<LogoParams> | null; effectParams: Partial<DissolutionParams> | null; error: string | null } {
+  if (!hash || hash === '#') return { params: null, effectParams: null, error: null }
 
   try {
     return decodeParamsInner(hash)
   } catch (e) {
     return {
       params: null,
+      effectParams: null,
       error: `Failed to decode URL parameters: ${e instanceof Error ? e.message : String(e)}`,
     }
   }
@@ -139,10 +162,11 @@ function decodeParams(
 
 function decodeParamsInner(
   hash: string,
-): { params: Partial<LogoParams> | null; error: string | null } {
+): { params: Partial<LogoParams> | null; effectParams: Partial<DissolutionParams> | null; error: string | null } {
   const searchParams = new URLSearchParams(hash.replace(/^#/, ''))
   const rawUpdates: Partial<LogoParams> = {}
   const rawModeParams: Record<string, number> = {}
+  const rawModeStringParams: Record<string, string> = {}
 
   const rawModeId = searchParams.get('mode')
   const modeId = rawModeId && getModeDefinition(rawModeId) ? rawModeId : DEFAULT_PARAMS.modeId
@@ -153,6 +177,7 @@ function decodeParamsInner(
   if (rawVersion && generator && rawVersion !== generator.version) {
     return {
       params: null,
+      effectParams: null,
       error: `This shared link was created for generator version ${rawVersion}, but ${generator.name} is now on ${generator.version}. Defaults were kept to avoid loading incompatible state.`,
     }
   }
@@ -168,10 +193,18 @@ function decodeParamsInner(
     }
 
     if (key.startsWith('m.')) {
+      const paramKey = key.slice(2)
       const parsed = Number(value)
       if (Number.isFinite(parsed)) {
-        rawModeParams[key.slice(2)] = parsed
+        rawModeParams[paramKey] = parsed
+      } else if (value) {
+        // String enum param (e.g., arcSymmetry)
+        rawModeStringParams[paramKey] = value
       }
+      continue
+    }
+
+    if (key.startsWith('e.')) {
       continue
     }
 
@@ -223,11 +256,31 @@ function decodeParamsInner(
     sanitizedModeParams[key] = clampNumber(value, limit.min, limit.max)
   }
 
+  for (const [key, value] of Object.entries(rawModeStringParams)) {
+    if (key in modeDefaults) sanitizedModeParams[key] = value
+  }
+
   sanitized.modeParams = {
     [modeId]: sanitizedModeParams,
   }
 
-  return { params: sanitized, error: null }
+  // Decode effect params
+  const effectUpdates: Partial<DissolutionParams> = {}
+  if (searchParams.get('e.dissolve') === '1') {
+    effectUpdates.enabled = true
+    const threshold = Number(searchParams.get('e.threshold'))
+    if (Number.isFinite(threshold)) effectUpdates.threshold = clampNumber(threshold, 0, 1)
+    const cellSize = Number(searchParams.get('e.cellSize'))
+    if (Number.isFinite(cellSize)) effectUpdates.cellSize = clampNumber(cellSize, 4, 32)
+    const shape = searchParams.get('e.shape')
+    if (shape === 'square' || shape === 'circle') effectUpdates.shape = shape
+    const scatter = Number(searchParams.get('e.scatter'))
+    if (Number.isFinite(scatter)) effectUpdates.scatter = clampNumber(scatter, 0, 1)
+    const sizeVariation = Number(searchParams.get('e.sizeVariation'))
+    if (Number.isFinite(sizeVariation)) effectUpdates.sizeVariation = clampNumber(sizeVariation, 0, 1)
+  }
+
+  return { params: sanitized, effectParams: Object.keys(effectUpdates).length > 0 ? effectUpdates : null, error: null }
 }
 
 function clampNumber(value: number, min: number, max: number): number {
