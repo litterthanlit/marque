@@ -71,6 +71,11 @@ export function useExport() {
       }, 'image/png')
     }
 
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      console.error('PNG export failed: could not render SVG to image')
+    }
+
     img.src = url
   }
 
