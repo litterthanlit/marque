@@ -1,7 +1,8 @@
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { usePaperScope } from '../../renderer/usePaperScope.ts'
 import { renderLogoOnScope } from '../../renderer/PaperRenderer.ts'
 import { useLogoStore } from '../../store/logoStore.ts'
+import { DissolutionProcessor } from '../../engine/effects/dissolution.ts'
 import { useAnimation } from '../../hooks/useAnimation.ts'
 import { AnimationControls } from './AnimationControls.tsx'
 import type { AnimationKeyframe } from '../../engine/animation/types.ts'
@@ -11,7 +12,13 @@ export function LogoCanvas() {
   const scopeRef = usePaperScope(canvasRef)
   const result = useLogoStore((s) => s.result)
   const ui = useLogoStore((s) => s.ui)
-  const fillColor = useLogoStore((s) => s.params.fillColor)
+  const params = useLogoStore((s) => s.params)
+  const effectParams = useLogoStore((s) => s.effectParams)
+
+  const dissolution = useMemo(() => {
+    if (!result || !effectParams.dissolution.enabled) return null
+    return DissolutionProcessor.process(result, effectParams.dissolution)
+  }, [result, effectParams.dissolution])
 
   // Static render
   useEffect(() => {
@@ -21,9 +28,10 @@ export function LogoCanvas() {
     renderLogoOnScope(scope, result, {
       showGrid: ui.showGrid,
       showConstruction: ui.showConstruction,
-      fillColor,
+      fillColor: params.fillColor,
+      dissolution,
     })
-  }, [result, ui.showGrid, ui.showConstruction, fillColor, scopeRef])
+  }, [result, ui.showGrid, ui.showConstruction, params.fillColor, dissolution, scopeRef])
 
   // Animation frame callback
   const onFrame = useCallback((keyframe: AnimationKeyframe) => {

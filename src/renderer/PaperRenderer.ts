@@ -1,11 +1,13 @@
 import type { GenerationResult } from '../engine/types.ts'
+import type { DissolutionResult } from '../engine/effects/types.ts'
 import { renderConstruction } from './ConstructionView.ts'
-import { renderFinalMark } from './FinalView.ts'
+import { renderFinalMark, renderDissolution } from './FinalView.ts'
 
 interface RenderOptions {
   showGrid: boolean
   showConstruction: boolean
   fillColor: string
+  dissolution?: DissolutionResult | null
 }
 
 /**
@@ -27,8 +29,12 @@ export function renderLogoOnScope(
     renderConstruction(scope, result, center, options.showGrid)
   }
 
-  // Draw the composed mark on top
-  renderFinalMark(scope, result, center, options.fillColor)
+  // Draw the composed mark — use dissolution if active
+  if (options.dissolution) {
+    renderDissolution(scope, options.dissolution, center, options.fillColor)
+  } else {
+    renderFinalMark(scope, result, center, options.fillColor)
+  }
 
   scope.view.update()
 }
