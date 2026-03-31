@@ -4,6 +4,7 @@ import { SeedInput } from './SeedInput.tsx'
 import { ColorPicker } from './ColorPicker.tsx'
 import { PresetSelector } from './PresetSelector.tsx'
 import { GeneratorSelector } from './GeneratorSelector.tsx'
+import { getGenerator } from '../../engine/generators/registry.ts'
 
 export function ParameterPanel() {
   const params = useLogoStore((s) => s.params)
@@ -12,11 +13,28 @@ export function ParameterPanel() {
   const toggleGrid = useLogoStore((s) => s.toggleGrid)
   const toggleConstruction = useLogoStore((s) => s.toggleConstruction)
 
+  const currentGenerator = getGenerator(params.generatorId)
+
   return (
     <div className="flex flex-col gap-5 p-5 overflow-y-auto">
       <SeedInput />
 
       <GeneratorSelector />
+
+      {/* Dynamic extra params from generator */}
+      {currentGenerator?.extraParams.map((paramDef) => (
+        <SliderControl
+          key={paramDef.key}
+          label={paramDef.label}
+          value={params.extra[paramDef.key] ?? paramDef.default}
+          min={paramDef.min}
+          max={paramDef.max}
+          step={paramDef.step}
+          onChange={(v) => {
+            setParam('extra', { ...params.extra, [paramDef.key]: v })
+          }}
+        />
+      ))}
 
       <SliderControl
         label="Grid Rings"
