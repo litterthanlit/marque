@@ -28,14 +28,14 @@
 
 | File | Changes |
 |------|---------|
-| `src/engine/types.ts` | Add `EffectParamsMap` type, add `'ellipse'` to `ShapeNode.type` union |
+| `src/engine/types.ts` | Add `EffectParamsMap` type, add `'ellipse'` to `ShapeNode.type` union, widen `ModeParamMap` value type to `number \| string` |
 | `src/engine/generators/registry.ts` | Register `WaveArcGenerator` |
 | `src/engine/primitives/index.ts` | Add `ellipsePath` dispatch |
 | `src/engine/primitives/ellipse.ts` | New ellipse primitive (for crescent construction) |
 | `src/engine/animation/keyframes.ts` | Add `generateWaveArcKeyframes` |
 | `src/store/modes.ts` | Add `wave-arc` mode definition, defaults, limits, style overrides |
 | `src/store/presets.ts` | Add 3 wave-arc presets |
-| `src/store/logoStore.ts` | Add `effectParams` to store, `setEffectParam`, `toggleEffect` |
+| `src/store/logoStore.ts` | Add `effectParams` to store, `setEffectParam`, `toggleEffect`; widen `setModeParam` value type to `number \| string` |
 | `src/store/historyMiddleware.ts` | Include `effectParams` in `stableParamsString` |
 | `src/components/controls/ParameterPanel.tsx` | Add wave-arc mode controls + import EffectControls |
 | `src/renderer/PaperRenderer.ts` | Accept optional dissolution result, render particles |
@@ -126,6 +126,12 @@ export interface ShapeNode {
 }
 ```
 
+Also widen `ModeParamMap` to accept string enum values (needed for `arcSymmetry: 'bilateral' | 'radial'`):
+
+```typescript
+export type ModeParamMap = Record<string, Record<string, number | string>>
+```
+
 - [ ] **Step 3: Register ellipse in the primitive dispatcher**
 
 In `src/engine/primitives/index.ts`, add the import and case:
@@ -201,8 +207,7 @@ export const WaveArcGenerator: LogoGenerator = {
     const spreadAngle = ((mp.spreadAngle ?? 120) * Math.PI) / 180
     const gapRatio = mp.gapRatio ?? 0.3
     const taperAmount = mp.taperAmount ?? 0.7
-    const arcSymmetry: 'bilateral' | 'radial' =
-      (mp.arcSymmetry ?? 0) >= 0.5 ? 'radial' : 'bilateral'
+    const arcSymmetry: 'bilateral' | 'radial' = mp.arcSymmetry === 'radial' ? 'radial' : 'bilateral'
     const symmetryFolds = Math.round(mp.symmetryFolds ?? 4)
     const globalRotation = (params.rotation * Math.PI) / 180
 
@@ -220,7 +225,8 @@ export const WaveArcGenerator: LogoGenerator = {
       const innerRadius = outerRadius - thickness
 
       // Inner ellipse is offset along the opening axis to create taper
-      const taperOffset = taperAmount * thickness * 0.8
+      // Per spec: offset = taperAmount * outerRadius
+      const taperOffset = taperAmount * outerRadius
 
       // Build outer ellipse (wider in the spread direction)
       const outerRx = outerRadius * Math.sin(spreadAngle / 2)
@@ -533,7 +539,7 @@ In `DEFAULT_MODE_PARAMS`, add:
   spreadAngle: 120,
   gapRatio: 0.3,
   taperAmount: 0.7,
-  arcSymmetry: 0,       // 0 = bilateral, 1 = radial
+  arcSymmetry: 'bilateral',
   symmetryFolds: 4,
 },
 ```
@@ -548,7 +554,7 @@ In `MODE_PARAM_LIMITS`, add:
   spreadAngle: { min: 30, max: 180 },
   gapRatio: { min: 0.1, max: 0.8 },
   taperAmount: { min: 0.2, max: 1 },
-  arcSymmetry: { min: 0, max: 1 },
+  // arcSymmetry is an enum ('bilateral' | 'radial'), not clamped numerically
   symmetryFolds: { min: 2, max: 12 },
 },
 ```
@@ -563,7 +569,7 @@ In `MODE_STYLE_OVERRIDES`, add a `'wave-arc'` entry under each family:
   fillColor: '#161616',
   rotation: 0,
   animationSpeed: 0.6,
-  mode: { arcCount: 4, spreadAngle: 120, gapRatio: 0.3, taperAmount: 0.7, arcSymmetry: 0, symmetryFolds: 4 },
+  mode: { arcCount: 4, spreadAngle: 120, gapRatio: 0.3, taperAmount: 0.7, arcSymmetry: 'bilateral', symmetryFolds: 4 },
 },
 
 // heritage:
@@ -571,7 +577,7 @@ In `MODE_STYLE_OVERRIDES`, add a `'wave-arc'` entry under each family:
   fillColor: '#6f4627',
   rotation: 0,
   animationSpeed: 0.4,
-  mode: { arcCount: 5, spreadAngle: 140, gapRatio: 0.22, taperAmount: 0.85, arcSymmetry: 0, symmetryFolds: 4 },
+  mode: { arcCount: 5, spreadAngle: 140, gapRatio: 0.22, taperAmount: 0.85, arcSymmetry: 'bilateral', symmetryFolds: 4 },
 },
 
 // luxe:
@@ -579,7 +585,7 @@ In `MODE_STYLE_OVERRIDES`, add a `'wave-arc'` entry under each family:
   fillColor: '#171311',
   rotation: 15,
   animationSpeed: 0.3,
-  mode: { arcCount: 3, spreadAngle: 100, gapRatio: 0.35, taperAmount: 0.6, arcSymmetry: 0, symmetryFolds: 5 },
+  mode: { arcCount: 3, spreadAngle: 100, gapRatio: 0.35, taperAmount: 0.6, arcSymmetry: 'bilateral', symmetryFolds: 5 },
 },
 
 // playful:
@@ -587,7 +593,7 @@ In `MODE_STYLE_OVERRIDES`, add a `'wave-arc'` entry under each family:
   fillColor: '#0d87b8',
   rotation: 0,
   animationSpeed: 1.2,
-  mode: { arcCount: 5, spreadAngle: 150, gapRatio: 0.2, taperAmount: 0.9, arcSymmetry: 1, symmetryFolds: 6 },
+  mode: { arcCount: 5, spreadAngle: 150, gapRatio: 0.2, taperAmount: 0.9, arcSymmetry: 'radial', symmetryFolds: 6 },
 },
 
 // tech:
@@ -595,7 +601,7 @@ In `MODE_STYLE_OVERRIDES`, add a `'wave-arc'` entry under each family:
   fillColor: '#0f172a',
   rotation: 0,
   animationSpeed: 0.8,
-  mode: { arcCount: 6, spreadAngle: 90, gapRatio: 0.15, taperAmount: 0.5, arcSymmetry: 1, symmetryFolds: 8 },
+  mode: { arcCount: 6, spreadAngle: 90, gapRatio: 0.15, taperAmount: 0.5, arcSymmetry: 'radial', symmetryFolds: 8 },
 },
 ```
 
@@ -623,7 +629,7 @@ In `src/store/presets.ts`, add:
         spreadAngle: 120,
         gapRatio: 0.3,
         taperAmount: 0.7,
-        arcSymmetry: 0,
+        arcSymmetry: 'bilateral',
         symmetryFolds: 4,
       },
     },
@@ -648,7 +654,7 @@ In `src/store/presets.ts`, add:
         spreadAngle: 160,
         gapRatio: 0.25,
         taperAmount: 0.95,
-        arcSymmetry: 1,
+        arcSymmetry: 'radial',
         symmetryFolds: 6,
       },
     },
@@ -673,7 +679,7 @@ In `src/store/presets.ts`, add:
         spreadAngle: 90,
         gapRatio: 0.15,
         taperAmount: 0.3,
-        arcSymmetry: 0,
+        arcSymmetry: 'bilateral',
         symmetryFolds: 4,
       },
     },
@@ -741,16 +747,28 @@ In `ParameterPanel.tsx`, after the monogram controls block (after line 395, befo
       step={0.01}
       onChange={(value) => setModeParam('taperAmount', value)}
     />
-    <SegmentedChoices
-      label="Symmetry"
-      value={activeModeParams.arcSymmetry ?? 0}
-      options={[
-        { label: 'Bilateral', value: 0 },
-        { label: 'Radial', value: 1 },
-      ]}
-      onChange={(value) => setModeParam('arcSymmetry', value)}
-    />
-    {(activeModeParams.arcSymmetry ?? 0) >= 0.5 && (
+    <div className="flex flex-col gap-2">
+      <div className="text-xs uppercase tracking-[0.24em] text-neutral-500">
+        Symmetry
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {(['bilateral', 'radial'] as const).map((sym) => (
+          <button
+            key={sym}
+            type="button"
+            onClick={() => setModeParam('arcSymmetry', sym)}
+            className={`rounded-full border px-3 py-2 text-xs uppercase tracking-[0.18em] transition ${
+              (activeModeParams.arcSymmetry ?? 'bilateral') === sym
+                ? 'border-neutral-900 bg-neutral-950 text-white'
+                : 'border-neutral-200 bg-neutral-50 text-neutral-500 hover:border-neutral-300'
+            }`}
+          >
+            {sym}
+          </button>
+        ))}
+      </div>
+    </div>
+    {(activeModeParams.arcSymmetry ?? 'bilateral') === 'radial' && (
       <SliderControl
         label="Symmetry Folds"
         value={activeModeParams.symmetryFolds ?? 4}
@@ -1728,16 +1746,46 @@ if (decoded.effectParams) {
 }
 ```
 
-- [ ] **Step 4: Sync effect params to URL on change**
+- [ ] **Step 4: Fix mode param decoder to handle string enum values**
+
+The existing `decodeParamsInner` in `useUrlState.ts` parses all `m.` prefixed values as `Number(value)` and skips non-finite results. This drops string params like `m.arcSymmetry=bilateral`. Update the mode param decoding block to preserve string values when the numeric parse fails:
+
+```typescript
+if (key.startsWith('m.')) {
+  const paramKey = key.slice(2)
+  const parsed = Number(value)
+  if (Number.isFinite(parsed)) {
+    rawModeParams[paramKey] = parsed
+  } else if (value) {
+    // String enum param (e.g., arcSymmetry: 'bilateral' | 'radial')
+    rawModeStringParams[paramKey] = value
+  }
+  continue
+}
+```
+
+Also update `rawModeParams` type to `Record<string, number>` (unchanged) and add a new `rawModeStringParams: Record<string, string> = {}`. Merge both into the sanitized mode params at the end:
+
+```typescript
+const sanitizedModeParams: Record<string, number | string> = { ...modeDefaults }
+// Apply numeric params with clamping
+for (const [key, value] of Object.entries(rawModeParams)) { ... }
+// Apply string params without clamping
+for (const [key, value] of Object.entries(rawModeStringParams)) {
+  if (key in modeDefaults) sanitizedModeParams[key] = value
+}
+```
+
+- [ ] **Step 5: Sync effect params to URL on change**
 
 In the URL encoding effect, include `effectParams` in the dependency array and pass it to `encodeParams`.
 
-- [ ] **Step 5: Verify shared URLs preserve dissolution state**
+- [ ] **Step 6: Verify shared URLs preserve dissolution state**
 
 Run: `npm run dev`
-Expected: Enable dissolution, copy URL, paste in new tab → same dissolved logo appears.
+Expected: Enable dissolution, copy URL, paste in new tab → same dissolved logo appears. Wave-arc shared URLs with `m.arcSymmetry=bilateral` or `m.arcSymmetry=radial` restore correctly.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/hooks/useUrlState.ts
