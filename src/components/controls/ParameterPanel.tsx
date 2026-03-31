@@ -1,0 +1,101 @@
+import { useLogoStore } from '../../store/logoStore.ts'
+import { SliderControl } from './SliderControl.tsx'
+import { SeedInput } from './SeedInput.tsx'
+import { ColorPicker } from './ColorPicker.tsx'
+import { PresetSelector } from './PresetSelector.tsx'
+import { GeneratorSelector } from './GeneratorSelector.tsx'
+
+export function ParameterPanel() {
+  const params = useLogoStore((s) => s.params)
+  const setParam = useLogoStore((s) => s.setParam)
+  const ui = useLogoStore((s) => s.ui)
+  const toggleGrid = useLogoStore((s) => s.toggleGrid)
+  const toggleConstruction = useLogoStore((s) => s.toggleConstruction)
+
+  return (
+    <div className="flex flex-col gap-5 p-5 overflow-y-auto">
+      <SeedInput />
+
+      <GeneratorSelector />
+
+      <SliderControl
+        label="Grid Rings"
+        value={params.gridRings}
+        min={1}
+        max={8}
+        step={1}
+        onChange={(v) => setParam('gridRings', v)}
+      />
+
+      <SliderControl
+        label="Symmetry Folds"
+        value={params.symmetryFolds}
+        min={1}
+        max={12}
+        step={1}
+        onChange={(v) => setParam('symmetryFolds', v)}
+      />
+
+      <SliderControl
+        label="Additive Ratio"
+        value={params.additiveRatio}
+        min={0}
+        max={1}
+        step={0.05}
+        onChange={(v) => setParam('additiveRatio', v)}
+      />
+
+      <SliderControl
+        label="Base Radius"
+        value={params.baseRadius}
+        min={0.1}
+        max={1}
+        step={0.05}
+        onChange={(v) => setParam('baseRadius', v)}
+      />
+
+      <SliderControl
+        label="Radius Variation"
+        value={params.radiusVariation}
+        min={0}
+        max={2}
+        step={0.1}
+        onChange={(v) => setParam('radiusVariation', v)}
+      />
+
+      <SliderControl
+        label="Rotation"
+        value={params.rotation}
+        min={0}
+        max={360}
+        step={1}
+        onChange={(v) => setParam('rotation', v)}
+      />
+
+      <ColorPicker />
+
+      <div className="flex flex-col gap-3 pt-3 border-t border-neutral-200">
+        <label className="flex items-center gap-2 text-xs cursor-pointer">
+          <input
+            type="checkbox"
+            checked={ui.showGrid}
+            onChange={toggleGrid}
+            className="rounded"
+          />
+          <span className="text-neutral-600">Show Grid</span>
+        </label>
+        <label className="flex items-center gap-2 text-xs cursor-pointer">
+          <input
+            type="checkbox"
+            checked={ui.showConstruction}
+            onChange={toggleConstruction}
+            className="rounded"
+          />
+          <span className="text-neutral-600">Show Construction</span>
+        </label>
+      </div>
+
+      <PresetSelector />
+    </div>
+  )
+}
