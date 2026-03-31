@@ -1,8 +1,9 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
 import { useLogoStore } from '../store/logoStore.ts'
 import type { AnimationKeyframe } from '../engine/animation/types.ts'
-import { generateRadialKeyframes, interpolateKeyframe } from '../engine/animation/keyframes.ts'
+import { interpolateKeyframe } from '../engine/animation/keyframes.ts'
 import { SeededPRNG } from '../engine/random.ts'
+import { getGenerator } from '../engine/generators/registry.ts'
 
 export function useAnimation(
   onFrame: (keyframe: AnimationKeyframe) => void,
@@ -16,7 +17,8 @@ export function useAnimation(
   // Regenerate keyframes when params change
   useEffect(() => {
     const rng = new SeededPRNG(params.seed)
-    keyframesRef.current = generateRadialKeyframes(params, rng)
+    const generator = getGenerator(params.generatorId)
+    keyframesRef.current = generator?.getAnimationKeyframes?.(params, rng) ?? []
 
     if (params.animationSpeed === 0) {
       setPlaying(false)

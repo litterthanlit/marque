@@ -9,7 +9,16 @@ export function paramsEqual(
   pastState: { params: LogoParams },
   currentState: { params: LogoParams },
 ): boolean {
-  return JSON.stringify(pastState.params) === JSON.stringify(currentState.params)
+  return stableParamsString(pastState.params) === stableParamsString(currentState.params)
 }
 
 export { temporal }
+
+function stableParamsString(params: LogoParams): string {
+  return JSON.stringify({
+    ...params,
+    extra: Object.fromEntries(
+      Object.entries(params.extra).sort(([a], [b]) => a.localeCompare(b)),
+    ),
+  })
+}

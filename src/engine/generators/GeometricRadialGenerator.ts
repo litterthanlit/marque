@@ -7,10 +7,13 @@ import type {
 } from '../types.ts'
 import { generateConcentricGrid } from '../grid/ConcentricGrid.ts'
 import { pickPrimitiveType, createPrimitivePath, type PrimitiveType } from '../primitives/index.ts'
+import { createBlobParams } from '../primitives/blob.ts'
 import { applyRadialSymmetry } from '../symmetry/radial.ts'
 import { composeBooleanResult } from '../boolean/operations.ts'
+import { generateRadialKeyframes } from '../animation/keyframes.ts'
 
 const CANVAS_SIZE = 500
+const MAX_SHAPES = 360
 
 export const GeometricRadialGenerator: LogoGenerator = {
   id: 'geometric-radial',
@@ -19,6 +22,7 @@ export const GeometricRadialGenerator: LogoGenerator = {
     'Concentric grid with N-fold radial symmetry and boolean composition',
   version: '1.0',
   extraParams: [],
+  getAnimationKeyframes: generateRadialKeyframes,
 
   generate(params: LogoParams, rng: SeededRandom): GenerationResult {
     const gridPoints = generateConcentricGrid(
@@ -41,7 +45,11 @@ export const GeometricRadialGenerator: LogoGenerator = {
       const shapeRotation = rng.nextFloat(0, Math.PI * 2)
 
       const shapeParams: Record<string, number> =
-        type === 'polygon' ? { sides: rng.nextInt(4, 7) } : {}
+        type === 'polygon'
+          ? { sides: rng.nextInt(4, 7) }
+          : type === 'blob'
+            ? createBlobParams(rng)
+            : {}
 
       return {
         id: `shape_${i}`,
@@ -57,13 +65,20 @@ export const GeometricRadialGenerator: LogoGenerator = {
 
     // Apply symmetry
     const allShapes = applyRadialSymmetry(prototypes, params.symmetryFolds)
+    const warnings: string[] = []
+    const boundedShapes = allShapes.slice(0, MAX_SHAPES)
+    if (allShapes.length > MAX_SHAPES) {
+      warnings.push(
+        `Shape count capped at ${MAX_SHAPES} to keep generation responsive`,
+      )
+    }
 
     // Apply global rotation
     const globalRotation = (params.rotation * Math.PI) / 180
     const rotatedShapes: ShapeNode[] =
       globalRotation === 0
-        ? allShapes
-        : allShapes.map((shape) => {
+        ? boundedShapes
+        : boundedShapes.map((shape) => {
             const cos = Math.cos(globalRotation)
             const sin = Math.sin(globalRotation)
             const x = shape.center.x * cos - shape.center.y * sin
@@ -110,7 +125,7 @@ export const GeometricRadialGenerator: LogoGenerator = {
     return {
       shapes: rotatedShapes,
       mark: {
-        layers: [],
+        layers: boolResult.layers,
         compoundPathData: boolResult.compoundPathData,
         fillRule: boolResult.fillRule as 'nonzero' | 'evenodd',
         viewBox: boolResult.viewBox,
@@ -124,7 +139,7 @@ export const GeometricRadialGenerator: LogoGenerator = {
           symmetryFolds: params.symmetryFolds,
         },
       },
-      warnings: boolResult.warnings,
+      warnings: [...warnings, ...boolResult.warnings],
     }
   },
 }

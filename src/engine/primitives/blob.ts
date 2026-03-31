@@ -1,5 +1,11 @@
 import type { SeededRandom } from '../types.ts'
 
+export interface BlobOptions {
+  pointCount?: number
+  noiseAmount?: number
+  displacements?: number[]
+}
+
 /**
  * Organic blob shape: N radial sample points displaced by seeded noise,
  * connected with smooth cubic Bezier curves.
@@ -13,12 +19,33 @@ export function blobPath(
   pointCount = 8,
   noiseAmount = 0.4,
 ): string {
+  const displacements = Array.from(
+    { length: pointCount },
+    () => 1 + rng.nextFloat(-noiseAmount, noiseAmount),
+  )
+
+  return blobPathFromDisplacements(
+    cx,
+    cy,
+    radius,
+    rotation,
+    displacements,
+  )
+}
+
+export function blobPathFromDisplacements(
+  cx: number,
+  cy: number,
+  radius: number,
+  rotation: number,
+  displacements: number[],
+): string {
+  const pointCount = displacements.length
   const points: { x: number; y: number }[] = []
 
   for (let i = 0; i < pointCount; i++) {
     const angle = rotation + (2 * Math.PI * i) / pointCount
-    const displacement = 1 + (rng.nextFloat(-noiseAmount, noiseAmount))
-    const r = radius * displacement
+    const r = radius * displacements[i]
     points.push({
       x: Math.round((cx + r * Math.cos(angle)) * 1000) / 1000,
       y: Math.round((cy + r * Math.sin(angle)) * 1000) / 1000,
@@ -52,4 +79,26 @@ function smoothClosedPath(points: { x: number; y: number }[]): string {
 
   segments.push('Z')
   return segments.join(' ')
+}
+
+export function createBlobParams(
+  rng: SeededRandom,
+  options: BlobOptions = {},
+): Record<string, number> {
+  const pointCount = Math.max(5, Math.round(options.pointCount ?? 8))
+  const noiseAmount = options.noiseAmount ?? 0.4
+  const displacements =
+    options.displacements ??
+    Array.from({ length: pointCount }, () => 1 + rng.nextFloat(-noiseAmount, noiseAmount))
+
+  const params: Record<string, number> = {
+    pointCount,
+    noiseAmount,
+  }
+
+  displacements.forEach((displacement, index) => {
+    params[`blobDisp${index}`] = Math.round(displacement * 1000) / 1000
+  })
+
+  return params
 }

@@ -3,7 +3,7 @@ import { circlePath } from './circle.ts'
 import { rectanglePath } from './rectangle.ts'
 import { trianglePath } from './triangle.ts'
 import { polygonPath } from './polygon.ts'
-import { blobPath } from './blob.ts'
+import { blobPath, blobPathFromDisplacements } from './blob.ts'
 
 export type PrimitiveType = 'circle' | 'rectangle' | 'triangle' | 'polygon' | 'blob'
 
@@ -38,7 +38,15 @@ export function createPrimitivePath(
     case 'polygon':
       return polygonPath(cx, cy, radius, rotation, params.sides ?? 5)
     case 'blob':
-      if (!rng) return circlePath(cx, cy, radius) // fallback if no rng
+      if (params.pointCount && params.blobDisp0) {
+        const pointCount = Math.max(5, Math.round(params.pointCount))
+        const displacements = Array.from({ length: pointCount }, (_, index) => {
+          const value = params[`blobDisp${index}`]
+          return value && value > 0 ? value : 1
+        })
+        return blobPathFromDisplacements(cx, cy, radius, rotation, displacements)
+      }
+      if (!rng) return circlePath(cx, cy, radius)
       return blobPath(cx, cy, radius, rotation, rng)
     default:
       return circlePath(cx, cy, radius)

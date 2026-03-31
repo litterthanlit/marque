@@ -1,4 +1,5 @@
 import { useLogoStore } from '../store/logoStore.ts'
+import { getGenerator } from '../engine/generators/registry.ts'
 
 function generateSVGString(
   compoundPathData: string,
@@ -29,6 +30,8 @@ function downloadBlob(blob: Blob, filename: string) {
 export function useExport() {
   const result = useLogoStore((s) => s.result)
   const params = useLogoStore((s) => s.params)
+  const generator = getGenerator(params.generatorId)
+  const filenameBase = `logo-${params.seed}-${params.generatorId}-${generator?.version ?? 'v0'}`
 
   function exportSVG() {
     if (!result || !result.mark.compoundPathData) return
@@ -39,7 +42,7 @@ export function useExport() {
       params.fillColor,
     )
     const blob = new Blob([svg], { type: 'image/svg+xml' })
-    downloadBlob(blob, `logo-${params.seed}.svg`)
+    downloadBlob(blob, `${filenameBase}.svg`)
   }
 
   function exportPNG(scale = 2) {
@@ -67,7 +70,7 @@ export function useExport() {
       URL.revokeObjectURL(url)
 
       canvas.toBlob((blob) => {
-        if (blob) downloadBlob(blob, `logo-${params.seed}.png`)
+        if (blob) downloadBlob(blob, `${filenameBase}.png`)
       }, 'image/png')
     }
 

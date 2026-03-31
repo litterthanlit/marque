@@ -8,9 +8,12 @@ import type {
 } from '../types.ts'
 import { generateModularGrid } from '../grid/ModularGrid.ts'
 import { pickPrimitiveType, createPrimitivePath, type PrimitiveType } from '../primitives/index.ts'
+import { createBlobParams } from '../primitives/blob.ts'
 import { composeBooleanResult } from '../boolean/operations.ts'
+import { generateModularKeyframes } from '../animation/keyframes.ts'
 
 const CANVAS_SIZE = 500
+const MAX_SHAPES = 256
 
 export const ModularGenerator: LogoGenerator = {
   id: 'modular',
@@ -22,6 +25,7 @@ export const ModularGenerator: LogoGenerator = {
     { key: 'rows', label: 'Rows', min: 2, max: 8, step: 1, default: 4 },
     { key: 'circleClip', label: 'Circle Clip', min: 0, max: 1, step: 1, default: 1 },
   ] satisfies ParamDefinition[],
+  getAnimationKeyframes: generateModularKeyframes,
 
   generate(params: LogoParams, rng: SeededRandom): GenerationResult {
     const columns = params.extra.columns ?? 4
@@ -47,7 +51,11 @@ export const ModularGenerator: LogoGenerator = {
       const shapeRotation = rng.nextFloat(0, Math.PI * 2)
 
       const shapeParams: Record<string, number> =
-        type === 'polygon' ? { sides: rng.nextInt(3, 6) } : {}
+        type === 'polygon'
+          ? { sides: rng.nextInt(3, 6) }
+          : type === 'blob'
+            ? createBlobParams(rng)
+            : {}
 
       return {
         id: `mod_${i}`,
@@ -61,12 +69,20 @@ export const ModularGenerator: LogoGenerator = {
       }
     })
 
+    const warnings: string[] = []
+    const boundedShapes = allShapes.slice(0, MAX_SHAPES)
+    if (allShapes.length > MAX_SHAPES) {
+      warnings.push(
+        `Shape count capped at ${MAX_SHAPES} to keep generation responsive`,
+      )
+    }
+
     // Apply global rotation
     const globalRotation = (params.rotation * Math.PI) / 180
     const rotatedShapes: ShapeNode[] =
       globalRotation === 0
-        ? allShapes
-        : allShapes.map((shape) => {
+        ? boundedShapes
+        : boundedShapes.map((shape) => {
             const cos = Math.cos(globalRotation)
             const sin = Math.sin(globalRotation)
             const x = shape.center.x * cos - shape.center.y * sin
@@ -110,7 +126,7 @@ export const ModularGenerator: LogoGenerator = {
     return {
       shapes: rotatedShapes,
       mark: {
-        layers: [],
+        layers: boolResult.layers,
         compoundPathData: boolResult.compoundPathData,
         fillRule: boolResult.fillRule as 'nonzero' | 'evenodd',
         viewBox: boolResult.viewBox,
@@ -124,7 +140,7 @@ export const ModularGenerator: LogoGenerator = {
           symmetryFolds: 1,
         },
       },
-      warnings: boolResult.warnings,
+      warnings: [...warnings, ...boolResult.warnings],
     }
   },
 }

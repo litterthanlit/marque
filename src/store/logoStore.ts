@@ -45,7 +45,10 @@ export const useLogoStore = create<LogoStore>()(
 
       randomizeSeed: () =>
         set((state) => ({
-          params: { ...state.params, seed: Math.floor(Math.random() * 10000) },
+          params: {
+            ...state.params,
+            seed: crypto.getRandomValues(new Uint32Array(1))[0] % 10000,
+          },
         })),
 
       setResult: (result) => set({ result }),

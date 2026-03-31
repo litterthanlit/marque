@@ -10,6 +10,17 @@ const PARAM_KEYS: (keyof LogoParams)[] = [
   'animationSpeed', 'generatorId',
 ]
 
+const PARAM_RANGES: Partial<Record<keyof LogoParams, { min: number; max: number }>> = {
+  seed: { min: 0, max: 999999 },
+  gridRings: { min: 1, max: 8 },
+  additiveRatio: { min: 0, max: 1 },
+  baseRadius: { min: 0.1, max: 1 },
+  radiusVariation: { min: 0, max: 2 },
+  rotation: { min: 0, max: 360 },
+  symmetryFolds: { min: 1, max: 12 },
+  animationSpeed: { min: 0, max: 5 },
+}
+
 function encodeParams(params: LogoParams): string {
   const generator = getGenerator(params.generatorId)
   const searchParams = new URLSearchParams()
@@ -27,8 +38,11 @@ function encodeParams(params: LogoParams): string {
   }
 
   // Encode extra params
-  for (const [k, v] of Object.entries(params.extra)) {
-    searchParams.set(`x.${k}`, String(v))
+  const allowedExtraKeys = new Set(generator?.extraParams.map((param) => param.key) ?? [])
+  for (const [k, v] of Object.entries(params.extra).sort(([a], [b]) => a.localeCompare(b))) {
+    if (allowedExtraKeys.has(k)) {
+      searchParams.set(`x.${k}`, String(v))
+    }
   }
 
   return searchParams.toString()
@@ -38,35 +52,34 @@ function decodeParams(hash: string): Partial<LogoParams> | null {
   if (!hash || hash === '#') return null
 
   const searchParams = new URLSearchParams(hash.replace(/^#/, ''))
-  const updates: Partial<LogoParams> = {}
-  const extra: Record<string, number> = {}
+  const rawUpdates: Partial<LogoParams> = {}
+  const rawExtra: Record<string, number> = {}
 
   for (const [key, value] of searchParams.entries()) {
     if (key === 'v') continue // version, not a param
 
     if (key.startsWith('x.')) {
-      extra[key.slice(2)] = Number(value)
+      const parsed = Number(value)
+      if (!Number.isNaN(parsed) && Number.isFinite(parsed)) {
+        rawExtra[key.slice(2)] = parsed
+      }
       continue
     }
 
     if (PARAM_KEYS.includes(key as keyof LogoParams)) {
       const k = key as keyof LogoParams
       if (k === 'fillColor' || k === 'generatorId') {
-        (updates as Record<string, string>)[k] = value
+        (rawUpdates as Record<string, string>)[k] = value
       } else {
         const num = Number(value)
-        if (!isNaN(num)) {
-          (updates as Record<string, number>)[k] = num
+        if (!Number.isNaN(num) && Number.isFinite(num)) {
+          (rawUpdates as Record<string, number>)[k] = num
         }
       }
     }
   }
 
-  if (Object.keys(extra).length > 0) {
-    updates.extra = extra
-  }
-
-  return Object.keys(updates).length > 0 ? updates : null
+  return sanitizeDecodedParams(rawUpdates, rawExtra)
 }
 
 export function useUrlState() {
@@ -94,4 +107,65 @@ export function useUrlState() {
       window.history.replaceState(null, '', newHash || window.location.pathname)
     }
   }, [params])
+}
+
+function sanitizeDecodedParams(
+  updates: Partial<LogoParams>,
+  extra: Record<string, number>,
+): Partial<LogoParams> | null {
+  const sanitized: Partial<LogoParams> = {}
+  const generatorId =
+    typeof updates.generatorId === 'string' && getGenerator(updates.generatorId)
+      ? updates.generatorId
+      : DEFAULT_PARAMS.generatorId
+  const generator = getGenerator(generatorId)
+
+  if (generatorId !== DEFAULT_PARAMS.generatorId || updates.generatorId) {
+    sanitized.generatorId = generatorId
+  }
+
+  for (const [key, value] of Object.entries(updates)) {
+    if (key === 'generatorId' || key === 'fillColor' || key === 'extra') continue
+
+    const range = PARAM_RANGES[key as keyof LogoParams]
+    if (typeof value === 'number' && range) {
+      ;(sanitized as Record<string, number>)[key] = clampNumber(
+        value,
+        range.min,
+        range.max,
+      )
+    }
+  }
+
+  if (typeof updates.fillColor === 'string' && isHexColor(updates.fillColor)) {
+    sanitized.fillColor = updates.fillColor
+  }
+
+  if (generator) {
+    const sanitizedExtra: Record<string, number> = {}
+    for (const definition of generator.extraParams) {
+      const rawValue = extra[definition.key]
+      if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
+        sanitizedExtra[definition.key] = clampNumber(
+          rawValue,
+          definition.min,
+          definition.max,
+        )
+      }
+    }
+
+    if (Object.keys(sanitizedExtra).length > 0) {
+      sanitized.extra = sanitizedExtra
+    }
+  }
+
+  return Object.keys(sanitized).length > 0 ? sanitized : null
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value))
+}
+
+function isHexColor(value: string): boolean {
+  return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)
 }

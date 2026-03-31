@@ -1,13 +1,23 @@
-import { useState, useEffect } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { ExportDialog } from '../export/ExportDialog.tsx'
 
 export function Toolbar() {
   const seed = useLogoStore((s) => s.params.seed)
+  const hasResult = useLogoStore((s) => Boolean(s.result))
   const [exportOpen, setExportOpen] = useState(false)
 
-  const undo = useLogoStore.temporal.getState().undo
-  const redo = useLogoStore.temporal.getState().redo
+  const { undo, redo } = useLogoStore.temporal.getState()
+  const canUndo = useSyncExternalStore(
+    (listener) => useLogoStore.temporal.subscribe(listener),
+    () => useLogoStore.temporal.getState().pastStates.length > 0,
+    () => false,
+  )
+  const canRedo = useSyncExternalStore(
+    (listener) => useLogoStore.temporal.subscribe(listener),
+    () => useLogoStore.temporal.getState().futureStates.length > 0,
+    () => false,
+  )
 
   useEffect(() => {
     function handleOpenExport() {
@@ -31,21 +41,24 @@ export function Toolbar() {
         <div className="flex items-center gap-2">
           <button
             onClick={() => undo()}
-            className="px-2 py-1.5 text-xs text-neutral-500 hover:text-neutral-900 transition-colors"
+            disabled={!canUndo}
+            className="px-2 py-1.5 text-xs text-neutral-500 hover:text-neutral-900 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
             title="Undo (Cmd+Z)"
           >
             Undo
           </button>
           <button
             onClick={() => redo()}
-            className="px-2 py-1.5 text-xs text-neutral-500 hover:text-neutral-900 transition-colors"
+            disabled={!canRedo}
+            className="px-2 py-1.5 text-xs text-neutral-500 hover:text-neutral-900 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
             title="Redo (Cmd+Shift+Z)"
           >
             Redo
           </button>
           <button
             onClick={() => setExportOpen(true)}
-            className="px-3 py-1.5 text-xs font-medium bg-neutral-900 text-white rounded-md hover:bg-neutral-700 transition-colors"
+            disabled={!hasResult}
+            className="px-3 py-1.5 text-xs font-medium bg-neutral-900 text-white rounded-md hover:bg-neutral-700 transition-colors disabled:cursor-not-allowed disabled:bg-neutral-300"
           >
             Export
           </button>

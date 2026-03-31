@@ -1,10 +1,6 @@
 import type { AnimationKeyframe } from './types.ts'
 import type { LogoParams, SeededRandom } from '../types.ts'
 
-/**
- * Generates animation keyframes for the geometric radial generator.
- * Rotation speed and scale pulsing based on animationSpeed param.
- */
 export function generateRadialKeyframes(
   params: LogoParams,
   _rng: SeededRandom,
@@ -20,6 +16,31 @@ export function generateRadialKeyframes(
       time: t,
       rotation: t * Math.PI * 2 * speed * 0.5,
       scale: 1 + Math.sin(t * Math.PI * 2) * speed * 0.05,
+      opacity: 1,
+    })
+  }
+
+  return keyframes
+}
+
+export function generateModularKeyframes(
+  params: LogoParams,
+  rng: SeededRandom,
+  frameCount = 60,
+): AnimationKeyframe[] {
+  const speed = params.animationSpeed
+  if (speed === 0) return []
+
+  const sway = rng.nextFloat(0.08, 0.22)
+  const scaleAmplitude = rng.nextFloat(0.015, 0.04)
+  const keyframes: AnimationKeyframe[] = []
+
+  for (let i = 0; i <= frameCount; i++) {
+    const t = i / frameCount
+    keyframes.push({
+      time: t,
+      rotation: Math.sin(t * Math.PI * 2) * Math.PI * sway * speed,
+      scale: 1 + Math.sin(t * Math.PI * 4) * scaleAmplitude * speed,
       opacity: 1,
     })
   }

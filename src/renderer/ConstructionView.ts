@@ -66,14 +66,29 @@ function renderShapeOutline(
 
   try {
     const path = new scope.Path(pathData)
-    path.strokeWidth = 0.5
+    path.strokeWidth = shape.role === 'prototype' ? 0.85 : 0.45
+    if (shape.role !== 'prototype') {
+      path.dashArray = [4, 3]
+    }
 
     if (shape.operation === 'add') {
-      path.strokeColor = new scope.Color(0.3, 0.3, 0.8, 0.3)
-      path.fillColor = new scope.Color(0.3, 0.3, 0.8, 0.05)
+      path.strokeColor =
+        shape.role === 'prototype'
+          ? new scope.Color(0.2, 0.32, 0.85, 0.55)
+          : new scope.Color(0.3, 0.3, 0.8, 0.28)
+      path.fillColor =
+        shape.role === 'prototype'
+          ? new scope.Color(0.2, 0.32, 0.85, 0.09)
+          : new scope.Color(0.3, 0.3, 0.8, 0.04)
     } else {
-      path.strokeColor = new scope.Color(0.8, 0.3, 0.3, 0.3)
-      path.fillColor = new scope.Color(0.8, 0.3, 0.3, 0.05)
+      path.strokeColor =
+        shape.role === 'prototype'
+          ? new scope.Color(0.82, 0.24, 0.24, 0.55)
+          : new scope.Color(0.8, 0.3, 0.3, 0.28)
+      path.fillColor =
+        shape.role === 'prototype'
+          ? new scope.Color(0.82, 0.24, 0.24, 0.09)
+          : new scope.Color(0.8, 0.3, 0.3, 0.04)
     }
   } catch {
     // Skip invalid paths
