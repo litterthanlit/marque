@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { AppShell } from './components/layout/AppShell.tsx'
+import { Onboarding } from './components/onboarding/Onboarding.tsx'
 import { useGeneration } from './hooks/useGeneration.ts'
 import { useUrlState } from './hooks/useUrlState.ts'
 import { useLogoStore } from './store/logoStore.ts'
@@ -39,7 +40,12 @@ function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
-  return <AppShell />
+  return (
+    <>
+      <AppShell />
+      <Onboarding />
+    </>
+  )
 }
 
 export default App
