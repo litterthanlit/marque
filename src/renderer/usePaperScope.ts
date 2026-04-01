@@ -12,6 +12,11 @@ export function usePaperScope(
 
     const scope = new paper.PaperScope()
     scope.setup(canvas)
+
+    // Lock view size to canvas pixel dimensions so CSS scaling
+    // doesn't shift the coordinate system
+    scope.view.viewSize = new scope.Size(canvas.width, canvas.height)
+
     scopeRef.current = scope
 
     return () => {

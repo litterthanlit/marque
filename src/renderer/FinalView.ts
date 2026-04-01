@@ -2,6 +2,17 @@ import type { GenerationResult } from '../engine/types.ts'
 import type { DissolutionResult } from '../engine/effects/types.ts'
 
 /**
+ * Centers a path/compound path on the canvas by aligning its bounds center
+ * with the canvas center. The engine generates shapes in a 500x500 coordinate
+ * space centered at (250, 250), so we translate by the delta to canvas center.
+ */
+function centerOnCanvas(item: paper.Item, canvasCenter: paper.Point): void {
+  const bounds = item.bounds
+  const delta = canvasCenter.subtract(bounds.center)
+  item.translate(delta)
+}
+
+/**
  * Renders the final composed logo mark
  */
 export function renderFinalMark(
@@ -16,11 +27,7 @@ export function renderFinalMark(
 
   try {
     const path = new scope.CompoundPath(result.mark.compoundPathData)
-
-    // Translate to center
-    path.translate(center)
-
-    // Parse fill color
+    centerOnCanvas(path, center)
     path.fillColor = new scope.Color(fillColor)
     path.fillRule = result.mark.fillRule
     path.strokeColor = null
@@ -28,7 +35,7 @@ export function renderFinalMark(
     // Fallback: try as simple path
     try {
       const path = new scope.Path(result.mark.compoundPathData)
-      path.translate(center)
+      centerOnCanvas(path, center)
       path.fillColor = new scope.Color(fillColor)
       path.strokeColor = null
     } catch {
@@ -49,7 +56,7 @@ export function renderDissolution(
   if (dissolution.solidCorePath) {
     try {
       const corePath = new scope.CompoundPath(dissolution.solidCorePath)
-      corePath.translate(center)
+      centerOnCanvas(corePath, center)
       corePath.fillColor = new scope.Color(fillColor)
       corePath.fillRule = 'evenodd'
       corePath.strokeColor = null
@@ -62,7 +69,7 @@ export function renderDissolution(
   if (dissolution.particlePathData) {
     try {
       const particles = new scope.CompoundPath(dissolution.particlePathData)
-      particles.translate(center)
+      centerOnCanvas(particles, center)
       particles.fillColor = new scope.Color(fillColor)
       particles.strokeColor = null
     } catch {
