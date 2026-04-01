@@ -42,6 +42,7 @@ interface LogoStore {
   toggleGrid: () => void
   toggleConstruction: () => void
   applyPreset: (params: Partial<LogoParams>) => void
+  toggleShape: (shape: string) => void
   setEffectParam: <K extends keyof DissolutionParams>(key: K, value: DissolutionParams[K]) => void
   toggleDissolution: () => void
 }
@@ -173,6 +174,16 @@ export const useLogoStore = create<LogoStore>()(
             },
           },
         })),
+
+      toggleShape: (shape: string) =>
+        set((state) => {
+          const current = state.params.enabledShapes
+          const has = current.includes(shape)
+          // Don't allow removing the last shape
+          if (has && current.length <= 1) return state
+          const next = has ? current.filter((s) => s !== shape) : [...current, shape]
+          return { params: { ...state.params, enabledShapes: next } }
+        }),
 
       toggleDissolution: () =>
         set((state) => ({

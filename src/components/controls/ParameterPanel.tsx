@@ -17,6 +17,7 @@ export function ParameterPanel() {
   const setParam = useLogoStore((s) => s.setParam)
   const setModeParam = useLogoStore((s) => s.setModeParam)
   const setBrandInput = useLogoStore((s) => s.setBrandInput)
+  const toggleShape = useLogoStore((s) => s.toggleShape)
   const toggleGrid = useLogoStore((s) => s.toggleGrid)
   const toggleConstruction = useLogoStore((s) => s.toggleConstruction)
 
@@ -91,6 +92,28 @@ export function ParameterPanel() {
         </div>
 
         <Section title="Shape" defaultOpen>
+          {(params.modeId === 'geometric-radial' || params.modeId === 'modular') && (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[10px] uppercase tracking-widest text-sidebar-muted">Primitives</span>
+              <div className="flex gap-1">
+                {(['circle', 'rectangle', 'triangle', 'polygon', 'blob'] as const).map((shape) => (
+                  <button
+                    key={shape}
+                    type="button"
+                    onClick={() => toggleShape(shape)}
+                    className={cn(
+                      'flex-1 h-7 rounded-md text-[10px] capitalize transition-all',
+                      params.enabledShapes.includes(shape)
+                        ? 'bg-white/10 text-white font-medium ring-1 ring-white/10'
+                        : 'bg-white/[0.03] text-sidebar-muted hover:text-white hover:bg-white/5',
+                    )}
+                  >
+                    {shape === 'rectangle' ? 'Rect' : shape}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {activeMode.sharedControls.includes('gridRings') && (
             <SliderControl label="Rings" value={params.gridRings} min={1} max={8} step={1} onChange={(v) => setParam('gridRings', v)} />
           )}

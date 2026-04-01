@@ -39,7 +39,7 @@ export const GeometricRadialGenerator: LogoGenerator = {
 
     // Create prototype shapes (single wedge)
     const prototypes: ShapeNode[] = gridPoints.map((point, i) => {
-      const type = pickPrimitiveType(rng)
+      const type = pickPrimitiveType(rng, params.enabledShapes)
       const operation: 'add' | 'subtract' = rng.nextBool(params.additiveRatio)
         ? 'add'
         : 'subtract'
