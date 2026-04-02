@@ -20,6 +20,8 @@ export function ParameterPanel() {
   const toggleShape = useLogoStore((s) => s.toggleShape)
   const toggleGrid = useLogoStore((s) => s.toggleGrid)
   const toggleConstruction = useLogoStore((s) => s.toggleConstruction)
+  const setPerspective = useLogoStore((s) => s.setPerspective)
+  const resetPerspective = useLogoStore((s) => s.resetPerspective)
 
   const modes = useMemo(() => listModes(), [])
   const activeMode = getModeDefinition(params.modeId) ?? modes[0]
@@ -194,6 +196,20 @@ export function ParameterPanel() {
 
         <Section title="Effects">
           <EffectControls />
+        </Section>
+
+        <Section title="Perspective">
+          <SliderControl label="Tilt X" value={ui.perspectiveX} min={-45} max={45} step={1} onChange={(v) => setPerspective('perspectiveX', v)} />
+          <SliderControl label="Tilt Y" value={ui.perspectiveY} min={-45} max={45} step={1} onChange={(v) => setPerspective('perspectiveY', v)} />
+          {(ui.perspectiveX !== 0 || ui.perspectiveY !== 0) && (
+            <button
+              type="button"
+              onClick={resetPerspective}
+              className="h-7 text-xs text-sidebar-muted hover:text-white transition-colors"
+            >
+              Reset
+            </button>
+          )}
         </Section>
 
         <Section title="Overlays">

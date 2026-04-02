@@ -21,6 +21,8 @@ import {
 interface UIState {
   showGrid: boolean
   showConstruction: boolean
+  perspectiveX: number
+  perspectiveY: number
 }
 
 interface LogoStore {
@@ -41,6 +43,8 @@ interface LogoStore {
   setError: (error: string | null) => void
   toggleGrid: () => void
   toggleConstruction: () => void
+  setPerspective: (axis: 'perspectiveX' | 'perspectiveY', value: number) => void
+  resetPerspective: () => void
   applyPreset: (params: Partial<LogoParams>) => void
   toggleShape: (shape: string) => void
   setEffectParam: <K extends keyof DissolutionParams>(key: K, value: DissolutionParams[K]) => void
@@ -59,6 +63,8 @@ export const useLogoStore = create<LogoStore>()(
       ui: {
         showGrid: true,
         showConstruction: true,
+        perspectiveX: 0,
+        perspectiveY: 0,
       },
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
@@ -157,6 +163,16 @@ export const useLogoStore = create<LogoStore>()(
       toggleConstruction: () =>
         set((state) => ({
           ui: { ...state.ui, showConstruction: !state.ui.showConstruction },
+        })),
+
+      setPerspective: (axis, value) =>
+        set((state) => ({
+          ui: { ...state.ui, [axis]: value },
+        })),
+
+      resetPerspective: () =>
+        set((state) => ({
+          ui: { ...state.ui, perspectiveX: 0, perspectiveY: 0 },
         })),
 
       applyPreset: (presetParams) =>

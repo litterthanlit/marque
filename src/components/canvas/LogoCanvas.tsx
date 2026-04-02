@@ -47,10 +47,31 @@ export function LogoCanvas() {
 
   const { playing, togglePlaying, canAnimate } = useAnimation(onFrame)
 
+  const hasPerspective = ui.perspectiveX !== 0 || ui.perspectiveY !== 0
+  const perspectiveStyle = hasPerspective
+    ? {
+        perspective: '800px',
+        perspectiveOrigin: 'center center',
+      }
+    : undefined
+
+  const cardStyle = hasPerspective
+    ? {
+        transform: `rotateX(${ui.perspectiveX}deg) rotateY(${ui.perspectiveY}deg)`,
+        transformStyle: 'preserve-3d' as const,
+      }
+    : undefined
+
   return (
     <div className="relative w-full h-full flex items-center justify-center p-8 md:p-12">
-      <div className="relative w-full max-w-[min(100%,calc(100vh-8rem))] aspect-square">
-        <div className="absolute inset-0 rounded-2xl bg-white shadow-2xl shadow-black/20">
+      <div
+        className="relative w-full max-w-[min(100%,calc(100vh-8rem))] aspect-square"
+        style={perspectiveStyle}
+      >
+        <div
+          className="absolute inset-0 rounded-2xl bg-white shadow-2xl shadow-black/20 transition-transform duration-150"
+          style={cardStyle}
+        >
           <canvas
             ref={canvasRef}
             width={600}
