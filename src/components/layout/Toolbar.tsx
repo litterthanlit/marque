@@ -27,6 +27,8 @@ export function Toolbar() {
   const hasResult = useLogoStore((s) => Boolean(s.result))
   const theme = useLogoStore((s) => s.ui.theme)
   const toggleTheme = useLogoStore((s) => s.toggleTheme)
+  const editMode = useLogoStore((s) => s.ui.editMode)
+  const toggleEditMode = useLogoStore((s) => s.toggleEditMode)
   const [exportOpen, setExportOpen] = useState(false)
   const [shareState, setShareState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
@@ -86,6 +88,12 @@ export function Toolbar() {
           <div className="w-px h-3.5 bg-border mx-1" />
           <ToolbarButton onClick={toggleTheme} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
             <ThemeIcon theme={theme} />
+          </ToolbarButton>
+          <ToolbarButton
+            onClick={toggleEditMode}
+            className={editMode ? 'bg-blue-500/20 text-blue-400' : undefined}
+          >
+            {editMode ? 'Editing' : 'Edit'}
           </ToolbarButton>
           <ToolbarButton onClick={handleCopyShareLink}>
             {shareState === 'copied' ? 'Copied' : shareState === 'failed' ? 'Failed' : 'Share'}

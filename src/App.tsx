@@ -37,6 +37,15 @@ function App() {
         }
       }
 
+      // Delete/Backspace = delete selected shape in edit mode
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !e.metaKey && !e.ctrlKey) {
+        const { editMode, selectedShapeId } = useLogoStore.getState().ui
+        if (editMode && selectedShapeId) {
+          e.preventDefault()
+          useLogoStore.getState().deleteSelectedShape()
+        }
+      }
+
       // R = randomize seed
       if (e.key === 'r' && !e.metaKey && !e.ctrlKey) {
         useLogoStore.getState().randomizeSeed()
