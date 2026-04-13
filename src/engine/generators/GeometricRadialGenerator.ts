@@ -39,7 +39,7 @@ export const GeometricRadialGenerator: LogoGenerator = {
 
     // Create prototype shapes (single wedge)
     const prototypes: ShapeNode[] = gridPoints.map((point, i) => {
-      const type = pickPrimitiveType(rng)
+      const type = pickPrimitiveType(rng, params.enabledShapes)
       const operation: 'add' | 'subtract' = rng.nextBool(params.additiveRatio)
         ? 'add'
         : 'subtract'
@@ -95,8 +95,8 @@ export const GeometricRadialGenerator: LogoGenerator = {
           })
 
     // Build path data for each shape
-    const booleanInputs = rotatedShapes.map((shape) => ({
-      pathData: createPrimitivePath(
+    const booleanInputs = rotatedShapes.map((shape) => {
+      const pathData = createPrimitivePath(
         shape.type as PrimitiveType,
         shape.center.x,
         shape.center.y,
@@ -104,9 +104,10 @@ export const GeometricRadialGenerator: LogoGenerator = {
         shape.rotation,
         shape.params,
         rng,
-      ),
-      operation: shape.operation,
-    }))
+      )
+      shape.pathData = pathData
+      return { pathData, operation: shape.operation }
+    })
 
     // Compose boolean result
     const boolResult = composeBooleanResult(booleanInputs)

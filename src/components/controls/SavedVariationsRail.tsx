@@ -11,7 +11,7 @@ export function SavedVariationsRail() {
       <button
         type="button"
         onClick={() => saveVariation(params)}
-        className="h-7 px-2.5 rounded-md text-xs text-sidebar-text bg-white/5 hover:bg-white/10 hover:text-white"
+        className="h-7 px-2.5 rounded-md text-xs text-sidebar-text bg-interactive-active hover:bg-interactive-hover hover:text-fg"
       >
         Save current
       </button>
@@ -25,12 +25,12 @@ export function SavedVariationsRail() {
           {variations.map((v) => (
             <div
               key={v.id}
-              className="flex items-center justify-between h-8 px-2.5 rounded-md text-xs group hover:bg-white/5"
+              className="flex items-center justify-between h-8 px-2.5 rounded-md text-xs group hover:bg-interactive-hover"
             >
               <button
                 type="button"
                 onClick={() => applyPreset(v.params)}
-                className="text-sidebar-text hover:text-white truncate text-left flex-1 min-w-0"
+                className="text-sidebar-text hover:text-fg truncate text-left flex-1 min-w-0"
               >
                 {v.name}
               </button>

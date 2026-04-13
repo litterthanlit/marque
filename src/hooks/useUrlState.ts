@@ -129,6 +129,14 @@ function encodeParams(params: LogoParams, effectParams: EffectParamsMap): string
     }
   }
 
+  // Encode enabled shapes (only if not all enabled)
+  const allShapes = ['circle', 'rectangle', 'triangle', 'polygon', 'blob']
+  const sorted = [...params.enabledShapes].sort()
+  const allSorted = [...allShapes].sort()
+  if (sorted.join(',') !== allSorted.join(',')) {
+    searchParams.set('shapes', sorted.join(','))
+  }
+
   // Encode effect params (e. prefix)
   if (effectParams.dissolution.enabled) {
     searchParams.set('e.dissolve', '1')
@@ -188,7 +196,7 @@ function decodeParamsInner(
     : DEFAULT_PARAMS.styleFamily
 
   for (const [key, value] of searchParams.entries()) {
-    if (key === 'mode' || key === 'style' || key === 'initials' || key === 'v') {
+    if (key === 'mode' || key === 'style' || key === 'initials' || key === 'v' || key === 'shapes') {
       continue
     }
 
@@ -237,6 +245,15 @@ function decodeParamsInner(
 
   if (typeof rawUpdates.fillColor === 'string' && isHexColor(rawUpdates.fillColor)) {
     sanitized.fillColor = rawUpdates.fillColor
+  }
+
+  const shapesRaw = searchParams.get('shapes')
+  if (shapesRaw) {
+    const validShapes = ['circle', 'rectangle', 'triangle', 'polygon', 'blob']
+    const decoded = shapesRaw.split(',').filter((s) => validShapes.includes(s))
+    if (decoded.length > 0) {
+      sanitized.enabledShapes = decoded
+    }
   }
 
   if (modeId === 'monogram') {

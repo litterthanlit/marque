@@ -8,7 +8,7 @@ import { ellipsePath } from './ellipse.ts'
 
 export type PrimitiveType = 'circle' | 'rectangle' | 'triangle' | 'polygon' | 'blob' | 'ellipse'
 
-const PRIMITIVE_TYPES: PrimitiveType[] = [
+const DEFAULT_PRIMITIVE_TYPES: PrimitiveType[] = [
   'circle',
   'rectangle',
   'triangle',
@@ -16,8 +16,12 @@ const PRIMITIVE_TYPES: PrimitiveType[] = [
   'blob',
 ]
 
-export function pickPrimitiveType(rng: SeededRandom): PrimitiveType {
-  return PRIMITIVE_TYPES[rng.nextInt(0, PRIMITIVE_TYPES.length - 1)]
+export function pickPrimitiveType(rng: SeededRandom, allowed?: string[]): PrimitiveType {
+  const pool = allowed && allowed.length > 0
+    ? DEFAULT_PRIMITIVE_TYPES.filter((t) => allowed.includes(t))
+    : DEFAULT_PRIMITIVE_TYPES
+  const types = pool.length > 0 ? pool : DEFAULT_PRIMITIVE_TYPES
+  return types[rng.nextInt(0, types.length - 1)]
 }
 
 export function createPrimitivePath(

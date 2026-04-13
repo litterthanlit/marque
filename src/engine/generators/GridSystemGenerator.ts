@@ -70,8 +70,8 @@ export const GridSystemGenerator: LogoGenerator = {
     const framedShapes = [...shapes, ...buildGridFrame(frameMode, columns, rows, cellSize)]
     const rotatedShapes = applyRotation(framedShapes, params.rotation)
 
-    const booleanInputs = rotatedShapes.map((shape) => ({
-      pathData: createPrimitivePath(
+    const booleanInputs = rotatedShapes.map((shape) => {
+      const pathData = createPrimitivePath(
         shape.type as PrimitiveType,
         shape.center.x,
         shape.center.y,
@@ -79,9 +79,10 @@ export const GridSystemGenerator: LogoGenerator = {
         shape.rotation,
         shape.params,
         rng,
-      ),
-      operation: shape.operation,
-    }))
+      )
+      shape.pathData = pathData
+      return { pathData, operation: shape.operation }
+    })
 
     const boolResult = composeBooleanResult(booleanInputs)
 

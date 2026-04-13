@@ -20,7 +20,7 @@ export function PresetSelector() {
           key={preset.id}
           type="button"
           onClick={() => applyPreset(preset.params)}
-          className="flex items-center justify-between h-8 px-2.5 rounded-md text-xs text-sidebar-text hover:bg-white/5 hover:text-white group"
+          className="flex items-center justify-between h-8 px-2.5 rounded-md text-xs text-sidebar-text hover:bg-interactive-hover hover:text-fg group"
           title={preset.description}
         >
           <span>{preset.name}</span>

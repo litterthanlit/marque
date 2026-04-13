@@ -5,7 +5,6 @@ import type {
   GenerationResult,
   ShapeNode,
 } from '../types.ts'
-import { ellipsePath } from '../primitives/ellipse.ts'
 import { composeBooleanResult } from '../boolean/operations.ts'
 import { generateWaveArcKeyframes } from '../animation/keyframes.ts'
 
@@ -206,76 +205,94 @@ export const WaveArcGenerator: LogoGenerator = {
     const shapes: ShapeNode[] = []
     const crescentPaths: string[] = []
 
-    // Build crescents from center outward
+    // Build crescents as arc-based shapes (not ellipse subtraction).
+    // Each crescent is a closed path: outer arc → tip → inner arc → tip.
+    // This produces clean separated crescents like the reference.
+    const ringSlot = maxRadius / arcCount
+    const halfAngle = spreadAngle / 2
+
     for (let i = 0; i < arcCount; i++) {
-      const ringFraction = (i + 1) / (arcCount + 1)
-      const outerRadius = maxRadius * ringFraction
-      const thickness = outerRadius / (arcCount * (1 + gapRatio))
-      const innerRadius = outerRadius - thickness
+      const centerR = ringSlot * (i + 0.5)
+      const thickness = ringSlot * (1 - gapRatio)
+      const outerR = centerR + thickness / 2
+      const innerR = centerR - thickness / 2
 
-      // Ellipse dimensions
-      const outerRx = outerRadius * Math.sin(spreadAngle / 2)
-      const outerRy = outerRadius
-      const innerRx = innerRadius * Math.sin(spreadAngle / 2)
-      const innerRy = innerRadius
+      // Taper: reduce thickness at tips. taperAmount=1 means fully pointed tips.
+      // We interpolate innerR toward outerR at the tip angles.
+      const tipR = innerR + (outerR - innerR) * taperAmount
 
-      // Taper offset: shift inner ellipse along opening axis (positive Y here
-      // means the crescent opens upward, tips taper)
-      const taperOffset = taperAmount * outerRadius
+      // Crescents open to the RIGHT (+X direction).
+      // Bilateral mirror will create the left-side copy.
+      // halfAngle measured from the +X axis.
+      const tipStartX = tipR * Math.cos(halfAngle)
+      const tipStartY = tipR * Math.sin(halfAngle)
+      const tipEndX = tipR * Math.cos(-halfAngle)
+      const tipEndY = tipR * Math.sin(-halfAngle)
 
-      // Outer ellipse at origin
-      const outerPath = ellipsePath(0, 0, outerRx, outerRy, 0)
-      // Inner ellipse offset along Y for taper
-      const innerPath = ellipsePath(0, taperOffset, innerRx, innerRy, 0)
+      const outerStartX = outerR * Math.cos(halfAngle)
+      const outerStartY = outerR * Math.sin(halfAngle)
+      const outerEndX = outerR * Math.cos(-halfAngle)
+      const outerEndY = outerR * Math.sin(-halfAngle)
 
-      // Track shapes for construction view
+      const innerStartX = innerR * Math.cos(halfAngle)
+      const innerStartY = innerR * Math.sin(halfAngle)
+      const innerEndX = innerR * Math.cos(-halfAngle)
+      const innerEndY = innerR * Math.sin(-halfAngle)
+
+      // Large arc flag: use large arc if spread > 180°
+      const largeArc = spreadAngle > Math.PI ? 1 : 0
+
+      // Build the crescent path:
+      // Start at outer-start, arc to outer-end (outer radius)
+      // Line to inner-end (or tip-end if tapered)
+      // Arc back to inner-start (inner radius, reverse sweep)
+      // Close to start
+      const r = (n: number) => Math.round(n * 100) / 100
+
+      let pathData: string
+      if (taperAmount > 0.95) {
+        // Fully tapered: tips are points where both arcs meet
+        pathData = [
+          `M${r(tipStartX)} ${r(tipStartY)}`,
+          `A${r(outerR)} ${r(outerR)} 0 ${largeArc} 1 ${r(tipEndX)} ${r(tipEndY)}`,
+          `A${r(innerR)} ${r(innerR)} 0 ${largeArc} 0 ${r(tipStartX)} ${r(tipStartY)}`,
+          'Z',
+        ].join(' ')
+      } else {
+        // Partial taper: outer arc is wider than inner arc
+        pathData = [
+          `M${r(outerStartX)} ${r(outerStartY)}`,
+          `A${r(outerR)} ${r(outerR)} 0 ${largeArc} 1 ${r(outerEndX)} ${r(outerEndY)}`,
+          `L${r(innerEndX)} ${r(innerEndY)}`,
+          `A${r(innerR)} ${r(innerR)} 0 ${largeArc} 0 ${r(innerStartX)} ${r(innerStartY)}`,
+          'Z',
+        ].join(' ')
+      }
+
+      crescentPaths.push(pathData)
+
       shapes.push({
-        id: `outer_${i}`,
+        id: `crescent_${i}`,
         type: 'ellipse',
         role: 'prototype',
         operation: 'add',
         center: { x: 0, y: 0 },
-        radius: outerRadius,
+        radius: outerR,
         rotation: 0,
-        params: { rx: outerRx, ry: outerRy },
+        params: { outerR, innerR },
+        pathData,
       })
-
-      shapes.push({
-        id: `inner_${i}`,
-        type: 'ellipse',
-        role: 'prototype',
-        operation: 'subtract',
-        center: { x: 0, y: taperOffset },
-        radius: innerRadius,
-        rotation: 0,
-        params: { rx: innerRx, ry: innerRy },
-      })
-
-      // Boolean subtract: crescent = outer minus inner
-      // We use composeBooleanResult with add + subtract
-      const crescentResult = composeBooleanResult([
-        { pathData: outerPath, operation: 'add' },
-        { pathData: innerPath, operation: 'subtract' },
-      ])
-
-      if (crescentResult.compoundPathData) {
-        crescentPaths.push(crescentResult.compoundPathData)
-      }
-
-      warnings.push(...crescentResult.warnings)
     }
 
     // Apply symmetry to all crescent paths
     let allPaths: string[] = []
 
     if (arcSymmetry === 'bilateral') {
-      // Generate right-side crescents, mirror across vertical axis, union both
       for (const pathData of crescentPaths) {
         allPaths.push(pathData)
         allPaths.push(mirrorPathX(pathData))
       }
     } else {
-      // Radial: replicate each crescent symmetryFolds times around center
       for (const pathData of crescentPaths) {
         for (let f = 0; f < symmetryFolds; f++) {
           const angle = (2 * Math.PI * f) / symmetryFolds
@@ -284,7 +301,6 @@ export const WaveArcGenerator: LogoGenerator = {
       }
     }
 
-    // Cap total crescents
     if (allPaths.length > MAX_CRESCENTS) {
       warnings.push(
         `Crescent count (${allPaths.length}) capped at ${MAX_CRESCENTS} to keep generation responsive`,
@@ -292,11 +308,10 @@ export const WaveArcGenerator: LogoGenerator = {
       allPaths = allPaths.slice(0, MAX_CRESCENTS)
     }
 
-    // Apply global rotation to all paths
+    // Apply global rotation
     if (globalRotation !== 0) {
       allPaths = allPaths.map((p) => rotatePathData(p, globalRotation))
 
-      // Also rotate shape centers for construction view
       const cos = Math.cos(globalRotation)
       const sin = Math.sin(globalRotation)
       for (const shape of shapes) {
@@ -310,12 +325,13 @@ export const WaveArcGenerator: LogoGenerator = {
       }
     }
 
-    // Boolean-union all crescent paths
+    // Union all crescent paths via boolean operations.
+    // Since arc-based crescents don't overlap, this preserves
+    // each crescent's shape while computing the viewBox.
     const booleanInputs = allPaths.map((pathData) => ({
       pathData,
       operation: 'add' as const,
     }))
-
     const boolResult = composeBooleanResult(booleanInputs)
 
     // Construction data: grid circles for each ring
@@ -356,7 +372,7 @@ export const WaveArcGenerator: LogoGenerator = {
       mark: {
         layers: boolResult.layers,
         compoundPathData: boolResult.compoundPathData,
-        fillRule: boolResult.fillRule as 'nonzero' | 'evenodd',
+        fillRule: 'evenodd' as const,
         viewBox: boolResult.viewBox,
       },
       constructionData: {

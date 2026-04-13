@@ -36,44 +36,49 @@ export function AppShell() {
     <div className="h-dvh flex flex-col bg-surface">
       <Toolbar />
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-        <main className="flex-1 flex flex-col items-center justify-center p-6 md:p-12 min-h-0 gap-3">
+        {/* Canvas area — takes all available space */}
+        <main className="flex-1 flex flex-col items-center justify-center min-h-0 bg-canvas-bg relative">
           {error && (
-            <div role="alert" className="w-full max-w-2xl rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            <div role="alert" className="absolute top-3 left-1/2 -translate-x-1/2 z-10 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
               {error}
             </div>
           )}
           <LogoCanvas />
         </main>
-        <aside className="hidden md:flex md:flex-col w-80 flex-shrink-0 border-l border-sidebar-border bg-sidebar overflow-y-auto">
+
+        {/* Desktop sidebar */}
+        <aside className="hidden md:flex md:flex-col w-[340px] lg:w-[380px] flex-shrink-0 border-l border-border bg-sidebar overflow-y-auto">
           <ParameterPanel />
         </aside>
       </div>
 
+      {/* Mobile controls button */}
       <button
         ref={controlsButtonRef}
         type="button"
         onClick={() => setMobilePanelOpen(true)}
-        className="md:hidden fixed right-4 bottom-4 z-30 rounded-lg bg-neutral-900 px-4 py-2 text-sm font-medium text-white shadow-lg"
+        className="md:hidden fixed right-4 bottom-4 z-30 rounded-lg bg-interactive backdrop-blur-sm px-4 py-2.5 text-xs font-medium text-fg shadow-lg border border-border"
       >
         Controls
       </button>
 
+      {/* Mobile drawer */}
       {mobilePanelOpen && (
         <div className="md:hidden fixed inset-0 z-40">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setMobilePanelOpen(false)} />
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setMobilePanelOpen(false)} />
           <aside
             role="dialog"
             aria-modal="true"
             aria-labelledby={titleId}
-            className="absolute inset-x-0 bottom-0 max-h-[80dvh] rounded-t-xl bg-sidebar overflow-hidden"
+            className="absolute inset-x-0 bottom-0 max-h-[80dvh] rounded-t-2xl bg-sidebar border-t border-border overflow-hidden"
           >
-            <div className="flex items-center justify-between px-4 py-3 border-b border-sidebar-border">
-              <span id={titleId} className="text-sm font-medium text-neutral-200">Controls</span>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-border">
+              <span id={titleId} className="text-xs font-medium text-neutral-300">Controls</span>
               <button
                 ref={closeButtonRef}
                 type="button"
                 onClick={() => setMobilePanelOpen(false)}
-                className="text-xs text-sidebar-muted hover:text-white"
+                className="text-xs text-sidebar-muted hover:text-fg transition-colors"
               >
                 Done
               </button>

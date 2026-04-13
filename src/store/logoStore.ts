@@ -18,9 +18,49 @@ import {
   sanitizeBrandInput,
 } from './modes.ts'
 
+export interface DrawnShape {
+  id: string
+  type: 'circle' | 'rectangle' | 'triangle' | 'polygon'
+  x: number
+  y: number
+  radius: number
+  operation: 'add' | 'subtract'
+}
+
+export interface ShapeOverride {
+  dx: number
+  dy: number
+  scale: number
+  rotation: number
+  hidden: boolean
+}
+
+export interface DrawnPath {
+  id: string
+  tool: 'pencil' | 'pen' | 'graffiti'
+  pathData: string
+  fillColor: string | null
+  strokeColor: string | null
+  strokeWidth: number
+  closed: boolean
+}
+
+type ThemeMode = 'dark' | 'light'
+
 interface UIState {
   showGrid: boolean
   showConstruction: boolean
+  perspectiveX: number
+  perspectiveY: number
+  drawingMode: boolean
+  activeDrawShape: 'circle' | 'rectangle' | 'triangle' | 'polygon'
+  drawnShapes: DrawnShape[]
+  theme: ThemeMode
+  editMode: boolean
+  selectedShapeId: string | null
+  shapeOverrides: Record<string, ShapeOverride>
+  drawnPaths: DrawnPath[]
+  activeTool: 'select' | 'pencil' | 'pen' | 'graffiti' | null
 }
 
 interface LogoStore {
@@ -41,9 +81,27 @@ interface LogoStore {
   setError: (error: string | null) => void
   toggleGrid: () => void
   toggleConstruction: () => void
+  setPerspective: (axis: 'perspectiveX' | 'perspectiveY', value: number) => void
+  resetPerspective: () => void
+  setDrawingMode: (enabled: boolean) => void
+  setActiveDrawShape: (shape: 'circle' | 'rectangle' | 'triangle' | 'polygon') => void
+  addDrawnShape: (shape: Omit<DrawnShape, 'id'>) => void
+  removeDrawnShape: (id: string) => void
+  clearDrawnShapes: () => void
+  toggleTheme: () => void
   applyPreset: (params: Partial<LogoParams>) => void
+  toggleShape: (shape: string) => void
   setEffectParam: <K extends keyof DissolutionParams>(key: K, value: DissolutionParams[K]) => void
   toggleDissolution: () => void
+  toggleEditMode: () => void
+  selectShape: (id: string | null) => void
+  updateShapeOverride: (id: string, update: Partial<ShapeOverride>) => void
+  deleteSelectedShape: () => void
+  clearShapeOverrides: () => void
+  addDrawnPath: (path: Omit<DrawnPath, 'id'>) => void
+  removeDrawnPath: (id: string) => void
+  clearDrawnPaths: () => void
+  setActiveTool: (tool: 'select' | 'pencil' | 'pen' | 'graffiti' | null) => void
 }
 
 export const useLogoStore = create<LogoStore>()(
@@ -58,6 +116,17 @@ export const useLogoStore = create<LogoStore>()(
       ui: {
         showGrid: true,
         showConstruction: true,
+        perspectiveX: 0,
+        perspectiveY: 0,
+        drawingMode: false,
+        activeDrawShape: 'circle',
+        drawnShapes: [],
+        theme: (window.localStorage.getItem('dalat.theme') as ThemeMode) || 'dark',
+        editMode: false,
+        selectedShapeId: null,
+        shapeOverrides: {},
+        drawnPaths: [],
+        activeTool: null,
       },
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
@@ -66,11 +135,13 @@ export const useLogoStore = create<LogoStore>()(
       setParam: (key, value) =>
         set((state) => ({
           params: mergeLogoParams(state.params, { [key]: value } as Partial<LogoParams>),
+          ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
         })),
 
       setParams: (updates) =>
         set((state) => ({
           params: mergeLogoParams(state.params, updates),
+          ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
         })),
 
       setMode: (modeId) =>
@@ -94,6 +165,7 @@ export const useLogoStore = create<LogoStore>()(
                 [modeId]: styleDefaults.modeParams,
               },
             }),
+            ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
           }
         }),
 
@@ -112,6 +184,7 @@ export const useLogoStore = create<LogoStore>()(
                 [state.params.modeId]: styleDefaults.modeParams,
               },
             }),
+            ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
           }
         }),
 
@@ -135,6 +208,7 @@ export const useLogoStore = create<LogoStore>()(
               },
             },
           }),
+          ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
         })),
 
       randomizeSeed: () =>
@@ -143,6 +217,7 @@ export const useLogoStore = create<LogoStore>()(
             ...state.params,
             seed: crypto.getRandomValues(new Uint32Array(1))[0] % 10000,
           },
+          ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
         })),
 
       setResult: (result) => set({ result }),
@@ -158,9 +233,62 @@ export const useLogoStore = create<LogoStore>()(
           ui: { ...state.ui, showConstruction: !state.ui.showConstruction },
         })),
 
+      setPerspective: (axis, value) =>
+        set((state) => ({
+          ui: { ...state.ui, [axis]: value },
+        })),
+
+      resetPerspective: () =>
+        set((state) => ({
+          ui: { ...state.ui, perspectiveX: 0, perspectiveY: 0 },
+        })),
+
+      setDrawingMode: (enabled) =>
+        set((state) => ({
+          ui: { ...state.ui, drawingMode: enabled },
+        })),
+
+      setActiveDrawShape: (shape) =>
+        set((state) => ({
+          ui: { ...state.ui, activeDrawShape: shape },
+        })),
+
+      addDrawnShape: (shape) =>
+        set((state) => ({
+          ui: {
+            ...state.ui,
+            drawnShapes: [
+              ...state.ui.drawnShapes,
+              { ...shape, id: crypto.randomUUID() },
+            ],
+          },
+        })),
+
+      removeDrawnShape: (id) =>
+        set((state) => ({
+          ui: {
+            ...state.ui,
+            drawnShapes: state.ui.drawnShapes.filter((s) => s.id !== id),
+          },
+        })),
+
+      clearDrawnShapes: () =>
+        set((state) => ({
+          ui: { ...state.ui, drawnShapes: [] },
+        })),
+
+      toggleTheme: () =>
+        set((state) => {
+          const next = state.ui.theme === 'dark' ? 'light' : 'dark'
+          window.localStorage.setItem('dalat.theme', next)
+          document.documentElement.classList.toggle('light', next === 'light')
+          return { ui: { ...state.ui, theme: next } }
+        }),
+
       applyPreset: (presetParams) =>
         set((state) => ({
           params: mergeLogoParams(state.params, presetParams),
+          ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
         })),
 
       setEffectParam: (key, value) =>
@@ -174,6 +302,18 @@ export const useLogoStore = create<LogoStore>()(
           },
         })),
 
+      toggleShape: (shape: string) =>
+        set((state) => {
+          const current = state.params.enabledShapes
+          const has = current.includes(shape)
+          if (has && current.length <= 1) return state
+          const next = has ? current.filter((s) => s !== shape) : [...current, shape]
+          return {
+            params: { ...state.params, enabledShapes: next },
+            ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
+          }
+        }),
+
       toggleDissolution: () =>
         set((state) => ({
           effectParams: {
@@ -182,6 +322,96 @@ export const useLogoStore = create<LogoStore>()(
               ...state.effectParams.dissolution,
               enabled: !state.effectParams.dissolution.enabled,
             },
+          },
+        })),
+
+      toggleEditMode: () =>
+        set((state) => ({
+          ui: {
+            ...state.ui,
+            editMode: !state.ui.editMode,
+            selectedShapeId: null,
+          },
+        })),
+
+      selectShape: (id) =>
+        set((state) => ({
+          ui: { ...state.ui, selectedShapeId: id },
+        })),
+
+      updateShapeOverride: (id, update) =>
+        set((state) => {
+          const current = state.ui.shapeOverrides[id] ?? {
+            dx: 0, dy: 0, scale: 1, rotation: 0, hidden: false,
+          }
+          return {
+            ui: {
+              ...state.ui,
+              shapeOverrides: {
+                ...state.ui.shapeOverrides,
+                [id]: { ...current, ...update },
+              },
+            },
+          }
+        }),
+
+      deleteSelectedShape: () =>
+        set((state) => {
+          const id = state.ui.selectedShapeId
+          if (!id) return state
+          const current = state.ui.shapeOverrides[id] ?? {
+            dx: 0, dy: 0, scale: 1, rotation: 0, hidden: false,
+          }
+          return {
+            ui: {
+              ...state.ui,
+              selectedShapeId: null,
+              shapeOverrides: {
+                ...state.ui.shapeOverrides,
+                [id]: { ...current, hidden: true },
+              },
+            },
+          }
+        }),
+
+      clearShapeOverrides: () =>
+        set((state) => ({
+          ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
+        })),
+
+      addDrawnPath: (path) =>
+        set((state) => ({
+          ui: {
+            ...state.ui,
+            drawnPaths: [
+              ...state.ui.drawnPaths,
+              { ...path, id: crypto.randomUUID() },
+            ],
+          },
+        })),
+
+      removeDrawnPath: (id) =>
+        set((state) => ({
+          ui: {
+            ...state.ui,
+            drawnPaths: state.ui.drawnPaths.filter((p) => p.id !== id),
+          },
+        })),
+
+      clearDrawnPaths: () =>
+        set((state) => ({
+          ui: { ...state.ui, drawnPaths: [] },
+        })),
+
+      setActiveTool: (tool) =>
+        set((state) => ({
+          ui: {
+            ...state.ui,
+            activeTool: tool,
+            // Enter edit mode when selecting the select tool
+            editMode: tool === 'select' ? true : state.ui.editMode,
+            // Exit drawing mode when switching tools
+            drawingMode: false,
           },
         })),
     }),

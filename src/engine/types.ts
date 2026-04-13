@@ -27,6 +27,7 @@ export interface LogoParams {
   styleFamily: StyleFamily
   brandInput: BrandInput
   generatorId: string
+  enabledShapes: string[] // subset of PrimitiveType: circle, rectangle, triangle, polygon, blob
   modeParams: ModeParamMap
 }
 
@@ -48,6 +49,7 @@ export interface ShapeNode {
   radius: number
   rotation: number
   params: Record<string, number>
+  pathData?: string
 }
 
 export interface CompositeLayer {
@@ -147,6 +149,7 @@ export const DEFAULT_PARAMS: LogoParams = {
   modeId: 'geometric-radial',
   styleFamily: 'minimal',
   brandInput: {},
+  enabledShapes: ['circle', 'rectangle', 'triangle', 'polygon', 'blob'],
   generatorId: 'geometric-radial',
   modeParams: {},
 }

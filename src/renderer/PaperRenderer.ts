@@ -1,13 +1,27 @@
 import type { GenerationResult } from '../engine/types.ts'
 import type { DissolutionResult } from '../engine/effects/types.ts'
+import type { DrawnShape } from '../store/logoStore.ts'
 import { renderConstruction } from './ConstructionView.ts'
-import { renderFinalMark, renderDissolution } from './FinalView.ts'
+import { renderFinalMark, renderDissolution, renderIndividualShapes } from './FinalView.ts'
+import { createPrimitivePath, type PrimitiveType } from '../engine/primitives/index.ts'
+
 
 interface RenderOptions {
   showGrid: boolean
   showConstruction: boolean
   fillColor: string
   dissolution?: DissolutionResult | null
+  drawnShapes?: DrawnShape[]
+  editMode?: boolean
+}
+
+/**
+ * Returns the center of the Paper.js view in project coordinates.
+ * With hidpi="off" on the canvas, Paper.js uses 1:1 pixel ratio so
+ * view.center matches the actual CSS display center.
+ */
+function getCenter(scope: paper.PaperScope): paper.Point {
+  return scope.view.center
 }
 
 /**
@@ -17,26 +31,72 @@ export function renderLogoOnScope(
   scope: paper.PaperScope,
   result: GenerationResult,
   options: RenderOptions,
-): void {
+): Map<string, paper.Item> | null {
   scope.activate()
   scope.project.clear()
 
-  const canvasSize = scope.view.size
-  const center = new scope.Point(canvasSize.width / 2, canvasSize.height / 2)
+  const center = getCenter(scope)
 
   // Draw construction view first (behind the mark)
   if (options.showConstruction) {
     renderConstruction(scope, result, center, options.showGrid)
   }
 
+  let itemMap: Map<string, paper.Item> | null = null
+
   // Draw the composed mark — use dissolution if active
-  if (options.dissolution) {
+  if (options.editMode && !options.dissolution) {
+    itemMap = renderIndividualShapes(scope, result.shapes, center, options.fillColor)
+  } else if (options.dissolution) {
     renderDissolution(scope, options.dissolution, center, options.fillColor)
   } else {
     renderFinalMark(scope, result, center, options.fillColor)
   }
 
+  // Draw user-placed shapes on top
+  if (options.drawnShapes && options.drawnShapes.length > 0) {
+    renderDrawnShapes(scope, options.drawnShapes, center, options.fillColor)
+  }
+
   scope.view.update()
+  return itemMap
+}
+
+/**
+ * Renders user-drawn shapes overlaid on the logo
+ */
+function renderDrawnShapes(
+  scope: paper.PaperScope,
+  shapes: DrawnShape[],
+  center: paper.Point,
+  fillColor: string,
+): void {
+  for (const shape of shapes) {
+    const pathData = createPrimitivePath(
+      shape.type as PrimitiveType,
+      shape.x,
+      shape.y,
+      shape.radius,
+      0,
+      shape.type === 'polygon' ? { sides: 5 } : {},
+    )
+
+    try {
+      const path = new scope.Path(pathData)
+      path.translate(center)
+
+      if (shape.operation === 'add') {
+        path.fillColor = new scope.Color(fillColor)
+        path.strokeColor = null
+      } else {
+        path.fillColor = new scope.Color(1, 1, 1)
+        path.strokeColor = new scope.Color(0.8, 0.2, 0.2, 0.5)
+        path.strokeWidth = 1
+      }
+    } catch {
+      // Skip invalid paths
+    }
+  }
 }
 
 /**
@@ -50,8 +110,7 @@ export function renderPreviewOnScope(
   scope.activate()
   scope.project.clear()
 
-  const canvasSize = scope.view.size
-  const center = new scope.Point(canvasSize.width / 2, canvasSize.height / 2)
+  const center = getCenter(scope)
 
   renderFinalMark(scope, result, center, fillColor)
 

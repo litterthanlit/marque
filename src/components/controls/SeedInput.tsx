@@ -6,8 +6,8 @@ export function SeedInput() {
   const randomizeSeed = useLogoStore((s) => s.randomizeSeed)
 
   return (
-    <div className="flex items-center gap-1.5">
-      <label className="text-xs text-sidebar-text shrink-0">Seed</label>
+    <div className="flex items-center gap-2">
+      <label className="text-[10px] uppercase tracking-widest text-sidebar-muted shrink-0">Seed</label>
       <input
         type="number"
         value={seed}
@@ -17,11 +17,11 @@ export function SeedInput() {
           const parsed = Number.parseInt(e.target.value, 10)
           setParam('seed', Number.isFinite(parsed) ? Math.min(999999, Math.max(0, parsed)) : 0)
         }}
-        className="flex-1 min-w-0 h-7 px-2 text-xs font-mono tabular-nums bg-transparent border border-sidebar-border rounded-md text-white outline-none focus:border-neutral-500"
+        className="flex-1 min-w-0 h-8 px-2.5 text-xs font-mono tabular-nums bg-interactive-active border border-border rounded-lg text-fg outline-none focus:border-sidebar-muted transition-colors"
       />
       <button
         onClick={randomizeSeed}
-        className="h-7 px-2.5 text-xs font-medium bg-white/10 text-white rounded-md hover:bg-white/15"
+        className="h-8 px-3 text-xs font-medium bg-interactive text-fg rounded-lg hover:bg-interactive-hover transition-colors"
       >
         Random
       </button>

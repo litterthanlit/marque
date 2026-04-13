@@ -143,10 +143,10 @@ const DEFAULT_MODE_PARAMS: ModeParamMap = {
     frameMode: 0,
   },
   'wave-arc': {
-    arcCount: 4,
+    arcCount: 5,
     spreadAngle: 120,
-    gapRatio: 0.3,
-    taperAmount: 0.7,
+    gapRatio: 0.2,
+    taperAmount: 0.85,
     arcSymmetry: 'bilateral',
     symmetryFolds: 4,
   },
@@ -244,7 +244,7 @@ const MODE_STYLE_OVERRIDES: Record<
       fillColor: '#161616',
       rotation: 0,
       animationSpeed: 0.6,
-      mode: { arcCount: 4, spreadAngle: 120, gapRatio: 0.3, taperAmount: 0.7, arcSymmetry: 'bilateral', symmetryFolds: 4 },
+      mode: { arcCount: 5, spreadAngle: 120, gapRatio: 0.2, taperAmount: 0.85, arcSymmetry: 'bilateral', symmetryFolds: 4 },
     },
   },
   heritage: {
