@@ -5,12 +5,24 @@ import { renderConstruction } from './ConstructionView.ts'
 import { renderFinalMark, renderDissolution } from './FinalView.ts'
 import { createPrimitivePath, type PrimitiveType } from '../engine/primitives/index.ts'
 
+/** The canvas pixel size set on the <canvas> element */
+const CANVAS_PX = 600
+
 interface RenderOptions {
   showGrid: boolean
   showConstruction: boolean
   fillColor: string
   dissolution?: DissolutionResult | null
   drawnShapes?: DrawnShape[]
+}
+
+/**
+ * Returns the canvas center in pixel coordinates (not CSS coordinates).
+ * Paper.js view.size can reflect the CSS display size which differs
+ * from the canvas buffer size. We use the known pixel size directly.
+ */
+function getCenter(scope: paper.PaperScope): paper.Point {
+  return new scope.Point(CANVAS_PX / 2, CANVAS_PX / 2)
 }
 
 /**
@@ -24,8 +36,7 @@ export function renderLogoOnScope(
   scope.activate()
   scope.project.clear()
 
-  const canvasSize = scope.view.size
-  const center = new scope.Point(canvasSize.width / 2, canvasSize.height / 2)
+  const center = getCenter(scope)
 
   // Draw construction view first (behind the mark)
   if (options.showConstruction) {
@@ -95,8 +106,7 @@ export function renderPreviewOnScope(
   scope.activate()
   scope.project.clear()
 
-  const canvasSize = scope.view.size
-  const center = new scope.Point(canvasSize.width / 2, canvasSize.height / 2)
+  const center = getCenter(scope)
 
   renderFinalMark(scope, result, center, fillColor)
 
