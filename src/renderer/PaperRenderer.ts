@@ -2,7 +2,7 @@ import type { GenerationResult } from '../engine/types.ts'
 import type { DissolutionResult } from '../engine/effects/types.ts'
 import type { DrawnShape } from '../store/logoStore.ts'
 import { renderConstruction } from './ConstructionView.ts'
-import { renderFinalMark, renderDissolution } from './FinalView.ts'
+import { renderFinalMark, renderDissolution, renderIndividualShapes } from './FinalView.ts'
 import { createPrimitivePath, type PrimitiveType } from '../engine/primitives/index.ts'
 
 
@@ -12,6 +12,7 @@ interface RenderOptions {
   fillColor: string
   dissolution?: DissolutionResult | null
   drawnShapes?: DrawnShape[]
+  editMode?: boolean
 }
 
 /**
@@ -30,7 +31,7 @@ export function renderLogoOnScope(
   scope: paper.PaperScope,
   result: GenerationResult,
   options: RenderOptions,
-): void {
+): Map<string, paper.Item> | null {
   scope.activate()
   scope.project.clear()
 
@@ -41,8 +42,12 @@ export function renderLogoOnScope(
     renderConstruction(scope, result, center, options.showGrid)
   }
 
+  let itemMap: Map<string, paper.Item> | null = null
+
   // Draw the composed mark — use dissolution if active
-  if (options.dissolution) {
+  if (options.editMode && !options.dissolution) {
+    itemMap = renderIndividualShapes(scope, result.shapes, center, options.fillColor)
+  } else if (options.dissolution) {
     renderDissolution(scope, options.dissolution, center, options.fillColor)
   } else {
     renderFinalMark(scope, result, center, options.fillColor)
@@ -54,6 +59,7 @@ export function renderLogoOnScope(
   }
 
   scope.view.update()
+  return itemMap
 }
 
 /**

@@ -1,4 +1,4 @@
-import type { GenerationResult } from '../engine/types.ts'
+import type { GenerationResult, ShapeNode } from '../engine/types.ts'
 import type { DissolutionResult } from '../engine/effects/types.ts'
 
 /**
@@ -42,6 +42,40 @@ export function renderFinalMark(
       // Give up
     }
   }
+}
+
+export function renderIndividualShapes(
+  scope: paper.PaperScope,
+  shapes: ShapeNode[],
+  center: paper.Point,
+  fillColor: string,
+): Map<string, paper.Item> {
+  const itemMap = new Map<string, paper.Item>()
+
+  const sorted = [...shapes].sort((a, b) => {
+    if (a.operation === 'add' && b.operation === 'subtract') return -1
+    if (a.operation === 'subtract' && b.operation === 'add') return 1
+    return 0
+  })
+
+  for (const shape of sorted) {
+    if (!shape.pathData) continue
+    try {
+      const path = new scope.Path(shape.pathData)
+      path.translate(center)
+      path.name = shape.id
+      if (shape.operation === 'add') {
+        path.fillColor = new scope.Color(fillColor)
+      } else {
+        path.fillColor = new scope.Color('#ffffff')
+      }
+      path.strokeColor = null
+      itemMap.set(shape.id, path)
+    } catch {
+      // Skip invalid paths
+    }
+  }
+  return itemMap
 }
 
 export function renderDissolution(
