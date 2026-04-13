@@ -9,6 +9,14 @@ import { EffectControls } from './EffectControls.tsx'
 import { getModeDefinition, listModes, STYLE_FAMILIES } from '../../store/modes.ts'
 import { cn } from '../../lib/utils.ts'
 
+const PERSPECTIVE_PRESETS = [
+  { label: 'Flat', x: 0, y: 0 },
+  { label: 'Iso L', x: 25, y: -30 },
+  { label: 'Iso R', x: 25, y: 30 },
+  { label: 'Top', x: 35, y: 0 },
+  { label: 'Tilt', x: -15, y: 20 },
+] as const
+
 export function ParameterPanel() {
   const params = useLogoStore((s) => s.params)
   const ui = useLogoStore((s) => s.ui)
@@ -199,6 +207,26 @@ export function ParameterPanel() {
         </Section>
 
         <Section title="Perspective">
+          <div className="flex gap-1 mb-2">
+            {PERSPECTIVE_PRESETS.map((preset) => (
+              <button
+                key={preset.label}
+                type="button"
+                onClick={() => {
+                  setPerspective('perspectiveX', preset.x)
+                  setPerspective('perspectiveY', preset.y)
+                }}
+                className={cn(
+                  'flex-1 h-7 rounded-md text-[10px] transition-all',
+                  ui.perspectiveX === preset.x && ui.perspectiveY === preset.y
+                    ? 'bg-white/10 text-white font-medium ring-1 ring-white/10'
+                    : 'bg-white/[0.03] text-sidebar-muted hover:text-white hover:bg-white/5',
+                )}
+              >
+                {preset.label}
+              </button>
+            ))}
+          </div>
           <SliderControl label="Tilt X" value={ui.perspectiveX} min={-45} max={45} step={1} onChange={(v) => setPerspective('perspectiveX', v)} />
           <SliderControl label="Tilt Y" value={ui.perspectiveY} min={-45} max={45} step={1} onChange={(v) => setPerspective('perspectiveY', v)} />
           {(ui.perspectiveX !== 0 || ui.perspectiveY !== 0) && (

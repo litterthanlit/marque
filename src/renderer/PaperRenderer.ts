@@ -1,13 +1,16 @@
 import type { GenerationResult } from '../engine/types.ts'
 import type { DissolutionResult } from '../engine/effects/types.ts'
+import type { DrawnShape } from '../store/logoStore.ts'
 import { renderConstruction } from './ConstructionView.ts'
 import { renderFinalMark, renderDissolution } from './FinalView.ts'
+import { createPrimitivePath, type PrimitiveType } from '../engine/primitives/index.ts'
 
 interface RenderOptions {
   showGrid: boolean
   showConstruction: boolean
   fillColor: string
   dissolution?: DissolutionResult | null
+  drawnShapes?: DrawnShape[]
 }
 
 /**
@@ -36,7 +39,49 @@ export function renderLogoOnScope(
     renderFinalMark(scope, result, center, options.fillColor)
   }
 
+  // Draw user-placed shapes on top
+  if (options.drawnShapes && options.drawnShapes.length > 0) {
+    renderDrawnShapes(scope, options.drawnShapes, center, options.fillColor)
+  }
+
   scope.view.update()
+}
+
+/**
+ * Renders user-drawn shapes overlaid on the logo
+ */
+function renderDrawnShapes(
+  scope: paper.PaperScope,
+  shapes: DrawnShape[],
+  center: paper.Point,
+  fillColor: string,
+): void {
+  for (const shape of shapes) {
+    const pathData = createPrimitivePath(
+      shape.type as PrimitiveType,
+      shape.x,
+      shape.y,
+      shape.radius,
+      0,
+      shape.type === 'polygon' ? { sides: 5 } : {},
+    )
+
+    try {
+      const path = new scope.Path(pathData)
+      path.translate(center)
+
+      if (shape.operation === 'add') {
+        path.fillColor = new scope.Color(fillColor)
+        path.strokeColor = null
+      } else {
+        path.fillColor = new scope.Color(1, 1, 1)
+        path.strokeColor = new scope.Color(0.8, 0.2, 0.2, 0.5)
+        path.strokeWidth = 1
+      }
+    } catch {
+      // Skip invalid paths
+    }
+  }
 }
 
 /**

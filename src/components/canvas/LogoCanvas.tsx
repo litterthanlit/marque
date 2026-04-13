@@ -5,6 +5,7 @@ import { useLogoStore } from '../../store/logoStore.ts'
 import { DissolutionProcessor } from '../../engine/effects/dissolution.ts'
 import { useAnimation } from '../../hooks/useAnimation.ts'
 import { AnimationControls } from './AnimationControls.tsx'
+import { DrawingOverlay } from './DrawingOverlay.tsx'
 import type { AnimationKeyframe } from '../../engine/animation/types.ts'
 
 export function LogoCanvas() {
@@ -28,8 +29,9 @@ export function LogoCanvas() {
       showConstruction: ui.showConstruction,
       fillColor: params.fillColor,
       dissolution,
+      drawnShapes: ui.drawnShapes,
     })
-  }, [result, ui.showGrid, ui.showConstruction, params.fillColor, dissolution, scopeRef])
+  }, [result, ui.showGrid, ui.showConstruction, ui.drawnShapes, params.fillColor, dissolution, scopeRef])
 
   const onFrame = useCallback((keyframe: AnimationKeyframe) => {
     const scope = scopeRef.current
@@ -79,6 +81,7 @@ export function LogoCanvas() {
             className="size-full rounded-2xl"
             style={{ imageRendering: 'auto' }}
           />
+          <DrawingOverlay />
         </div>
         <AnimationControls playing={playing} canAnimate={canAnimate} onToggle={togglePlaying} />
       </div>

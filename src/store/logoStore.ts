@@ -18,11 +18,23 @@ import {
   sanitizeBrandInput,
 } from './modes.ts'
 
+export interface DrawnShape {
+  id: string
+  type: 'circle' | 'rectangle' | 'triangle' | 'polygon'
+  x: number
+  y: number
+  radius: number
+  operation: 'add' | 'subtract'
+}
+
 interface UIState {
   showGrid: boolean
   showConstruction: boolean
   perspectiveX: number
   perspectiveY: number
+  drawingMode: boolean
+  activeDrawShape: 'circle' | 'rectangle' | 'triangle' | 'polygon'
+  drawnShapes: DrawnShape[]
 }
 
 interface LogoStore {
@@ -45,6 +57,11 @@ interface LogoStore {
   toggleConstruction: () => void
   setPerspective: (axis: 'perspectiveX' | 'perspectiveY', value: number) => void
   resetPerspective: () => void
+  setDrawingMode: (enabled: boolean) => void
+  setActiveDrawShape: (shape: 'circle' | 'rectangle' | 'triangle' | 'polygon') => void
+  addDrawnShape: (shape: Omit<DrawnShape, 'id'>) => void
+  removeDrawnShape: (id: string) => void
+  clearDrawnShapes: () => void
   applyPreset: (params: Partial<LogoParams>) => void
   toggleShape: (shape: string) => void
   setEffectParam: <K extends keyof DissolutionParams>(key: K, value: DissolutionParams[K]) => void
@@ -65,6 +82,9 @@ export const useLogoStore = create<LogoStore>()(
         showConstruction: true,
         perspectiveX: 0,
         perspectiveY: 0,
+        drawingMode: false,
+        activeDrawShape: 'circle',
+        drawnShapes: [],
       },
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
@@ -173,6 +193,40 @@ export const useLogoStore = create<LogoStore>()(
       resetPerspective: () =>
         set((state) => ({
           ui: { ...state.ui, perspectiveX: 0, perspectiveY: 0 },
+        })),
+
+      setDrawingMode: (enabled) =>
+        set((state) => ({
+          ui: { ...state.ui, drawingMode: enabled },
+        })),
+
+      setActiveDrawShape: (shape) =>
+        set((state) => ({
+          ui: { ...state.ui, activeDrawShape: shape },
+        })),
+
+      addDrawnShape: (shape) =>
+        set((state) => ({
+          ui: {
+            ...state.ui,
+            drawnShapes: [
+              ...state.ui.drawnShapes,
+              { ...shape, id: crypto.randomUUID() },
+            ],
+          },
+        })),
+
+      removeDrawnShape: (id) =>
+        set((state) => ({
+          ui: {
+            ...state.ui,
+            drawnShapes: state.ui.drawnShapes.filter((s) => s.id !== id),
+          },
+        })),
+
+      clearDrawnShapes: () =>
+        set((state) => ({
+          ui: { ...state.ui, drawnShapes: [] },
         })),
 
       applyPreset: (presetParams) =>
