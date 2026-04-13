@@ -35,6 +35,16 @@ export interface ShapeOverride {
   hidden: boolean
 }
 
+export interface DrawnPath {
+  id: string
+  tool: 'pencil' | 'pen' | 'graffiti'
+  pathData: string
+  fillColor: string | null
+  strokeColor: string | null
+  strokeWidth: number
+  closed: boolean
+}
+
 type ThemeMode = 'dark' | 'light'
 
 interface UIState {
@@ -49,6 +59,8 @@ interface UIState {
   editMode: boolean
   selectedShapeId: string | null
   shapeOverrides: Record<string, ShapeOverride>
+  drawnPaths: DrawnPath[]
+  activeTool: 'select' | 'pencil' | 'pen' | 'graffiti' | null
 }
 
 interface LogoStore {
@@ -86,6 +98,10 @@ interface LogoStore {
   updateShapeOverride: (id: string, update: Partial<ShapeOverride>) => void
   deleteSelectedShape: () => void
   clearShapeOverrides: () => void
+  addDrawnPath: (path: Omit<DrawnPath, 'id'>) => void
+  removeDrawnPath: (id: string) => void
+  clearDrawnPaths: () => void
+  setActiveTool: (tool: 'select' | 'pencil' | 'pen' | 'graffiti' | null) => void
 }
 
 export const useLogoStore = create<LogoStore>()(
@@ -109,6 +125,8 @@ export const useLogoStore = create<LogoStore>()(
         editMode: false,
         selectedShapeId: null,
         shapeOverrides: {},
+        drawnPaths: [],
+        activeTool: null,
       },
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
@@ -359,6 +377,42 @@ export const useLogoStore = create<LogoStore>()(
       clearShapeOverrides: () =>
         set((state) => ({
           ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
+        })),
+
+      addDrawnPath: (path) =>
+        set((state) => ({
+          ui: {
+            ...state.ui,
+            drawnPaths: [
+              ...state.ui.drawnPaths,
+              { ...path, id: crypto.randomUUID() },
+            ],
+          },
+        })),
+
+      removeDrawnPath: (id) =>
+        set((state) => ({
+          ui: {
+            ...state.ui,
+            drawnPaths: state.ui.drawnPaths.filter((p) => p.id !== id),
+          },
+        })),
+
+      clearDrawnPaths: () =>
+        set((state) => ({
+          ui: { ...state.ui, drawnPaths: [] },
+        })),
+
+      setActiveTool: (tool) =>
+        set((state) => ({
+          ui: {
+            ...state.ui,
+            activeTool: tool,
+            // Enter edit mode when selecting the select tool
+            editMode: tool === 'select' ? true : state.ui.editMode,
+            // Exit drawing mode when switching tools
+            drawingMode: false,
+          },
         })),
     }),
     {
