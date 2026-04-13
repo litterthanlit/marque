@@ -27,6 +27,14 @@ export interface DrawnShape {
   operation: 'add' | 'subtract'
 }
 
+export interface ShapeOverride {
+  dx: number
+  dy: number
+  scale: number
+  rotation: number
+  hidden: boolean
+}
+
 type ThemeMode = 'dark' | 'light'
 
 interface UIState {
@@ -38,6 +46,9 @@ interface UIState {
   activeDrawShape: 'circle' | 'rectangle' | 'triangle' | 'polygon'
   drawnShapes: DrawnShape[]
   theme: ThemeMode
+  editMode: boolean
+  selectedShapeId: string | null
+  shapeOverrides: Record<string, ShapeOverride>
 }
 
 interface LogoStore {
@@ -70,6 +81,11 @@ interface LogoStore {
   toggleShape: (shape: string) => void
   setEffectParam: <K extends keyof DissolutionParams>(key: K, value: DissolutionParams[K]) => void
   toggleDissolution: () => void
+  toggleEditMode: () => void
+  selectShape: (id: string | null) => void
+  updateShapeOverride: (id: string, update: Partial<ShapeOverride>) => void
+  deleteSelectedShape: () => void
+  clearShapeOverrides: () => void
 }
 
 export const useLogoStore = create<LogoStore>()(
@@ -90,6 +106,9 @@ export const useLogoStore = create<LogoStore>()(
         activeDrawShape: 'circle',
         drawnShapes: [],
         theme: (window.localStorage.getItem('dalat.theme') as ThemeMode) || 'dark',
+        editMode: false,
+        selectedShapeId: null,
+        shapeOverrides: {},
       },
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
@@ -277,6 +296,60 @@ export const useLogoStore = create<LogoStore>()(
               enabled: !state.effectParams.dissolution.enabled,
             },
           },
+        })),
+
+      toggleEditMode: () =>
+        set((state) => ({
+          ui: {
+            ...state.ui,
+            editMode: !state.ui.editMode,
+            selectedShapeId: null,
+          },
+        })),
+
+      selectShape: (id) =>
+        set((state) => ({
+          ui: { ...state.ui, selectedShapeId: id },
+        })),
+
+      updateShapeOverride: (id, update) =>
+        set((state) => {
+          const current = state.ui.shapeOverrides[id] ?? {
+            dx: 0, dy: 0, scale: 1, rotation: 0, hidden: false,
+          }
+          return {
+            ui: {
+              ...state.ui,
+              shapeOverrides: {
+                ...state.ui.shapeOverrides,
+                [id]: { ...current, ...update },
+              },
+            },
+          }
+        }),
+
+      deleteSelectedShape: () =>
+        set((state) => {
+          const id = state.ui.selectedShapeId
+          if (!id) return state
+          const current = state.ui.shapeOverrides[id] ?? {
+            dx: 0, dy: 0, scale: 1, rotation: 0, hidden: false,
+          }
+          return {
+            ui: {
+              ...state.ui,
+              selectedShapeId: null,
+              shapeOverrides: {
+                ...state.ui.shapeOverrides,
+                [id]: { ...current, hidden: true },
+              },
+            },
+          }
+        }),
+
+      clearShapeOverrides: () =>
+        set((state) => ({
+          ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
         })),
     }),
     {
