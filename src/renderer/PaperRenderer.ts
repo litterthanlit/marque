@@ -5,8 +5,6 @@ import { renderConstruction } from './ConstructionView.ts'
 import { renderFinalMark, renderDissolution } from './FinalView.ts'
 import { createPrimitivePath, type PrimitiveType } from '../engine/primitives/index.ts'
 
-/** The canvas pixel size set on the <canvas> element */
-const CANVAS_PX = 600
 
 interface RenderOptions {
   showGrid: boolean
@@ -17,12 +15,11 @@ interface RenderOptions {
 }
 
 /**
- * Returns the canvas center in pixel coordinates (not CSS coordinates).
- * Paper.js view.size can reflect the CSS display size which differs
- * from the canvas buffer size. We use the known pixel size directly.
+ * Returns the center of the Paper.js view in project coordinates.
+ * Using view.center accounts for any CSS/pixel scaling Paper.js applies.
  */
 function getCenter(scope: paper.PaperScope): paper.Point {
-  return new scope.Point(CANVAS_PX / 2, CANVAS_PX / 2)
+  return scope.view.center
 }
 
 /**
