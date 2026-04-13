@@ -92,7 +92,7 @@ export function Onboarding() {
       <div className="relative w-full max-w-md mx-4">
         <div className="bg-surface-raised border border-border rounded-2xl shadow-2xl shadow-black/50 overflow-hidden">
           {/* Progress bar */}
-          <div className="h-0.5 bg-white/5">
+          <div className="h-0.5 bg-interactive-active">
             <div
               className="h-full bg-white/30 transition-all duration-300"
               style={{ width: `${((step + 1) / STEPS.length) * 100}%` }}
@@ -106,14 +106,14 @@ export function Onboarding() {
                 {step + 1} of {STEPS.length}
               </span>
               {current.shortcut && (
-                <kbd className="ml-auto text-[10px] font-mono text-sidebar-muted bg-white/5 border border-border rounded px-1.5 py-0.5">
+                <kbd className="ml-auto text-[10px] font-mono text-sidebar-muted bg-interactive-active border border-border rounded px-1.5 py-0.5">
                   {current.shortcut}
                 </kbd>
               )}
             </div>
 
             {/* Content */}
-            <h2 className="text-lg font-semibold text-white mb-2">{current.title}</h2>
+            <h2 className="text-lg font-semibold text-fg mb-2">{current.title}</h2>
             <p className="text-sm text-sidebar-text leading-relaxed">{current.description}</p>
           </div>
 
@@ -121,7 +121,7 @@ export function Onboarding() {
           <div className="flex items-center justify-between px-6 py-4 border-t border-border">
             <button
               onClick={dismiss}
-              className="text-xs text-sidebar-muted hover:text-white transition-colors"
+              className="text-xs text-sidebar-muted hover:text-fg transition-colors"
             >
               Skip tutorial
             </button>
@@ -129,7 +129,7 @@ export function Onboarding() {
               {step > 0 && (
                 <button
                   onClick={prev}
-                  className="h-8 px-3 text-xs text-sidebar-muted hover:text-white rounded-lg hover:bg-white/5 transition-colors"
+                  className="h-8 px-3 text-xs text-sidebar-muted hover:text-fg rounded-lg hover:bg-interactive-active transition-colors"
                 >
                   Back
                 </button>
@@ -155,7 +155,7 @@ export function Onboarding() {
               onClick={() => setStep(i)}
               className={cn(
                 'size-1.5 rounded-full transition-all',
-                i === step ? 'bg-white scale-125' : 'bg-white/20 hover:bg-white/40',
+                i === step ? 'bg-white scale-125' : 'bg-interactive hover:bg-interactive-hover',
               )}
             />
           ))}

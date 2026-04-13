@@ -34,8 +34,8 @@ export function SliderControl({ label, value, min, max, step, onChange }: Slider
         onValueChange={([v]) => setDraftValue(v)}
         onValueCommit={([v]) => onChange(v)}
       >
-        <Slider.Track className="relative grow h-[3px] bg-white/[0.06] rounded-full">
-          <Slider.Range className="absolute h-full bg-white/20 rounded-full group-hover:bg-white/30 transition-colors" />
+        <Slider.Track className="relative grow h-[3px] bg-interactive-active rounded-full">
+          <Slider.Range className="absolute h-full bg-interactive rounded-full group-hover:bg-interactive-hover transition-colors" />
         </Slider.Track>
         <Slider.Thumb className="block size-3 bg-white rounded-full outline-none shadow-sm shadow-black/30 hover:scale-110 focus-visible:ring-2 focus-visible:ring-accent/50 transition-transform" />
       </Slider.Root>

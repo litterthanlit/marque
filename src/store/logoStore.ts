@@ -27,6 +27,8 @@ export interface DrawnShape {
   operation: 'add' | 'subtract'
 }
 
+type ThemeMode = 'dark' | 'light'
+
 interface UIState {
   showGrid: boolean
   showConstruction: boolean
@@ -35,6 +37,7 @@ interface UIState {
   drawingMode: boolean
   activeDrawShape: 'circle' | 'rectangle' | 'triangle' | 'polygon'
   drawnShapes: DrawnShape[]
+  theme: ThemeMode
 }
 
 interface LogoStore {
@@ -62,6 +65,7 @@ interface LogoStore {
   addDrawnShape: (shape: Omit<DrawnShape, 'id'>) => void
   removeDrawnShape: (id: string) => void
   clearDrawnShapes: () => void
+  toggleTheme: () => void
   applyPreset: (params: Partial<LogoParams>) => void
   toggleShape: (shape: string) => void
   setEffectParam: <K extends keyof DissolutionParams>(key: K, value: DissolutionParams[K]) => void
@@ -85,6 +89,7 @@ export const useLogoStore = create<LogoStore>()(
         drawingMode: false,
         activeDrawShape: 'circle',
         drawnShapes: [],
+        theme: (window.localStorage.getItem('dalat.theme') as ThemeMode) || 'dark',
       },
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
@@ -228,6 +233,14 @@ export const useLogoStore = create<LogoStore>()(
         set((state) => ({
           ui: { ...state.ui, drawnShapes: [] },
         })),
+
+      toggleTheme: () =>
+        set((state) => {
+          const next = state.ui.theme === 'dark' ? 'light' : 'dark'
+          window.localStorage.setItem('dalat.theme', next)
+          document.documentElement.classList.toggle('light', next === 'light')
+          return { ui: { ...state.ui, theme: next } }
+        }),
 
       applyPreset: (presetParams) =>
         set((state) => ({

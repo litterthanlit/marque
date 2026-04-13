@@ -49,8 +49,8 @@ export function ParameterPanel() {
               className={cn(
                 'h-8 px-2 rounded-lg text-xs transition-colors',
                 mode.id === params.modeId
-                  ? 'bg-white/10 text-white font-medium ring-1 ring-white/10'
-                  : 'text-sidebar-muted hover:text-white hover:bg-white/5',
+                  ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
+                  : 'text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
               )}
             >
               {mode.name}
@@ -72,8 +72,8 @@ export function ParameterPanel() {
               className={cn(
                 'flex-1 h-8 rounded-lg text-xs transition-all',
                 family.id === params.styleFamily
-                  ? 'bg-white/10 text-white font-medium ring-1 ring-white/10'
-                  : 'text-sidebar-muted hover:text-white hover:bg-white/5',
+                  ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
+                  : 'text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
               )}
             >
               {family.label}
@@ -95,7 +95,7 @@ export function ParameterPanel() {
                 onChange={(e) => setBrandInput({ initials: e.target.value.toUpperCase() })}
                 maxLength={3}
                 placeholder="MM"
-                className="flex-1 h-8 px-2.5 text-xs font-mono bg-white/5 border border-border rounded-lg text-white outline-none focus:border-sidebar-muted transition-colors"
+                className="flex-1 h-8 px-2.5 text-xs font-mono bg-interactive border border-border rounded-lg text-fg outline-none focus:border-sidebar-muted transition-colors"
               />
             </div>
           )}
@@ -114,8 +114,8 @@ export function ParameterPanel() {
                     className={cn(
                       'flex-1 h-7 rounded-md text-[10px] capitalize transition-all',
                       params.enabledShapes.includes(shape)
-                        ? 'bg-white/10 text-white font-medium ring-1 ring-white/10'
-                        : 'bg-white/[0.03] text-sidebar-muted hover:text-white hover:bg-white/5',
+                        ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
+                        : 'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
                     )}
                   >
                     {shape === 'rectangle' ? 'Rect' : shape}
@@ -219,8 +219,8 @@ export function ParameterPanel() {
                 className={cn(
                   'flex-1 h-7 rounded-md text-[10px] transition-all',
                   ui.perspectiveX === preset.x && ui.perspectiveY === preset.y
-                    ? 'bg-white/10 text-white font-medium ring-1 ring-white/10'
-                    : 'bg-white/[0.03] text-sidebar-muted hover:text-white hover:bg-white/5',
+                    ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
+                    : 'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
                 )}
               >
                 {preset.label}
@@ -233,7 +233,7 @@ export function ParameterPanel() {
             <button
               type="button"
               onClick={resetPerspective}
-              className="h-7 text-xs text-sidebar-muted hover:text-white transition-colors"
+              className="h-7 text-xs text-sidebar-muted hover:text-fg transition-colors"
             >
               Reset
             </button>
@@ -266,7 +266,7 @@ function Section({ title, defaultOpen = false, children }: { title: string; defa
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex items-center justify-between w-full px-3 py-2.5 text-[10px] uppercase tracking-widest text-sidebar-muted hover:text-white transition-colors"
+        className="flex items-center justify-between w-full px-3 py-2.5 text-[10px] uppercase tracking-widest text-sidebar-muted hover:text-fg transition-colors"
       >
         <span>{title}</span>
         <svg className={cn('size-3 transition-transform', open && 'rotate-180')} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -286,8 +286,8 @@ function ToggleRow({ label, checked, onChange }: { label: string; checked: boole
       className={cn(
         'flex-1 h-8 px-2.5 rounded-lg text-xs transition-all',
         checked
-          ? 'bg-white/10 text-white font-medium ring-1 ring-white/10'
-          : 'bg-white/[0.03] text-sidebar-muted hover:text-white hover:bg-white/5',
+          ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
+          : 'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
       )}
     >
       {label}
@@ -297,7 +297,7 @@ function ToggleRow({ label, checked, onChange }: { label: string; checked: boole
 
 function SegmentRow({ value, options, onChange }: { value: number; options: Array<{ l: string; v: number }>; onChange: (v: number) => void }) {
   return (
-    <div className="flex gap-1 p-0.5 bg-white/[0.03] rounded-lg">
+    <div className="flex gap-1 p-0.5 bg-interactive-active rounded-lg">
       {options.map((opt) => (
         <button
           key={opt.v}
@@ -306,8 +306,8 @@ function SegmentRow({ value, options, onChange }: { value: number; options: Arra
           className={cn(
             'flex-1 h-7 rounded-md text-xs transition-all',
             value === opt.v
-              ? 'bg-white/10 text-white font-medium shadow-sm'
-              : 'text-sidebar-muted hover:text-white',
+              ? 'bg-interactive text-fg font-medium shadow-sm'
+              : 'text-sidebar-muted hover:text-fg',
           )}
         >
           {opt.l}

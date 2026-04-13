@@ -57,7 +57,7 @@ export function AppShell() {
         ref={controlsButtonRef}
         type="button"
         onClick={() => setMobilePanelOpen(true)}
-        className="md:hidden fixed right-4 bottom-4 z-30 rounded-lg bg-white/10 backdrop-blur-sm px-4 py-2.5 text-xs font-medium text-white shadow-lg border border-white/10"
+        className="md:hidden fixed right-4 bottom-4 z-30 rounded-lg bg-interactive backdrop-blur-sm px-4 py-2.5 text-xs font-medium text-fg shadow-lg border border-border"
       >
         Controls
       </button>
@@ -78,7 +78,7 @@ export function AppShell() {
                 ref={closeButtonRef}
                 type="button"
                 onClick={() => setMobilePanelOpen(false)}
-                className="text-xs text-sidebar-muted hover:text-white transition-colors"
+                className="text-xs text-sidebar-muted hover:text-fg transition-colors"
               >
                 Done
               </button>

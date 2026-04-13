@@ -9,6 +9,12 @@ function App() {
   useGeneration()
   useUrlState()
 
+  // Apply saved theme on mount
+  useEffect(() => {
+    const theme = useLogoStore.getState().ui.theme
+    document.documentElement.classList.toggle('light', theme === 'light')
+  }, [])
+
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       // Skip when input is focused

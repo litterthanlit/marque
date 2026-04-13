@@ -39,7 +39,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
         aria-labelledby={titleId}
         className="relative bg-surface-raised border border-border rounded-2xl shadow-2xl shadow-black/40 p-5 w-80"
       >
-        <h2 id={titleId} className="text-sm font-semibold text-white mb-4">Export</h2>
+        <h2 id={titleId} className="text-sm font-semibold text-fg mb-4">Export</h2>
 
         <div className="flex flex-col gap-3">
           <div className="grid grid-cols-2 gap-2">
@@ -71,7 +71,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
               disabled={!canExport}
               className={cn(
                 'flex-1 h-9 text-sm font-medium rounded-lg transition-colors',
-                'border border-border text-white hover:bg-white/5',
+                'border border-border text-fg hover:bg-interactive-hover',
                 'disabled:opacity-30 disabled:cursor-default',
               )}
             >
@@ -80,7 +80,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
             <select
               value={pngScale}
               onChange={(e) => setPngScale(Number(e.target.value))}
-              className="h-9 px-2 text-xs border border-border rounded-lg bg-surface text-white"
+              className="h-9 px-2 text-xs border border-border rounded-lg bg-surface text-fg"
             >
               <option value={1}>1x</option>
               <option value={2}>2x</option>
@@ -92,7 +92,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
         <button
           ref={closeButtonRef}
           onClick={onClose}
-          className="mt-3 w-full h-8 text-xs text-sidebar-muted hover:text-white rounded-lg hover:bg-white/5 transition-colors"
+          className="mt-3 w-full h-8 text-xs text-sidebar-muted hover:text-fg rounded-lg hover:bg-interactive-hover transition-colors"
         >
           Cancel
         </button>
@@ -108,7 +108,7 @@ function SelectField({ label, value, onChange, options }: { label: string; value
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="h-8 px-2 text-xs border border-border rounded-lg bg-surface text-white"
+        className="h-8 px-2 text-xs border border-border rounded-lg bg-surface text-fg"
       >
         {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
       </select>

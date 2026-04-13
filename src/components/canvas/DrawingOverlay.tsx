@@ -62,7 +62,7 @@ export function DrawingOverlay() {
             'h-8 px-3 rounded-lg text-xs font-medium transition-colors',
             drawingMode
               ? 'bg-white text-neutral-900'
-              : 'text-white/70 hover:text-white hover:bg-white/10',
+              : 'text-fg/70 hover:text-fg hover:bg-white/10',
           )}
         >
           {drawingMode ? 'Drawing' : 'Draw'}
@@ -79,8 +79,8 @@ export function DrawingOverlay() {
                 className={cn(
                   'size-8 flex items-center justify-center rounded-lg transition-colors',
                   activeDrawShape === shape.type
-                    ? 'bg-white/20 text-white'
-                    : 'text-white/50 hover:text-white hover:bg-white/10',
+                    ? 'bg-white/20 text-fg'
+                    : 'text-fg/50 hover:text-fg hover:bg-white/10',
                 )}
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
@@ -93,7 +93,7 @@ export function DrawingOverlay() {
               onClick={() => {
                 useLogoStore.getState().clearDrawnShapes()
               }}
-              className="h-8 px-2 rounded-lg text-xs text-white/50 hover:text-white hover:bg-white/10 transition-colors"
+              className="h-8 px-2 rounded-lg text-xs text-fg/50 hover:text-fg hover:bg-white/10 transition-colors"
               title="Clear all drawn shapes"
             >
               Clear
