@@ -100,8 +100,8 @@ export const ModularGenerator: LogoGenerator = {
           })
 
     // Build path data
-    const booleanInputs = rotatedShapes.map((shape) => ({
-      pathData: createPrimitivePath(
+    const booleanInputs = rotatedShapes.map((shape) => {
+      const pathData = createPrimitivePath(
         shape.type as PrimitiveType,
         shape.center.x,
         shape.center.y,
@@ -109,9 +109,10 @@ export const ModularGenerator: LogoGenerator = {
         shape.rotation,
         shape.params,
         rng,
-      ),
-      operation: shape.operation,
-    }))
+      )
+      shape.pathData = pathData
+      return { pathData, operation: shape.operation }
+    })
 
     // If circle clip, add a large circle as the first additive shape
     if (useClip) {

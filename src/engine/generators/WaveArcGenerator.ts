@@ -238,6 +238,7 @@ export const WaveArcGenerator: LogoGenerator = {
         radius: outerRadius,
         rotation: 0,
         params: { rx: outerRx, ry: outerRy },
+        pathData: outerPath,
       })
 
       shapes.push({
@@ -249,6 +250,7 @@ export const WaveArcGenerator: LogoGenerator = {
         radius: innerRadius,
         rotation: 0,
         params: { rx: innerRx, ry: innerRy },
+        pathData: innerPath,
       })
 
       // Boolean subtract: crescent = outer minus inner

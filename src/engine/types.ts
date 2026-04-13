@@ -49,6 +49,7 @@ export interface ShapeNode {
   radius: number
   rotation: number
   params: Record<string, number>
+  pathData?: string
 }
 
 export interface CompositeLayer {
