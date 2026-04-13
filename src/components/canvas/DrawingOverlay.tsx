@@ -1,106 +1,83 @@
-import { useCallback, useRef } from 'react'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { cn } from '../../lib/utils.ts'
 
-type DrawableShape = 'circle' | 'rectangle' | 'triangle' | 'polygon'
+type Tool = 'select' | 'pencil' | 'pen' | 'graffiti'
 
-const SHAPE_OPTIONS: Array<{ type: DrawableShape; label: string; icon: string }> = [
-  { type: 'circle', label: 'Circle', icon: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z' },
-  { type: 'rectangle', label: 'Rectangle', icon: 'M3 5h18v14H3z' },
-  { type: 'triangle', label: 'Triangle', icon: 'M12 3L22 21H2z' },
-  { type: 'polygon', label: 'Polygon', icon: 'M12 2l7.5 5.5-3 9h-9l-3-9z' },
+const TOOLS: Array<{ id: Tool; label: string; icon: string }> = [
+  {
+    id: 'select',
+    label: 'Select',
+    icon: 'M4 4l7 17 2.5-6.5L20 12z',
+  },
+  {
+    id: 'pencil',
+    label: 'Pencil',
+    icon: 'M3 21l1.5-4.5L17.7 3.3a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4L7.5 19.5z',
+  },
+  {
+    id: 'pen',
+    label: 'Pen',
+    icon: 'M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 4a2 2 0 1 1 0 4 2 2 0 0 1 0-4z',
+  },
+  {
+    id: 'graffiti',
+    label: 'Spray',
+    icon: 'M12 2v6m4-4l-2 2m-4-2l2 2M7 12a5 5 0 0 0 10 0M9 22h6m-3-5v5',
+  },
 ]
 
 export function DrawingOverlay() {
-  const drawingMode = useLogoStore((s) => s.ui.drawingMode)
-  const activeDrawShape = useLogoStore((s) => s.ui.activeDrawShape)
-  const setDrawingMode = useLogoStore((s) => s.setDrawingMode)
-  const setActiveDrawShape = useLogoStore((s) => s.setActiveDrawShape)
-  const addDrawnShape = useLogoStore((s) => s.addDrawnShape)
-  const overlayRef = useRef<HTMLDivElement>(null)
-
-  const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!drawingMode || !activeDrawShape) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    // Convert click position to engine coordinates (0,0 centered, 500x500 space)
-    const canvasX = ((e.clientX - rect.left) / rect.width) * 500
-    const canvasY = ((e.clientY - rect.top) / rect.height) * 500
-    // Convert to engine space (centered at 0,0)
-    const engineX = canvasX - 250
-    const engineY = canvasY - 250
-
-    addDrawnShape({
-      type: activeDrawShape,
-      x: Math.round(engineX),
-      y: Math.round(engineY),
-      radius: 30,
-      operation: 'add',
-    })
-  }, [drawingMode, activeDrawShape, addDrawnShape])
+  const activeTool = useLogoStore((s) => s.ui.activeTool)
+  const setActiveTool = useLogoStore((s) => s.setActiveTool)
+  const clearDrawnPaths = useLogoStore((s) => s.clearDrawnPaths)
+  const drawnPaths = useLogoStore((s) => s.ui.drawnPaths)
 
   return (
-    <>
-      {/* Drawing mode click target — covers canvas */}
-      {drawingMode && (
-        <div
-          ref={overlayRef}
-          onClick={handleCanvasClick}
-          className="absolute inset-0 z-10 cursor-crosshair rounded-2xl"
-        />
-      )}
-
-      {/* Floating toolbar */}
-      <div className={cn(
+    <div
+      className={cn(
         'absolute top-4 left-1/2 -translate-x-1/2 z-20',
         'flex items-center gap-1 p-1 rounded-xl',
         'bg-black/70 backdrop-blur-sm border border-white/10',
-      )}>
-        {/* Draw mode toggle */}
+      )}
+    >
+      {TOOLS.map((tool) => (
         <button
-          onClick={() => setDrawingMode(!drawingMode)}
+          key={tool.id}
+          onClick={() => setActiveTool(activeTool === tool.id ? null : tool.id)}
+          title={tool.label}
           className={cn(
-            'h-8 px-3 rounded-lg text-xs font-medium transition-colors',
-            drawingMode
+            'size-8 flex items-center justify-center rounded-lg transition-colors',
+            activeTool === tool.id
               ? 'bg-white text-neutral-900'
-              : 'text-fg/70 hover:text-fg hover:bg-white/10',
+              : 'text-fg/50 hover:text-fg hover:bg-white/10',
           )}
         >
-          {drawingMode ? 'Drawing' : 'Draw'}
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill={tool.id === 'select' ? 'currentColor' : 'none'}
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinejoin="round"
+            strokeLinecap="round"
+          >
+            <path d={tool.icon} />
+          </svg>
         </button>
-
-        {drawingMode && (
-          <>
-            <div className="w-px h-5 bg-white/10" />
-            {SHAPE_OPTIONS.map((shape) => (
-              <button
-                key={shape.type}
-                onClick={() => setActiveDrawShape(shape.type)}
-                title={shape.label}
-                className={cn(
-                  'size-8 flex items-center justify-center rounded-lg transition-colors',
-                  activeDrawShape === shape.type
-                    ? 'bg-white/20 text-fg'
-                    : 'text-fg/50 hover:text-fg hover:bg-white/10',
-                )}
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round">
-                  <path d={shape.icon} />
-                </svg>
-              </button>
-            ))}
-            <div className="w-px h-5 bg-white/10" />
-            <button
-              onClick={() => {
-                useLogoStore.getState().clearDrawnShapes()
-              }}
-              className="h-8 px-2 rounded-lg text-xs text-fg/50 hover:text-fg hover:bg-white/10 transition-colors"
-              title="Clear all drawn shapes"
-            >
-              Clear
-            </button>
-          </>
-        )}
-      </div>
-    </>
+      ))}
+      {drawnPaths.length > 0 && (
+        <>
+          <div className="w-px h-5 bg-white/10" />
+          <button
+            onClick={clearDrawnPaths}
+            className="h-8 px-2 rounded-lg text-xs text-fg/50 hover:text-fg hover:bg-white/10 transition-colors"
+            title="Clear all drawn paths"
+          >
+            Clear
+          </button>
+        </>
+      )}
+    </div>
   )
 }

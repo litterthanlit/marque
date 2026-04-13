@@ -3,16 +3,21 @@ import { usePaperScope } from '../../renderer/usePaperScope.ts'
 import { renderLogoOnScope } from '../../renderer/PaperRenderer.ts'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { InteractionLayer } from '../../renderer/InteractionLayer.ts'
+import { PencilTool } from '../../renderer/tools/PencilTool.ts'
+import { PenTool } from '../../renderer/tools/PenTool.ts'
+import { GraffitiTool } from '../../renderer/tools/GraffitiTool.ts'
 import { DissolutionProcessor } from '../../engine/effects/dissolution.ts'
 import { useAnimation } from '../../hooks/useAnimation.ts'
 import { AnimationControls } from './AnimationControls.tsx'
 import { DrawingOverlay } from './DrawingOverlay.tsx'
 import type { AnimationKeyframe } from '../../engine/animation/types.ts'
+import type { DrawnPath } from '../../store/logoStore.ts'
 
 export function LogoCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const scopeRef = usePaperScope(canvasRef)
   const interactionRef = useRef<InteractionLayer | null>(null)
+  const toolRef = useRef<PencilTool | PenTool | GraffitiTool | null>(null)
   const result = useLogoStore((s) => s.result)
   const ui = useLogoStore((s) => s.ui)
   const params = useLogoStore((s) => s.params)
@@ -21,15 +26,18 @@ export function LogoCanvas() {
   const updateShapeOverride = useLogoStore((s) => s.updateShapeOverride)
   const deleteSelectedShape = useLogoStore((s) => s.deleteSelectedShape)
   const clearShapeOverrides = useLogoStore((s) => s.clearShapeOverrides)
+  const addDrawnPath = useLogoStore((s) => s.addDrawnPath)
 
   const dissolution = useMemo(() => {
     if (!result || !effectParams.dissolution.enabled) return null
     return DissolutionProcessor.process(result, effectParams.dissolution)
   }, [result, effectParams.dissolution])
 
+  // Render logo + drawn paths + interaction layer
   useEffect(() => {
     const scope = scopeRef.current
     if (!scope || !result) return
+
     const itemMap = renderLogoOnScope(scope, result, {
       showGrid: ui.showGrid,
       showConstruction: ui.showConstruction,
@@ -39,6 +47,10 @@ export function LogoCanvas() {
       editMode: ui.editMode,
     })
 
+    // Render user-drawn vector paths on top
+    renderDrawnPaths(scope, ui.drawnPaths)
+
+    // Set up interaction layer for edit/select mode
     if (ui.editMode && itemMap) {
       if (!interactionRef.current) {
         interactionRef.current = new InteractionLayer(scope, {
@@ -59,7 +71,118 @@ export function LogoCanvas() {
       interactionRef.current.destroy()
       interactionRef.current = null
     }
-  }, [result, ui.showGrid, ui.showConstruction, ui.drawnShapes, ui.editMode, ui.shapeOverrides, ui.selectedShapeId, params.fillColor, dissolution, scopeRef, selectShape, updateShapeOverride])
+  }, [result, ui.showGrid, ui.showConstruction, ui.drawnShapes, ui.drawnPaths, ui.editMode, ui.shapeOverrides, ui.selectedShapeId, params.fillColor, dissolution, scopeRef, selectShape, updateShapeOverride])
+
+  // Manage active drawing tool lifecycle
+  useEffect(() => {
+    const scope = scopeRef.current
+    if (!scope) return
+
+    // Destroy previous tool
+    if (toolRef.current) {
+      toolRef.current.destroy()
+      toolRef.current = null
+    }
+
+    const callbacks = {
+      onPathComplete: (path: Omit<DrawnPath, 'id'>) => {
+        addDrawnPath(path)
+      },
+    }
+
+    const color = params.fillColor
+
+    switch (ui.activeTool) {
+      case 'pencil':
+        toolRef.current = new PencilTool(scope, callbacks, { strokeColor: color, strokeWidth: 2 })
+        break
+      case 'pen':
+        toolRef.current = new PenTool(scope, callbacks, { strokeColor: color, strokeWidth: 2 })
+        break
+      case 'graffiti':
+        toolRef.current = new GraffitiTool(scope, callbacks, { fillColor: color })
+        break
+    }
+
+    return () => {
+      if (toolRef.current) {
+        toolRef.current.destroy()
+        toolRef.current = null
+      }
+    }
+  }, [ui.activeTool, params.fillColor, scopeRef, addDrawnPath])
+
+  // Mouse events — route to active tool or interaction layer
+  const getPoint = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!scopeRef.current) return null
+    const rect = e.currentTarget.getBoundingClientRect()
+    return new scopeRef.current.Point(e.clientX - rect.left, e.clientY - rect.top)
+  }, [scopeRef])
+
+  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const point = getPoint(e)
+    if (!point) return
+
+    if (toolRef.current) {
+      toolRef.current.onMouseDown(point)
+      return
+    }
+    if (ui.editMode && interactionRef.current) {
+      interactionRef.current.onMouseDown(point)
+    }
+  }, [getPoint, ui.editMode])
+
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const point = getPoint(e)
+    if (!point) return
+
+    if (toolRef.current) {
+      toolRef.current.onMouseDrag(point)
+      return
+    }
+    if (ui.editMode && interactionRef.current) {
+      interactionRef.current.onMouseDrag(point)
+    }
+  }, [getPoint, ui.editMode])
+
+  const handleMouseUp = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const point = getPoint(e)
+    if (!point) return
+
+    if (toolRef.current) {
+      toolRef.current.onMouseUp(point)
+      return
+    }
+    if (ui.editMode && interactionRef.current) {
+      interactionRef.current.onMouseUp(point)
+    }
+  }, [getPoint, ui.editMode])
+
+  const handleDoubleClick = useCallback((_e: React.MouseEvent<HTMLCanvasElement>) => {
+    // Finalize pen tool on double-click
+    if (toolRef.current && toolRef.current instanceof PenTool) {
+      toolRef.current.finalize()
+    }
+  }, [])
+
+  // Keyboard: Enter to finalize pen, Escape to cancel
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (!toolRef.current) return
+      if (toolRef.current instanceof PenTool) {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          toolRef.current.finalize()
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          toolRef.current.cancel()
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [])
 
   const onFrame = useCallback((keyframe: AnimationKeyframe) => {
     const scope = scopeRef.current
@@ -78,36 +201,19 @@ export function LogoCanvas() {
   const { playing, togglePlaying, canAnimate } = useAnimation(onFrame)
 
   const hasPerspective = ui.perspectiveX !== 0 || ui.perspectiveY !== 0
+  const isDrawingTool = ui.activeTool === 'pencil' || ui.activeTool === 'pen' || ui.activeTool === 'graffiti'
 
   const canvasStyle: React.CSSProperties = hasPerspective
     ? {
         imageRendering: 'auto',
         transform: `perspective(800px) rotateX(${ui.perspectiveX}deg) rotateY(${ui.perspectiveY}deg)`,
         transition: 'transform 150ms',
-        cursor: ui.editMode ? 'default' : undefined,
+        cursor: isDrawingTool ? 'crosshair' : ui.editMode ? 'default' : undefined,
       }
-    : { imageRendering: 'auto', cursor: ui.editMode ? 'default' : undefined }
-
-  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!ui.editMode || !interactionRef.current || !scopeRef.current) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    const point = new scopeRef.current.Point(e.clientX - rect.left, e.clientY - rect.top)
-    interactionRef.current.onMouseDown(point)
-  }, [ui.editMode, scopeRef])
-
-  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!ui.editMode || !interactionRef.current || !scopeRef.current) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    const point = new scopeRef.current.Point(e.clientX - rect.left, e.clientY - rect.top)
-    interactionRef.current.onMouseDrag(point)
-  }, [ui.editMode, scopeRef])
-
-  const handleMouseUp = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!ui.editMode || !interactionRef.current || !scopeRef.current) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    const point = new scopeRef.current.Point(e.clientX - rect.left, e.clientY - rect.top)
-    interactionRef.current.onMouseUp(point)
-  }, [ui.editMode, scopeRef])
+    : {
+        imageRendering: 'auto',
+        cursor: isDrawingTool ? 'crosshair' : ui.editMode ? 'default' : undefined,
+      }
 
   return (
     <div className="relative w-full h-full flex items-center justify-center p-8 md:p-12">
@@ -122,8 +228,9 @@ export function LogoCanvas() {
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
+            onDoubleClick={handleDoubleClick}
           />
-          {!ui.editMode && <DrawingOverlay />}
+          <DrawingOverlay />
         </div>
         <AnimationControls playing={playing} canAnimate={canAnimate} onToggle={togglePlaying} />
         {ui.editMode && (
@@ -144,4 +251,27 @@ export function LogoCanvas() {
       </div>
     </div>
   )
+}
+
+/** Render stored drawn paths as Paper.js items */
+function renderDrawnPaths(scope: paper.PaperScope, paths: DrawnPath[]) {
+  for (const dp of paths) {
+    try {
+      if (dp.closed || dp.fillColor) {
+        const path = new scope.CompoundPath(dp.pathData)
+        if (dp.fillColor) path.fillColor = new scope.Color(dp.fillColor)
+        if (dp.strokeColor) path.strokeColor = new scope.Color(dp.strokeColor)
+        if (dp.strokeWidth) path.strokeWidth = dp.strokeWidth
+      } else {
+        const path = new scope.Path(dp.pathData)
+        if (dp.strokeColor) path.strokeColor = new scope.Color(dp.strokeColor)
+        path.strokeWidth = dp.strokeWidth || 2
+        path.strokeCap = 'round'
+        path.strokeJoin = 'round'
+        path.fillColor = null
+      }
+    } catch {
+      // Skip invalid path data
+    }
+  }
 }
