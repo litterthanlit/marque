@@ -117,11 +117,13 @@ export const useLogoStore = create<LogoStore>()(
       setParam: (key, value) =>
         set((state) => ({
           params: mergeLogoParams(state.params, { [key]: value } as Partial<LogoParams>),
+          ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
         })),
 
       setParams: (updates) =>
         set((state) => ({
           params: mergeLogoParams(state.params, updates),
+          ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
         })),
 
       setMode: (modeId) =>
@@ -145,6 +147,7 @@ export const useLogoStore = create<LogoStore>()(
                 [modeId]: styleDefaults.modeParams,
               },
             }),
+            ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
           }
         }),
 
@@ -163,6 +166,7 @@ export const useLogoStore = create<LogoStore>()(
                 [state.params.modeId]: styleDefaults.modeParams,
               },
             }),
+            ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
           }
         }),
 
@@ -186,6 +190,7 @@ export const useLogoStore = create<LogoStore>()(
               },
             },
           }),
+          ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
         })),
 
       randomizeSeed: () =>
@@ -194,6 +199,7 @@ export const useLogoStore = create<LogoStore>()(
             ...state.params,
             seed: crypto.getRandomValues(new Uint32Array(1))[0] % 10000,
           },
+          ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
         })),
 
       setResult: (result) => set({ result }),
@@ -264,6 +270,7 @@ export const useLogoStore = create<LogoStore>()(
       applyPreset: (presetParams) =>
         set((state) => ({
           params: mergeLogoParams(state.params, presetParams),
+          ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
         })),
 
       setEffectParam: (key, value) =>
@@ -281,10 +288,12 @@ export const useLogoStore = create<LogoStore>()(
         set((state) => {
           const current = state.params.enabledShapes
           const has = current.includes(shape)
-          // Don't allow removing the last shape
           if (has && current.length <= 1) return state
           const next = has ? current.filter((s) => s !== shape) : [...current, shape]
-          return { params: { ...state.params, enabledShapes: next } }
+          return {
+            params: { ...state.params, enabledShapes: next },
+            ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
+          }
         }),
 
       toggleDissolution: () =>
