@@ -31,7 +31,9 @@ export function useSavedVariations() {
     }
 
     syncFromStorage()
-    loaded.current = true
+    // Mark loaded after a microtask so the persistence effect below
+    // skips the initial render (where variations is still []).
+    queueMicrotask(() => { loaded.current = true })
     window.addEventListener('storage', syncFromStorage)
     return () => window.removeEventListener('storage', syncFromStorage)
   }, [])

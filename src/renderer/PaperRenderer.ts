@@ -16,7 +16,8 @@ interface RenderOptions {
 
 /**
  * Returns the center of the Paper.js view in project coordinates.
- * Using view.center accounts for any CSS/pixel scaling Paper.js applies.
+ * With hidpi="off" on the canvas, Paper.js uses 1:1 pixel ratio so
+ * view.center matches the actual CSS display center.
  */
 function getCenter(scope: paper.PaperScope): paper.Point {
   return scope.view.center

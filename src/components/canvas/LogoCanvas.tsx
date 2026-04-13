@@ -50,36 +50,25 @@ export function LogoCanvas() {
   const { playing, togglePlaying, canAnimate } = useAnimation(onFrame)
 
   const hasPerspective = ui.perspectiveX !== 0 || ui.perspectiveY !== 0
-  const perspectiveStyle = hasPerspective
-    ? {
-        perspective: '800px',
-        perspectiveOrigin: 'center center',
-      }
-    : undefined
 
-  const cardStyle = hasPerspective
+  const canvasStyle: React.CSSProperties = hasPerspective
     ? {
-        transform: `rotateX(${ui.perspectiveX}deg) rotateY(${ui.perspectiveY}deg)`,
-        transformStyle: 'preserve-3d' as const,
+        imageRendering: 'auto',
+        transform: `perspective(800px) rotateX(${ui.perspectiveX}deg) rotateY(${ui.perspectiveY}deg)`,
+        transition: 'transform 150ms',
       }
-    : undefined
+    : { imageRendering: 'auto' }
 
   return (
     <div className="relative w-full h-full flex items-center justify-center p-8 md:p-12">
-      <div
-        className="relative w-full max-w-[min(100%,calc(100vh-8rem))] aspect-square"
-        style={perspectiveStyle}
-      >
-        <div
-          className="absolute inset-0 rounded-2xl bg-white shadow-2xl shadow-black/20 transition-transform duration-150"
-          style={cardStyle}
-        >
+      <div className="relative w-full max-w-[min(100%,calc(100vh-8rem))] aspect-square">
+        <div className="absolute inset-0 rounded-2xl bg-white shadow-2xl shadow-black/20">
           <canvas
             ref={canvasRef}
             width={600}
             height={600}
             className="size-full rounded-2xl"
-            style={{ imageRendering: 'auto' }}
+            style={canvasStyle}
           />
           <DrawingOverlay />
         </div>

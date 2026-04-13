@@ -88,14 +88,14 @@ export function Toolbar() {
             <ThemeIcon theme={theme} />
           </ToolbarButton>
           <ToolbarButton onClick={handleCopyShareLink}>
-            {shareState === 'copied' ? 'Copied' : 'Share'}
+            {shareState === 'copied' ? 'Copied' : shareState === 'failed' ? 'Failed' : 'Share'}
           </ToolbarButton>
           <button
             onClick={() => setExportOpen(true)}
             disabled={!hasResult}
             className={cn(
               'ml-1 h-7 px-3 text-xs font-medium rounded-md transition-colors',
-              'bg-neutral-800 text-white hover:bg-neutral-700',
+              'bg-fg text-surface hover:opacity-80',
               'disabled:opacity-30 disabled:cursor-default',
             )}
           >
