@@ -6,6 +6,7 @@ import { InteractionLayer } from '../../renderer/InteractionLayer.ts'
 import { PencilTool } from '../../renderer/tools/PencilTool.ts'
 import { PenTool } from '../../renderer/tools/PenTool.ts'
 import { GraffitiTool } from '../../renderer/tools/GraffitiTool.ts'
+import { ShapeBuilderTool } from '../../renderer/tools/ShapeBuilderTool.ts'
 import { DissolutionProcessor } from '../../engine/effects/dissolution.ts'
 import { useAnimation } from '../../hooks/useAnimation.ts'
 import { AnimationControls } from './AnimationControls.tsx'
@@ -17,7 +18,7 @@ export function LogoCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const scopeRef = usePaperScope(canvasRef)
   const interactionRef = useRef<InteractionLayer | null>(null)
-  const toolRef = useRef<PencilTool | PenTool | GraffitiTool | null>(null)
+  const toolRef = useRef<PencilTool | PenTool | GraffitiTool | ShapeBuilderTool | null>(null)
   const result = useLogoStore((s) => s.result)
   const ui = useLogoStore((s) => s.ui)
   const params = useLogoStore((s) => s.params)
@@ -27,6 +28,7 @@ export function LogoCanvas() {
   const deleteSelectedShape = useLogoStore((s) => s.deleteSelectedShape)
   const clearShapeOverrides = useLogoStore((s) => s.clearShapeOverrides)
   const addDrawnPath = useLogoStore((s) => s.addDrawnPath)
+  const togglePathSelection = useLogoStore((s) => s.togglePathSelection)
 
   const dissolution = useMemo(() => {
     if (!result || !effectParams.dissolution.enabled) return null
@@ -48,7 +50,7 @@ export function LogoCanvas() {
     })
 
     // Render user-drawn vector paths on top
-    renderDrawnPaths(scope, ui.drawnPaths)
+    renderDrawnPaths(scope, ui.drawnPaths, ui.selectedPathIds)
 
     // Set up interaction layer for edit/select mode
     if (ui.editMode && itemMap) {
@@ -71,7 +73,7 @@ export function LogoCanvas() {
       interactionRef.current.destroy()
       interactionRef.current = null
     }
-  }, [result, ui.showGrid, ui.showConstruction, ui.drawnShapes, ui.drawnPaths, ui.editMode, ui.shapeOverrides, ui.selectedShapeId, params.fillColor, dissolution, scopeRef, selectShape, updateShapeOverride])
+  }, [result, ui.showGrid, ui.showConstruction, ui.drawnShapes, ui.drawnPaths, ui.editMode, ui.shapeOverrides, ui.selectedShapeId, ui.selectedPathIds, params.fillColor, dissolution, scopeRef, selectShape, updateShapeOverride])
 
   // Manage active drawing tool lifecycle
   useEffect(() => {
@@ -102,6 +104,9 @@ export function LogoCanvas() {
       case 'graffiti':
         toolRef.current = new GraffitiTool(scope, callbacks, { fillColor: color })
         break
+      case 'shapebuilder':
+        toolRef.current = new ShapeBuilderTool(scope, callbacks, { fillColor: color })
+        break
     }
 
     return () => {
@@ -127,17 +132,47 @@ export function LogoCanvas() {
       toolRef.current.onMouseDown(point)
       return
     }
+
+    // In select mode, check if clicking on a drawn path for selection
+    if (ui.activeTool === 'select' && scopeRef.current) {
+      const hitResult = scopeRef.current.project.hitTest(point, {
+        fill: true,
+        stroke: true,
+        tolerance: 8,
+      })
+      if (hitResult?.item) {
+        // Walk up to find item with drawnPathId
+        let item: paper.Item | null = hitResult.item
+        while (item && !(item.data as Record<string, unknown>)?.drawnPathId) {
+          item = item.parent
+        }
+        if (item && (item.data as Record<string, unknown>)?.drawnPathId) {
+          const pathId = (item.data as Record<string, unknown>).drawnPathId as string
+          togglePathSelection(pathId)
+          return
+        }
+      }
+      // Clicked empty space — clear selection
+      useLogoStore.getState().clearPathSelection()
+      return
+    }
+
     if (ui.editMode && interactionRef.current) {
       interactionRef.current.onMouseDown(point)
     }
-  }, [getPoint, ui.editMode])
+  }, [getPoint, ui.editMode, ui.activeTool, scopeRef, togglePathSelection])
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const point = getPoint(e)
     if (!point) return
 
     if (toolRef.current) {
-      toolRef.current.onMouseDrag(point)
+      // ShapeBuilderTool needs onMouseMove for preview line when not dragging
+      if (toolRef.current instanceof ShapeBuilderTool && e.buttons === 0) {
+        toolRef.current.onMouseMove(point)
+      } else {
+        toolRef.current.onMouseDrag(point)
+      }
       return
     }
     if (ui.editMode && interactionRef.current) {
@@ -159,17 +194,17 @@ export function LogoCanvas() {
   }, [getPoint, ui.editMode])
 
   const handleDoubleClick = useCallback((_e: React.MouseEvent<HTMLCanvasElement>) => {
-    // Finalize pen tool on double-click
-    if (toolRef.current && toolRef.current instanceof PenTool) {
+    // Finalize pen/shapebuilder tool on double-click
+    if (toolRef.current && (toolRef.current instanceof PenTool || toolRef.current instanceof ShapeBuilderTool)) {
       toolRef.current.finalize()
     }
   }, [])
 
-  // Keyboard: Enter to finalize pen, Escape to cancel
+  // Keyboard: Enter to finalize pen/shapebuilder, Escape to cancel
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       if (!toolRef.current) return
-      if (toolRef.current instanceof PenTool) {
+      if (toolRef.current instanceof PenTool || toolRef.current instanceof ShapeBuilderTool) {
         if (e.key === 'Enter') {
           e.preventDefault()
           toolRef.current.finalize()
@@ -201,7 +236,7 @@ export function LogoCanvas() {
   const { playing, togglePlaying, canAnimate } = useAnimation(onFrame)
 
   const hasPerspective = ui.perspectiveX !== 0 || ui.perspectiveY !== 0
-  const isDrawingTool = ui.activeTool === 'pencil' || ui.activeTool === 'pen' || ui.activeTool === 'graffiti'
+  const isDrawingTool = ui.activeTool === 'pencil' || ui.activeTool === 'pen' || ui.activeTool === 'graffiti' || ui.activeTool === 'shapebuilder'
 
   const canvasStyle: React.CSSProperties = hasPerspective
     ? {
@@ -254,21 +289,37 @@ export function LogoCanvas() {
 }
 
 /** Render stored drawn paths as Paper.js items */
-function renderDrawnPaths(scope: paper.PaperScope, paths: DrawnPath[]) {
+function renderDrawnPaths(scope: paper.PaperScope, paths: DrawnPath[], selectedIds: string[]) {
   for (const dp of paths) {
     try {
+      let item: paper.PathItem
       if (dp.closed || dp.fillColor) {
-        const path = new scope.CompoundPath(dp.pathData)
-        if (dp.fillColor) path.fillColor = new scope.Color(dp.fillColor)
-        if (dp.strokeColor) path.strokeColor = new scope.Color(dp.strokeColor)
-        if (dp.strokeWidth) path.strokeWidth = dp.strokeWidth
+        item = new scope.CompoundPath(dp.pathData)
+        if (dp.fillColor) item.fillColor = new scope.Color(dp.fillColor)
+        if (dp.strokeColor) item.strokeColor = new scope.Color(dp.strokeColor)
+        if (dp.strokeWidth) item.strokeWidth = dp.strokeWidth
       } else {
-        const path = new scope.Path(dp.pathData)
-        if (dp.strokeColor) path.strokeColor = new scope.Color(dp.strokeColor)
-        path.strokeWidth = dp.strokeWidth || 2
-        path.strokeCap = 'round'
-        path.strokeJoin = 'round'
-        path.fillColor = null
+        const p = new scope.Path(dp.pathData)
+        if (dp.strokeColor) p.strokeColor = new scope.Color(dp.strokeColor)
+        p.strokeWidth = dp.strokeWidth || 2
+        p.strokeCap = 'round'
+        p.strokeJoin = 'round'
+        p.fillColor = null
+        item = p
+      }
+      item.data = { drawnPathId: dp.id }
+
+      // Show selection outline
+      if (selectedIds.includes(dp.id)) {
+        const bounds = item.bounds
+        const outline = new scope.Path.Rectangle({
+          rectangle: bounds.expand(4),
+          strokeColor: new scope.Color('#4A90D9'),
+          strokeWidth: 1.5,
+          dashArray: [4, 3],
+          fillColor: null,
+        })
+        outline.data = { selectionOutline: true }
       }
     } catch {
       // Skip invalid path data

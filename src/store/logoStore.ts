@@ -1,3 +1,4 @@
+import paper from 'paper'
 import { create } from 'zustand'
 import { temporal } from 'zundo'
 import type {
@@ -37,7 +38,7 @@ export interface ShapeOverride {
 
 export interface DrawnPath {
   id: string
-  tool: 'pencil' | 'pen' | 'graffiti'
+  tool: 'pencil' | 'pen' | 'graffiti' | 'shapebuilder'
   pathData: string
   fillColor: string | null
   strokeColor: string | null
@@ -60,7 +61,8 @@ interface UIState {
   selectedShapeId: string | null
   shapeOverrides: Record<string, ShapeOverride>
   drawnPaths: DrawnPath[]
-  activeTool: 'select' | 'pencil' | 'pen' | 'graffiti' | null
+  activeTool: 'select' | 'pencil' | 'pen' | 'graffiti' | 'shapebuilder' | null
+  selectedPathIds: string[]
 }
 
 interface LogoStore {
@@ -101,7 +103,10 @@ interface LogoStore {
   addDrawnPath: (path: Omit<DrawnPath, 'id'>) => void
   removeDrawnPath: (id: string) => void
   clearDrawnPaths: () => void
-  setActiveTool: (tool: 'select' | 'pencil' | 'pen' | 'graffiti' | null) => void
+  setActiveTool: (tool: 'select' | 'pencil' | 'pen' | 'graffiti' | 'shapebuilder' | null) => void
+  togglePathSelection: (id: string) => void
+  clearPathSelection: () => void
+  booleanOp: (op: 'unite' | 'subtract' | 'intersect') => void
 }
 
 export const useLogoStore = create<LogoStore>()(
@@ -127,6 +132,7 @@ export const useLogoStore = create<LogoStore>()(
         shapeOverrides: {},
         drawnPaths: [],
         activeTool: null,
+        selectedPathIds: [],
       },
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
@@ -412,8 +418,48 @@ export const useLogoStore = create<LogoStore>()(
             editMode: tool === 'select' ? true : state.ui.editMode,
             // Exit drawing mode when switching tools
             drawingMode: false,
+            selectedPathIds: [],
           },
         })),
+
+      togglePathSelection: (id) =>
+        set((state) => {
+          const ids = state.ui.selectedPathIds
+          const next = ids.includes(id)
+            ? ids.filter((i) => i !== id)
+            : [...ids, id]
+          return { ui: { ...state.ui, selectedPathIds: next } }
+        }),
+
+      clearPathSelection: () =>
+        set((state) => ({
+          ui: { ...state.ui, selectedPathIds: [] },
+        })),
+
+      booleanOp: (op) =>
+        set((state) => {
+          const ids = state.ui.selectedPathIds
+          if (ids.length < 2) return state
+
+          const selected = ids
+            .map((id) => state.ui.drawnPaths.find((p) => p.id === id))
+            .filter((p): p is DrawnPath => p != null)
+          if (selected.length < 2) return state
+
+          // Perform boolean op using Paper.js in a headless scope
+          const result = performBooleanOp(selected, op)
+          if (!result) return state
+
+          // Replace selected paths with the result
+          const remaining = state.ui.drawnPaths.filter((p) => !ids.includes(p.id))
+          return {
+            ui: {
+              ...state.ui,
+              drawnPaths: [...remaining, result],
+              selectedPathIds: [result.id],
+            },
+          }
+        }),
     }),
     {
       equality: paramsEqual,
@@ -461,4 +507,73 @@ function mergeModeParams(
   }
 
   return next
+}
+
+let booleanScope: paper.PaperScope | null = null
+
+function getBooleanScope(): paper.PaperScope {
+  if (!booleanScope) {
+    booleanScope = new paper.PaperScope()
+    booleanScope.setup(new paper.Size(1, 1))
+  }
+  booleanScope.activate()
+  return booleanScope
+}
+
+function performBooleanOp(
+  paths: DrawnPath[],
+  op: 'unite' | 'subtract' | 'intersect',
+): DrawnPath | null {
+  const scope = getBooleanScope()
+  scope.project.clear()
+
+  const paperPaths: paper.PathItem[] = []
+  for (const p of paths) {
+    try {
+      const item = p.closed || p.fillColor
+        ? new scope.CompoundPath(p.pathData)
+        : new scope.Path(p.pathData)
+      paperPaths.push(item)
+    } catch {
+      return null
+    }
+  }
+
+  if (paperPaths.length < 2) return null
+
+  let result: paper.PathItem = paperPaths[0]
+  for (let i = 1; i < paperPaths.length; i++) {
+    try {
+      const next =
+        op === 'unite'
+          ? result.unite(paperPaths[i])
+          : op === 'subtract'
+            ? result.subtract(paperPaths[i])
+            : result.intersect(paperPaths[i])
+      result.remove()
+      paperPaths[i].remove()
+      result = next
+    } catch {
+      return null
+    }
+  }
+
+  const pathData = result.pathData
+  result.remove()
+  scope.project.clear()
+
+  if (!pathData) return null
+
+  // Use the fill color from the first shape
+  const fillColor = paths[0].fillColor ?? paths[0].strokeColor ?? '#000000'
+
+  return {
+    id: crypto.randomUUID(),
+    tool: 'shapebuilder',
+    pathData,
+    fillColor,
+    strokeColor: null,
+    strokeWidth: 0,
+    closed: true,
+  }
 }

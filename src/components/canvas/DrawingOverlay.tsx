@@ -1,13 +1,19 @@
 import { useLogoStore } from '../../store/logoStore.ts'
 import { cn } from '../../lib/utils.ts'
 
-type Tool = 'select' | 'pencil' | 'pen' | 'graffiti'
+type Tool = 'select' | 'pencil' | 'pen' | 'graffiti' | 'shapebuilder'
 
-const TOOLS: Array<{ id: Tool; label: string; icon: string }> = [
+const TOOLS: Array<{ id: Tool; label: string; icon: string; fill?: boolean }> = [
   {
     id: 'select',
     label: 'Select',
     icon: 'M4 4l7 17 2.5-6.5L20 12z',
+    fill: true,
+  },
+  {
+    id: 'shapebuilder',
+    label: 'Shape Builder',
+    icon: 'M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 22 12 18.27 5.82 22 7 14.14l-5-4.87 6.91-1.01z',
   },
   {
     id: 'pencil',
@@ -31,6 +37,10 @@ export function DrawingOverlay() {
   const setActiveTool = useLogoStore((s) => s.setActiveTool)
   const clearDrawnPaths = useLogoStore((s) => s.clearDrawnPaths)
   const drawnPaths = useLogoStore((s) => s.ui.drawnPaths)
+  const selectedPathIds = useLogoStore((s) => s.ui.selectedPathIds)
+  const booleanOp = useLogoStore((s) => s.booleanOp)
+
+  const hasSelection = selectedPathIds.length >= 2
 
   return (
     <div
@@ -56,7 +66,7 @@ export function DrawingOverlay() {
             width="16"
             height="16"
             viewBox="0 0 24 24"
-            fill={tool.id === 'select' ? 'currentColor' : 'none'}
+            fill={tool.fill ? 'currentColor' : 'none'}
             stroke="currentColor"
             strokeWidth="1.5"
             strokeLinejoin="round"
@@ -66,6 +76,32 @@ export function DrawingOverlay() {
           </svg>
         </button>
       ))}
+      {hasSelection && (
+        <>
+          <div className="w-px h-5 bg-white/10" />
+          <button
+            onClick={() => booleanOp('unite')}
+            className="h-8 px-2 rounded-lg text-xs text-fg/50 hover:text-fg hover:bg-white/10 transition-colors"
+            title="Union selected shapes"
+          >
+            Union
+          </button>
+          <button
+            onClick={() => booleanOp('subtract')}
+            className="h-8 px-2 rounded-lg text-xs text-fg/50 hover:text-fg hover:bg-white/10 transition-colors"
+            title="Subtract second shape from first"
+          >
+            Subtract
+          </button>
+          <button
+            onClick={() => booleanOp('intersect')}
+            className="h-8 px-2 rounded-lg text-xs text-fg/50 hover:text-fg hover:bg-white/10 transition-colors"
+            title="Intersect selected shapes"
+          >
+            Intersect
+          </button>
+        </>
+      )}
       {drawnPaths.length > 0 && (
         <>
           <div className="w-px h-5 bg-white/10" />
