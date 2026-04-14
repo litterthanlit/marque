@@ -1,6 +1,6 @@
 export interface ToolCallbacks {
   onPathComplete: (path: {
-    tool: 'pencil' | 'pen' | 'graffiti'
+    tool: 'pencil' | 'pen' | 'graffiti' | 'shapebuilder'
     pathData: string
     fillColor: string | null
     strokeColor: string | null
