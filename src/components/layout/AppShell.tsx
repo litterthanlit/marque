@@ -3,6 +3,8 @@ import { Toolbar } from './Toolbar.tsx'
 import { LogoCanvas } from '../canvas/LogoCanvas.tsx'
 import { ConstructionPanel } from '../canvas/ConstructionPanel.tsx'
 import { FinalMarkPreview } from '../canvas/FinalMarkPreview.tsx'
+import { PaletteTile } from '../canvas/PaletteTile.tsx'
+import { ExportTile } from '../canvas/ExportTile.tsx'
 import { ParameterPanel } from '../controls/ParameterPanel.tsx'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { generateConstructionCommentary } from '../../engine/commentary/constructionCommentary.ts'
@@ -89,8 +91,12 @@ export function AppShell() {
             <div className="relative flex items-center justify-center min-h-[320px] lg:col-start-4 lg:col-span-6 lg:min-h-0">
               <LogoCanvas />
             </div>
-            <div className="relative min-h-[120px] lg:col-start-10 lg:col-span-3 lg:row-start-1 lg:min-h-0">
-              <FinalMarkPreview />
+            <div className="relative lg:col-start-10 lg:col-span-3 lg:row-start-1 lg:min-h-0 flex flex-col gap-3">
+              <div className="aspect-square">
+                <FinalMarkPreview />
+              </div>
+              <PaletteTile />
+              <ExportTile />
             </div>
             <div className="lg:col-start-1 lg:col-span-3 lg:row-start-1 lg:min-h-0">
               <ConstructionPanel commentary={commentary} className="lg:h-full" />
