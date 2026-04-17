@@ -11,7 +11,6 @@ import { DissolutionProcessor } from '../../engine/effects/dissolution.ts'
 import { useAnimation } from '../../hooks/useAnimation.ts'
 import { AnimationControls } from './AnimationControls.tsx'
 import { DrawingOverlay } from './DrawingOverlay.tsx'
-import { FinalMarkPreview } from './FinalMarkPreview.tsx'
 import type { AnimationKeyframe } from '../../engine/animation/types.ts'
 import type { DrawnPath } from '../../store/logoStore.ts'
 
@@ -252,8 +251,8 @@ export function LogoCanvas() {
       }
 
   return (
-    <div className="relative w-full h-full flex items-center justify-center p-8 md:p-12">
-      <div className="relative w-full max-w-[min(100%,calc(100vh-8rem))] aspect-square">
+    <div className="relative w-full h-full flex items-center justify-center">
+      <div className="relative aspect-square w-full max-w-full max-h-full">
         <div className="absolute inset-0 rounded-2xl bg-white shadow-2xl shadow-black/20">
           <canvas
             ref={canvasRef}
@@ -267,7 +266,6 @@ export function LogoCanvas() {
             onDoubleClick={handleDoubleClick}
           />
           <DrawingOverlay />
-          <FinalMarkPreview />
         </div>
         <AnimationControls playing={playing} canAnimate={canAnimate} onToggle={togglePlaying} />
         {ui.editMode && (

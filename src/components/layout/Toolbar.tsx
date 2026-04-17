@@ -1,32 +1,11 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { ExportDialog } from '../export/ExportDialog.tsx'
-import { getModeDefinition } from '../../store/modes.ts'
 import { cn } from '../../lib/utils.ts'
-
-function ThemeIcon({ theme }: { theme: string }) {
-  if (theme === 'light') {
-    return (
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-        <circle cx="8" cy="8" r="3" />
-        <path d="M8 1.5v1M8 13.5v1M1.5 8h1M13.5 8h1M3.4 3.4l.7.7M11.9 11.9l.7.7M3.4 12.6l.7-.7M11.9 4.1l.7-.7" />
-      </svg>
-    )
-  }
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-      <path d="M13.5 8.5a5.5 5.5 0 1 1-6-6 4.5 4.5 0 0 0 6 6Z" />
-    </svg>
-  )
-}
 
 export function Toolbar() {
   const seed = useLogoStore((s) => s.params.seed)
-  const modeId = useLogoStore((s) => s.params.modeId)
-  const styleFamily = useLogoStore((s) => s.params.styleFamily)
   const hasResult = useLogoStore((s) => Boolean(s.result))
-  const theme = useLogoStore((s) => s.ui.theme)
-  const toggleTheme = useLogoStore((s) => s.toggleTheme)
   const [exportOpen, setExportOpen] = useState(false)
   const [shareState, setShareState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
@@ -48,8 +27,6 @@ export function Toolbar() {
     return () => window.removeEventListener('open-export', handleOpenExport)
   }, [])
 
-  const mode = getModeDefinition(modeId)
-
   useEffect(() => {
     if (shareState === 'idle') return
     const timer = window.setTimeout(() => setShareState('idle'), 2000)
@@ -67,14 +44,10 @@ export function Toolbar() {
 
   return (
     <>
-      <header className="flex items-center justify-between h-11 px-4 border-b border-border bg-surface-raised">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[13px] font-semibold text-fg tracking-tight">dalat</span>
-          <span className="text-sidebar-muted">/</span>
-          <span className="hidden sm:inline text-xs text-sidebar-text">{mode?.name ?? modeId}</span>
-          <span className="hidden lg:inline text-sidebar-muted">/</span>
-          <span className="hidden lg:inline text-xs text-sidebar-muted capitalize">{styleFamily}</span>
-          <span className="text-[10px] text-sidebar-muted font-mono tabular-nums ml-1">#{seed}</span>
+      <header className="flex items-center justify-between h-12 px-5 border-b border-border bg-surface-raised">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="font-display text-[18px] leading-none font-medium tracking-tight text-fg">dalat</span>
+          <span className="font-mono-tabular text-[11px] text-sidebar-muted">#{seed}</span>
         </div>
         <div className="flex items-center gap-1">
           <ToolbarButton onClick={() => undo()} disabled={!canUndo} title="Undo (Cmd+Z)">
@@ -84,9 +57,6 @@ export function Toolbar() {
             <RedoIcon />
           </ToolbarButton>
           <div className="w-px h-3.5 bg-border mx-1" />
-          <ToolbarButton onClick={toggleTheme} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>
-            <ThemeIcon theme={theme} />
-          </ToolbarButton>
           <ToolbarButton onClick={handleCopyShareLink}>
             {shareState === 'copied' ? 'Copied' : shareState === 'failed' ? 'Failed' : 'Share'}
           </ToolbarButton>
