@@ -44,17 +44,17 @@ export function Onboarding() {
         <div className="bg-surface-raised border border-border rounded-2xl shadow-2xl shadow-black/50 p-6 text-center">
           <h2 className="text-lg font-semibold text-fg mb-2">dalat</h2>
           <p className="text-sm text-sidebar-text leading-relaxed mb-5">
-            Generative logo maker. Hit Random to start, then use the tools to make it yours.
+            Press Random. Keep going until something clicks. Then tune, draw, or export.
           </p>
           <button
             onClick={handleRandom}
-            className="w-full h-10 rounded-lg text-sm font-medium bg-white text-neutral-900 hover:bg-neutral-200 transition-colors"
+            className="w-full h-10 rounded-lg text-sm font-medium bg-white text-neutral-900 hover:bg-neutral-200 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
           >
             Random
           </button>
           <button
             onClick={dismiss}
-            className="mt-2 w-full h-8 text-xs text-sidebar-muted hover:text-fg transition-colors"
+            className="mt-2 w-full h-8 text-xs text-sidebar-muted hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
           >
             Skip
           </button>

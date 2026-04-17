@@ -11,7 +11,7 @@ export function SavedVariationsRail() {
       <button
         type="button"
         onClick={() => saveVariation(params)}
-        className="h-7 px-2.5 rounded-md text-xs text-sidebar-text bg-interactive-active hover:bg-interactive-hover hover:text-fg"
+        className="h-7 px-2.5 rounded-md text-xs text-sidebar-text bg-interactive-active hover:bg-interactive-hover hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
       >
         Save current
       </button>
@@ -30,14 +30,14 @@ export function SavedVariationsRail() {
               <button
                 type="button"
                 onClick={() => applyPreset(v.params)}
-                className="text-sidebar-text hover:text-fg truncate text-left flex-1 min-w-0"
+                className="text-sidebar-text hover:text-fg truncate text-left flex-1 min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised rounded-sm"
               >
                 {v.name}
               </button>
               <button
                 type="button"
                 onClick={() => removeVariation(v.id)}
-                className="text-sidebar-muted hover:text-red-400 opacity-0 group-hover:opacity-100 ml-2 shrink-0"
+                className="text-sidebar-muted hover:text-red-400 opacity-0 group-hover:opacity-100 ml-2 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised focus-visible:opacity-100 rounded-sm"
                 aria-label={`Delete ${v.name}`}
               >
                 &times;

@@ -60,6 +60,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
               'h-9 text-sm font-medium rounded-lg transition-colors',
               'bg-white text-neutral-900 hover:bg-neutral-200',
               'disabled:bg-white/5 disabled:text-neutral-600 disabled:cursor-default',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
             )}
           >
             Download SVG
@@ -73,6 +74,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
                 'flex-1 h-9 text-sm font-medium rounded-lg transition-colors',
                 'border border-border text-fg hover:bg-interactive-hover',
                 'disabled:opacity-30 disabled:cursor-default',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
               )}
             >
               PNG
@@ -80,7 +82,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
             <select
               value={pngScale}
               onChange={(e) => setPngScale(Number(e.target.value))}
-              className="h-9 px-2 text-xs border border-border rounded-lg bg-surface text-fg"
+              className="h-9 px-2 text-xs border border-border rounded-lg bg-surface text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
             >
               <option value={1}>1x</option>
               <option value={2}>2x</option>
@@ -92,7 +94,7 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
         <button
           ref={closeButtonRef}
           onClick={onClose}
-          className="mt-3 w-full h-8 text-xs text-sidebar-muted hover:text-fg rounded-lg hover:bg-interactive-hover transition-colors"
+          className="mt-3 w-full h-8 text-xs text-sidebar-muted hover:text-fg rounded-lg hover:bg-interactive-hover transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
         >
           Cancel
         </button>
@@ -108,7 +110,7 @@ function SelectField({ label, value, onChange, options }: { label: string; value
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="h-8 px-2 text-xs border border-border rounded-lg bg-surface text-fg"
+        className="h-8 px-2 text-xs border border-border rounded-lg bg-surface text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
       >
         {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
       </select>

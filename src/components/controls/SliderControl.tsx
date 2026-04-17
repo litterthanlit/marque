@@ -37,7 +37,7 @@ export function SliderControl({ label, value, min, max, step, onChange }: Slider
         <Slider.Track className="relative grow h-[3px] bg-interactive-active rounded-full">
           <Slider.Range className="absolute h-full bg-interactive rounded-full group-hover:bg-interactive-hover transition-colors" />
         </Slider.Track>
-        <Slider.Thumb className="block size-3 bg-white rounded-full outline-none shadow-sm shadow-black/30 hover:scale-110 focus-visible:ring-2 focus-visible:ring-accent/50 transition-transform" />
+        <Slider.Thumb className="block size-3 bg-white rounded-full outline-none shadow-sm shadow-black/30 hover:scale-110 focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised transition-transform" />
       </Slider.Root>
     </div>
   )

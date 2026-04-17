@@ -67,6 +67,7 @@ export function Toolbar() {
               'ml-1 h-7 px-3 text-xs font-medium rounded-md transition-colors',
               'bg-fg text-surface hover:opacity-80',
               'disabled:opacity-30 disabled:cursor-default',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
             )}
           >
             Export
@@ -86,6 +87,7 @@ function ToolbarButton({ children, ...props }: React.ButtonHTMLAttributes<HTMLBu
         'h-7 px-2 text-xs text-sidebar-muted rounded-md transition-colors',
         'hover:bg-interactive-hover hover:text-fg',
         'disabled:opacity-30 disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-sidebar-muted',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
         props.className,
       )}
     >

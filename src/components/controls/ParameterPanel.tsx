@@ -66,6 +66,7 @@ export function ParameterPanel() {
               onClick={() => setTab(t)}
               className={cn(
                 'flex-1 h-8 rounded-md text-xs capitalize transition-all',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
                 tab === t
                   ? 'bg-interactive text-fg font-medium shadow-sm'
                   : 'text-sidebar-muted hover:text-fg',
@@ -131,7 +132,7 @@ function GenerateTab() {
         <button
           type="button"
           onClick={randomizeSeed}
-          className="w-full h-10 rounded-lg text-sm font-medium bg-fg text-surface hover:opacity-80 transition-opacity"
+          className="w-full h-10 rounded-lg text-sm font-medium bg-fg text-surface hover:opacity-80 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
         >
           Random
         </button>
@@ -151,6 +152,7 @@ function GenerateTab() {
               onClick={() => setMode(mode.id)}
               className={cn(
                 'h-8 px-2 rounded-lg text-xs transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
                 mode.id === params.modeId
                   ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
                   : 'text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
@@ -174,6 +176,7 @@ function GenerateTab() {
               title={family.label}
               className={cn(
                 'flex-1 h-8 rounded-lg text-xs transition-all',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
                 family.id === params.styleFamily
                   ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
                   : 'text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
@@ -197,7 +200,7 @@ function GenerateTab() {
               onChange={(e) => setBrandInput({ initials: e.target.value.toUpperCase() })}
               maxLength={3}
               placeholder="MM"
-              className="flex-1 h-8 px-2.5 text-xs font-mono bg-interactive border border-border rounded-lg text-fg outline-none focus:border-sidebar-muted transition-colors"
+              className="flex-1 h-8 px-2.5 text-xs font-mono bg-interactive border border-border rounded-lg text-fg outline-none focus:border-sidebar-muted transition-colors focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
             />
           </div>
         )}
@@ -246,7 +249,7 @@ function GenerateTab() {
         <button
           type="button"
           onClick={() => setAdvancedOpen(!advancedOpen)}
-          className="flex items-center justify-between w-full px-3 py-2.5 text-[10px] uppercase tracking-widest text-sidebar-muted hover:text-fg transition-colors"
+          className="flex items-center justify-between w-full px-3 py-2.5 text-[10px] uppercase tracking-widest text-sidebar-muted hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
         >
           <span>{advancedOpen ? 'Hide advanced' : 'Show advanced'}</span>
           <svg
@@ -446,6 +449,7 @@ function DrawTab() {
               title={tool.label}
               className={cn(
                 'flex-1 h-9 flex items-center justify-center rounded-lg transition-all',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
                 activeTool === tool.id
                   ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
                   : 'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
@@ -476,21 +480,21 @@ function DrawTab() {
             <button
               type="button"
               onClick={() => booleanOp('unite')}
-              className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all"
+              className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
             >
               Union
             </button>
             <button
               type="button"
               onClick={() => booleanOp('subtract')}
-              className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all"
+              className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
             >
               Subtract
             </button>
             <button
               type="button"
               onClick={() => booleanOp('intersect')}
-              className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all"
+              className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
             >
               Intersect
             </button>
@@ -503,7 +507,7 @@ function DrawTab() {
         <button
           type="button"
           onClick={clearDrawnPaths}
-          className="h-8 w-full rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all"
+          className="h-8 w-full rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
         >
           Clear all paths
         </button>
@@ -550,14 +554,14 @@ function EditTab() {
         <button
           type="button"
           onClick={deleteSelectedShape}
-          className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-red-400 hover:bg-interactive-hover transition-all"
+          className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-red-400 hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
         >
           Delete
         </button>
         <button
           type="button"
           onClick={clearShapeOverrides}
-          className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all"
+          className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
         >
           Reset All
         </button>
@@ -575,7 +579,7 @@ function Section({ title, defaultOpen = false, children }: { title: string; defa
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex items-center justify-between w-full px-3 py-2.5 text-[10px] uppercase tracking-widest text-sidebar-muted hover:text-fg transition-colors"
+        className="flex items-center justify-between w-full px-3 py-2.5 text-[10px] uppercase tracking-widest text-sidebar-muted hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
       >
         <span>{title}</span>
         <svg className={cn('size-3 transition-transform', open && 'rotate-180')} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -594,6 +598,7 @@ function ToggleRow({ label, checked, onChange }: { label: string; checked: boole
       onClick={() => onChange(!checked)}
       className={cn(
         'flex-1 h-8 px-2.5 rounded-lg text-xs transition-all',
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
         checked
           ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
           : 'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
@@ -614,6 +619,7 @@ function SegmentRow({ value, options, onChange }: { value: number; options: Arra
           onClick={() => onChange(opt.v)}
           className={cn(
             'flex-1 h-7 rounded-md text-xs transition-all',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
             value === opt.v
               ? 'bg-interactive text-fg font-medium shadow-sm'
               : 'text-sidebar-muted hover:text-fg',

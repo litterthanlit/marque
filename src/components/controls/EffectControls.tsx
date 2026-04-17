@@ -14,6 +14,7 @@ export function EffectControls() {
         onClick={toggleDissolution}
         className={cn(
           'flex items-center justify-between h-7 px-2.5 rounded-md text-xs',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
           dissolution.enabled ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring' : 'bg-interactive-active text-sidebar-text hover:bg-interactive-hover',
         )}
       >
@@ -46,6 +47,7 @@ function SegmentRow({ label, value, options, onChange }: { label: string; value:
             onClick={() => onChange(opt)}
             className={cn(
               'flex-1 h-6 rounded text-[11px] capitalize',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
               value === opt ? 'bg-interactive text-fg font-medium' : 'bg-interactive-active text-sidebar-muted hover:text-fg',
             )}
           >

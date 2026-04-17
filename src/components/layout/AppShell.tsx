@@ -133,7 +133,7 @@ export function AppShell() {
         ref={controlsButtonRef}
         type="button"
         onClick={() => setMobilePanelOpen(true)}
-        className="lg:hidden fixed right-4 bottom-4 z-30 rounded-lg bg-surface-raised backdrop-blur-sm px-4 py-2.5 text-xs font-medium text-fg shadow-lg border border-border"
+        className="lg:hidden fixed right-4 bottom-4 z-30 rounded-lg bg-surface-raised backdrop-blur-sm px-4 py-2.5 text-xs font-medium text-fg shadow-lg border border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
       >
         Controls
       </button>
@@ -154,7 +154,7 @@ export function AppShell() {
                 ref={closeButtonRef}
                 type="button"
                 onClick={() => setMobilePanelOpen(false)}
-                className="text-xs text-sidebar-muted hover:text-fg transition-colors"
+                className="text-xs text-sidebar-muted hover:text-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
               >
                 Done
               </button>

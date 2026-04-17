@@ -10,7 +10,6 @@ import { ShapeBuilderTool } from '../../renderer/tools/ShapeBuilderTool.ts'
 import { DissolutionProcessor } from '../../engine/effects/dissolution.ts'
 import { useAnimation } from '../../hooks/useAnimation.ts'
 import { AnimationControls } from './AnimationControls.tsx'
-import { DrawingOverlay } from './DrawingOverlay.tsx'
 import type { AnimationKeyframe } from '../../engine/animation/types.ts'
 import type { DrawnPath } from '../../store/logoStore.ts'
 
@@ -25,8 +24,6 @@ export function LogoCanvas() {
   const effectParams = useLogoStore((s) => s.effectParams)
   const selectShape = useLogoStore((s) => s.selectShape)
   const updateShapeOverride = useLogoStore((s) => s.updateShapeOverride)
-  const deleteSelectedShape = useLogoStore((s) => s.deleteSelectedShape)
-  const clearShapeOverrides = useLogoStore((s) => s.clearShapeOverrides)
   const addDrawnPath = useLogoStore((s) => s.addDrawnPath)
   const togglePathSelection = useLogoStore((s) => s.togglePathSelection)
 
@@ -265,24 +262,8 @@ export function LogoCanvas() {
             onMouseUp={handleMouseUp}
             onDoubleClick={handleDoubleClick}
           />
-          <DrawingOverlay />
         </div>
         <AnimationControls playing={playing} canAnimate={canAnimate} onToggle={togglePlaying} />
-        {ui.editMode && (
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1 p-1 rounded-xl bg-black/70 backdrop-blur-sm border border-white/10">
-            <span className="px-2 text-xs text-white/60">
-              {ui.selectedShapeId ? `Selected: ${ui.selectedShapeId}` : 'Click a shape'}
-            </span>
-            {ui.selectedShapeId && (
-              <>
-                <div className="w-px h-5 bg-white/10" />
-                <button onClick={deleteSelectedShape} className="h-8 px-3 rounded-lg text-xs text-red-400 hover:bg-white/10">Delete</button>
-              </>
-            )}
-            <div className="w-px h-5 bg-white/10" />
-            <button onClick={clearShapeOverrides} className="h-8 px-3 rounded-lg text-xs text-white/50 hover:text-white hover:bg-white/10">Reset All</button>
-          </div>
-        )}
       </div>
     </div>
   )
