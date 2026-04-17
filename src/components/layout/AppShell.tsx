@@ -1,16 +1,25 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Toolbar } from './Toolbar.tsx'
 import { LogoCanvas } from '../canvas/LogoCanvas.tsx'
+import { ConstructionPanel } from '../canvas/ConstructionPanel.tsx'
 import { ParameterPanel } from '../controls/ParameterPanel.tsx'
 import { useLogoStore } from '../../store/logoStore.ts'
+import { generateConstructionCommentary } from '../../engine/commentary/constructionCommentary.ts'
 
 export function AppShell() {
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false)
   const error = useLogoStore((s) => s.error)
+  const params = useLogoStore((s) => s.params)
+  const result = useLogoStore((s) => s.result)
   const controlsButtonRef = useRef<HTMLButtonElement>(null)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
   const wasMobilePanelOpenRef = useRef(false)
   const titleId = useId()
+
+  const commentary = useMemo(
+    () => (result ? generateConstructionCommentary(params, result) : null),
+    [params, result],
+  )
 
   useEffect(() => {
     if (!mobilePanelOpen) return
@@ -48,6 +57,7 @@ export function AppShell() {
 
         {/* Desktop sidebar */}
         <aside className="hidden md:flex md:flex-col w-[340px] lg:w-[380px] flex-shrink-0 border-l border-border bg-sidebar overflow-y-auto">
+          <ConstructionPanel commentary={commentary} className="m-4 mb-0" />
           <ParameterPanel />
         </aside>
       </div>
