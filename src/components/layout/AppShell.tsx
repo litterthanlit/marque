@@ -123,7 +123,7 @@ export function AppShell() {
         </main>
 
         {/* Inspector (desktop ≥ 1024px) */}
-        <aside className="hidden lg:flex lg:flex-col w-[340px] xl:w-[380px] flex-shrink-0 border-l border-border bg-sidebar overflow-y-auto">
+        <aside className="hidden lg:flex lg:flex-col w-[clamp(300px,28vw,380px)] flex-shrink-0 border-l border-border bg-sidebar overflow-x-hidden overflow-y-auto">
           <ParameterPanel />
         </aside>
       </div>

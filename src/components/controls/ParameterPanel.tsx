@@ -144,14 +144,14 @@ function GenerateTab() {
       {/* Mode */}
       <div className="p-3 border-b border-border">
         <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Mode</div>
-        <div className="grid grid-cols-3 gap-1">
+        <div className="grid grid-cols-2 xl:grid-cols-3 gap-1">
           {modes.map((mode) => (
             <button
               key={mode.id}
               type="button"
               onClick={() => setMode(mode.id)}
               className={cn(
-                'h-8 px-2 rounded-lg text-xs transition-colors',
+                'h-8 min-w-0 px-2 rounded-lg text-xs transition-colors truncate',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
                 mode.id === params.modeId
                   ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
@@ -167,7 +167,7 @@ function GenerateTab() {
       {/* Style */}
       <div className="p-3 border-b border-border">
         <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Style</div>
-        <div className="flex items-center gap-1">
+        <div className="grid grid-cols-2 xl:grid-cols-5 gap-1">
           {STYLE_FAMILIES.map((family) => (
             <button
               key={family.id}
@@ -175,7 +175,7 @@ function GenerateTab() {
               onClick={() => setStyleFamily(family.id)}
               title={family.label}
               className={cn(
-                'flex-1 h-8 rounded-lg text-xs transition-all',
+                'h-8 min-w-0 rounded-lg px-1.5 text-xs transition-all truncate',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
                 family.id === params.styleFamily
                   ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
@@ -597,7 +597,7 @@ function ToggleRow({ label, checked, onChange }: { label: string; checked: boole
       type="button"
       onClick={() => onChange(!checked)}
       className={cn(
-        'flex-1 h-8 px-2.5 rounded-lg text-xs transition-all',
+        'flex-1 min-w-0 h-8 px-2 rounded-lg text-xs transition-all truncate',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
         checked
           ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
@@ -618,7 +618,7 @@ function SegmentRow({ value, options, onChange }: { value: number; options: Arra
           type="button"
           onClick={() => onChange(opt.v)}
           className={cn(
-            'flex-1 h-7 rounded-md text-xs transition-all',
+            'flex-1 min-w-0 h-7 rounded-md px-1 text-xs transition-all truncate',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
             value === opt.v
               ? 'bg-interactive text-fg font-medium shadow-sm'

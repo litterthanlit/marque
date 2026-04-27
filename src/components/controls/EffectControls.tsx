@@ -46,7 +46,7 @@ function SegmentRow({ label, value, options, onChange }: { label: string; value:
             type="button"
             onClick={() => onChange(opt)}
             className={cn(
-              'flex-1 h-6 rounded text-[11px] capitalize',
+              'flex-1 min-w-0 h-6 rounded px-1 text-[11px] capitalize truncate',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
               value === opt ? 'bg-interactive text-fg font-medium' : 'bg-interactive-active text-sidebar-muted hover:text-fg',
             )}

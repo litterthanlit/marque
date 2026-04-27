@@ -6,6 +6,14 @@ import { cn } from '../../lib/utils.ts'
 export function Toolbar() {
   const seed = useLogoStore((s) => s.params.seed)
   const hasResult = useLogoStore((s) => Boolean(s.result))
+  const dissolutionEnabled = useLogoStore((s) => s.effectParams.dissolution.enabled)
+  const toggleDissolution = useLogoStore((s) => s.toggleDissolution)
+  const hasCanvasEdits = useLogoStore(
+    (s) =>
+      Object.keys(s.ui.shapeOverrides).length > 0 ||
+      s.ui.drawnPaths.length > 0 ||
+      s.ui.drawnShapes.length > 0,
+  )
   const [exportOpen, setExportOpen] = useState(false)
   const [shareState, setShareState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
@@ -44,27 +52,45 @@ export function Toolbar() {
 
   return (
     <>
-      <header className="flex items-center justify-between h-12 px-5 border-b border-border bg-surface-raised">
+      <header className="flex items-center justify-between h-12 gap-2 px-3 sm:px-5 border-b border-border bg-surface-raised">
         <div className="flex items-center gap-3 min-w-0">
           <span className="font-display text-[18px] leading-none font-medium tracking-tight text-fg">dalat</span>
           <span className="font-mono-tabular text-[11px] text-sidebar-muted">#{seed}</span>
         </div>
-        <div className="flex items-center gap-1">
-          <ToolbarButton onClick={() => undo()} disabled={!canUndo} title="Undo (Cmd+Z)">
+        <div className="flex min-w-0 shrink-0 items-center gap-1">
+          <ToolbarButton onClick={() => undo()} disabled={!canUndo} title="Undo (Cmd+Z)" className="hidden sm:inline-flex">
             <UndoIcon />
           </ToolbarButton>
-          <ToolbarButton onClick={() => redo()} disabled={!canRedo} title="Redo (Cmd+Shift+Z)">
+          <ToolbarButton onClick={() => redo()} disabled={!canRedo} title="Redo (Cmd+Shift+Z)" className="hidden sm:inline-flex">
             <RedoIcon />
           </ToolbarButton>
-          <div className="w-px h-3.5 bg-border mx-1" />
-          <ToolbarButton onClick={handleCopyShareLink}>
+          <div className="hidden sm:block w-px h-3.5 bg-border mx-1" />
+          {dissolutionEnabled && (
+            <ToolbarButton
+              onClick={toggleDissolution}
+              title="Dissolution effect is active. Click to turn it off."
+              className="text-amber-300 bg-amber-500/10 hover:bg-amber-500/15 hover:text-amber-200"
+            >
+              <span className="lg:hidden">Fx</span>
+              <span className="hidden lg:inline">Effect On</span>
+            </ToolbarButton>
+          )}
+          {hasCanvasEdits && (
+            <span
+              title="Canvas edits are preview-only and are not included in SVG/PNG export yet."
+              className="hidden sm:inline-flex h-7 items-center rounded-md border border-amber-500/20 bg-amber-500/10 px-2 text-xs text-amber-300"
+            >
+              Preview edits
+            </span>
+          )}
+          <ToolbarButton onClick={handleCopyShareLink} className="hidden lg:inline-flex">
             {shareState === 'copied' ? 'Copied' : shareState === 'failed' ? 'Failed' : 'Share'}
           </ToolbarButton>
           <button
             onClick={() => setExportOpen(true)}
             disabled={!hasResult}
             className={cn(
-              'ml-1 h-7 px-3 text-xs font-medium rounded-md transition-colors',
+              'ml-1 h-7 px-2 sm:px-3 text-xs font-medium rounded-md transition-colors',
               'bg-fg text-surface hover:opacity-80',
               'disabled:opacity-30 disabled:cursor-default',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
@@ -84,7 +110,7 @@ function ToolbarButton({ children, ...props }: React.ButtonHTMLAttributes<HTMLBu
     <button
       {...props}
       className={cn(
-        'h-7 px-2 text-xs text-sidebar-muted rounded-md transition-colors',
+        'inline-flex h-7 items-center justify-center px-2 text-xs text-sidebar-muted rounded-md transition-colors',
         'hover:bg-interactive-hover hover:text-fg',
         'disabled:opacity-30 disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-sidebar-muted',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',

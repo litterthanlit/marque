@@ -1,3 +1,4 @@
+import paper from 'paper'
 import type { GenerationResult, ShapeNode } from '../engine/types.ts'
 import type { DissolutionResult } from '../engine/effects/types.ts'
 
@@ -10,6 +11,18 @@ function centerOnCanvas(item: paper.Item, canvasCenter: paper.Point): void {
   const bounds = item.bounds
   const delta = canvasCenter.subtract(bounds.center)
   item.translate(delta)
+}
+
+function translateViewBoxToCanvas(
+  item: paper.Item,
+  viewBox: { x: number; y: number; width: number; height: number },
+  canvasCenter: paper.Point,
+): void {
+  const viewBoxCenter = new paper.Point(
+    viewBox.x + viewBox.width / 2,
+    viewBox.y + viewBox.height / 2,
+  )
+  item.translate(canvasCenter.subtract(viewBoxCenter))
 }
 
 /**
@@ -90,7 +103,7 @@ export function renderDissolution(
   if (dissolution.solidCorePath) {
     try {
       const corePath = new scope.CompoundPath(dissolution.solidCorePath)
-      centerOnCanvas(corePath, center)
+      translateViewBoxToCanvas(corePath, dissolution.viewBox, center)
       corePath.fillColor = new scope.Color(fillColor)
       corePath.fillRule = 'evenodd'
       corePath.strokeColor = null
@@ -103,7 +116,7 @@ export function renderDissolution(
   if (dissolution.particlePathData) {
     try {
       const particles = new scope.CompoundPath(dissolution.particlePathData)
-      centerOnCanvas(particles, center)
+      translateViewBoxToCanvas(particles, dissolution.viewBox, center)
       particles.fillColor = new scope.Color(fillColor)
       particles.strokeColor = null
     } catch {

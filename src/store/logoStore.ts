@@ -120,7 +120,7 @@ export const useLogoStore = create<LogoStore>()(
       error: null,
       ui: {
         showGrid: true,
-        showConstruction: true,
+        showConstruction: false,
         perspectiveX: 0,
         perspectiveY: 0,
         drawingMode: false,

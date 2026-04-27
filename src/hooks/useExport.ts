@@ -83,13 +83,17 @@ export function useExport(dissolution?: DissolutionResult | null) {
     }
   }
 
+  function getExportViewBox() {
+    return activeDissolution?.viewBox ?? result!.mark.viewBox
+  }
+
   function exportSVG(options: ExportOptions = {}) {
     const paths = getExportPaths()
     if (!paths) return
     const svg = generateSVGString(
       paths.pathData,
       paths.fillRule,
-      result!.mark.viewBox,
+      getExportViewBox(),
       params.fillColor,
       options,
     )
@@ -101,14 +105,14 @@ export function useExport(dissolution?: DissolutionResult | null) {
     const paths = getExportPaths()
     if (!paths) return
     const normalizedViewBox = normalizeViewBox(
-      result!.mark.viewBox,
+      getExportViewBox(),
       options.artboardMode ?? 'tight',
       options.paddingMode ?? 'compact',
     )
     const svg = generateSVGString(
       paths.pathData,
       paths.fillRule,
-      result!.mark.viewBox,
+      getExportViewBox(),
       params.fillColor,
       options,
     )

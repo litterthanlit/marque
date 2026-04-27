@@ -21,6 +21,27 @@ function round3(n: number): number {
   return Math.round(n * 1000) / 1000
 }
 
+function expandViewBox(
+  viewBox: { x: number; y: number; width: number; height: number },
+  padding: number,
+) {
+  return {
+    x: round3(viewBox.x - padding),
+    y: round3(viewBox.y - padding),
+    width: round3(viewBox.width + padding * 2),
+    height: round3(viewBox.height + padding * 2),
+  }
+}
+
+function createCellPath(cell: GridCell, cellSize: number): string {
+  const half = round3(cellSize / 2)
+  const x1 = round3(cell.cx - half)
+  const y1 = round3(cell.cy - half)
+  const x2 = round3(cell.cx + half)
+  const y2 = round3(cell.cy + half)
+  return `M${x1},${y1}L${x2},${y1}L${x2},${y2}L${x1},${y2}Z`
+}
+
 interface GridCell {
   col: number
   row: number
@@ -45,7 +66,10 @@ const DissolutionProcessor: EffectProcessor<DissolutionParams, DissolutionResult
     scope.project.clear()
 
     const { cellSize, shape, scatter, sizeVariation, threshold } = params
-    const viewBox = result.mark.viewBox
+    const viewBox = expandViewBox(
+      result.mark.viewBox,
+      scatter > 0 ? scatter * cellSize + cellSize : 0,
+    )
 
     // Create mark path from compoundPathData (try CompoundPath first, fallback to Path)
     let markPath: paper.PathItem
@@ -176,6 +200,7 @@ const DissolutionProcessor: EffectProcessor<DissolutionParams, DissolutionResult
     const rng = new SeededPRNG(42)
     const cells: DissolutionCell[] = []
     const particlePaths: string[] = []
+    const corePaths: string[] = []
 
     // Collect dissolving cells and sort by distance for revealRank
     const dissolvingCells: GridCell[] = []
@@ -185,6 +210,8 @@ const DissolutionProcessor: EffectProcessor<DissolutionParams, DissolutionResult
         if (!cell.filled) continue
         if (cell.normalizedDist < threshold) {
           dissolvingCells.push(cell)
+        } else if (threshold < 1) {
+          corePaths.push(createCellPath(cell, cellSize))
         }
       }
     }
@@ -239,8 +266,9 @@ const DissolutionProcessor: EffectProcessor<DissolutionParams, DissolutionResult
       })
     }
 
-    // Build solid core path
-    const solidCorePath = threshold < 1 ? result.mark.compoundPathData : null
+    const solidCorePath = threshold < 1 && corePaths.length > 0
+      ? corePaths.join('')
+      : null
 
     return {
       particlePathData: particlePaths.join(''),
