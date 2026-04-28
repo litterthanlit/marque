@@ -451,6 +451,7 @@ function IllustratorTab() {
   const updateIllustratorLayerTransform = useLogoStore((s) => s.updateIllustratorLayerTransform)
   const duplicateIllustratorLayer = useLogoStore((s) => s.duplicateIllustratorLayer)
   const deleteIllustratorLayers = useLogoStore((s) => s.deleteIllustratorLayers)
+  const moveIllustratorLayer = useLogoStore((s) => s.moveIllustratorLayer)
   const toggleIllustratorLayerVisibility = useLogoStore((s) => s.toggleIllustratorLayerVisibility)
   const setIllustratorLayerOperation = useLogoStore((s) => s.setIllustratorLayerOperation)
   const booleanIllustratorLayers = useLogoStore((s) => s.booleanIllustratorLayers)
@@ -467,6 +468,9 @@ function IllustratorTab() {
       .filter((layer) => layer != null)
   }, [illustrator])
   const selectedLayer = selectedLayers.length === 1 ? selectedLayers[0] : null
+  const selectedLayerIndex = selectedLayer && illustrator
+    ? illustrator.layers.findIndex((layer) => layer.id === selectedLayer.id)
+    : -1
   const hasLayerSelection = selectedLayers.length > 0
   const hasBooleanSelection = selectedLayers.length >= 2
 
@@ -575,12 +579,18 @@ function IllustratorTab() {
           </div>
 
           <div>
-            <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Layers</div>
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <div className="text-[10px] uppercase tracking-widest text-sidebar-muted">Layers</div>
+              <div className="text-[10px] text-sidebar-muted">
+                {illustrator.layers.length} total
+              </div>
+            </div>
             <div className="max-h-48 overflow-y-auto rounded-lg border border-border bg-interactive-active/40">
               {illustrator.layers.length === 0 ? (
                 <div className="px-3 py-2 text-xs text-sidebar-muted">No layers yet.</div>
               ) : (
-                illustrator.layers.map((layer) => {
+                [...illustrator.layers].reverse().map((layer, reverseIndex) => {
+                  const index = illustrator.layers.length - 1 - reverseIndex
                   const selected = illustrator.selectedLayerIds.includes(layer.id)
                   return (
                     <div
@@ -611,8 +621,31 @@ function IllustratorTab() {
                         )}
                         className="min-w-0 flex-1 h-7 rounded-md px-2 text-left text-xs text-sidebar-text hover:text-fg hover:bg-interactive-hover truncate focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
                       >
+                        <span className="mr-1 text-sidebar-muted font-mono-tabular">
+                          {String(index + 1).padStart(2, '0')}
+                        </span>
                         {layer.name}
                       </button>
+                      <div className="flex shrink-0 gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => moveIllustratorLayer(layer.id, 'up')}
+                          disabled={index === 0}
+                          className="h-7 w-6 rounded-md text-[10px] text-sidebar-muted hover:text-fg hover:bg-interactive-hover disabled:opacity-30 disabled:cursor-default"
+                          aria-label={`Move ${layer.name} up`}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => moveIllustratorLayer(layer.id, 'down')}
+                          disabled={index === illustrator.layers.length - 1}
+                          className="h-7 w-6 rounded-md text-[10px] text-sidebar-muted hover:text-fg hover:bg-interactive-hover disabled:opacity-30 disabled:cursor-default"
+                          aria-label={`Move ${layer.name} down`}
+                        >
+                          ↓
+                        </button>
+                      </div>
                       <button
                         type="button"
                         onClick={() => setIllustratorLayerOperation(
@@ -656,7 +689,14 @@ function IllustratorTab() {
 
           {selectedLayer && (
             <div className="flex flex-col gap-2.5">
-              <div className="text-[10px] uppercase tracking-widest text-sidebar-muted">Selected</div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0 text-[10px] uppercase tracking-widest text-sidebar-muted truncate">
+                  Selected · {selectedLayer.name}
+                </div>
+                <div className="shrink-0 text-[10px] text-sidebar-muted font-mono-tabular">
+                  {selectedLayerIndex + 1}/{illustrator.layers.length}
+                </div>
+              </div>
               <div className="flex gap-1">
                 <button
                   type="button"
@@ -738,6 +778,24 @@ function IllustratorTab() {
                   className="h-8 rounded-lg text-xs bg-interactive-active text-red-400 hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
                 >
                   Delete
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-1">
+                <button
+                  type="button"
+                  onClick={() => moveIllustratorLayer(selectedLayer.id, 'up')}
+                  disabled={selectedLayerIndex <= 0}
+                  className="h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all disabled:opacity-40 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
+                >
+                  Move Up
+                </button>
+                <button
+                  type="button"
+                  onClick={() => moveIllustratorLayer(selectedLayer.id, 'down')}
+                  disabled={!illustrator || selectedLayerIndex >= illustrator.layers.length - 1}
+                  className="h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all disabled:opacity-40 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
+                >
+                  Move Down
                 </button>
               </div>
             </div>

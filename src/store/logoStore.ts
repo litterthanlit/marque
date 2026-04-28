@@ -132,6 +132,7 @@ interface LogoStore {
   ) => void
   duplicateIllustratorLayer: (id: string) => void
   deleteIllustratorLayers: (ids?: string[]) => void
+  moveIllustratorLayer: (id: string, direction: 'up' | 'down') => void
   toggleIllustratorLayerVisibility: (id: string) => void
   setIllustratorLayerOperation: (id: string, operation: 'add' | 'subtract') => void
   addIllustratorPathLayer: (path: Omit<DrawnPath, 'id'>) => void
@@ -640,7 +641,8 @@ export const useLogoStore = create<LogoStore>()(
       duplicateIllustratorLayer: (id) =>
         set((state) => {
           if (!state.illustrator) return state
-          const layer = state.illustrator.layers.find((candidate) => candidate.id === id)
+          const index = state.illustrator.layers.findIndex((candidate) => candidate.id === id)
+          const layer = state.illustrator.layers[index]
           if (!layer) return state
           const nextLayer: IllustratorLayer = {
             ...structuredClone(layer),
@@ -654,10 +656,12 @@ export const useLogoStore = create<LogoStore>()(
               dy: layer.transform.dy + 12,
             },
           }
+          const layers = [...state.illustrator.layers]
+          layers.splice(index + 1, 0, nextLayer)
           return {
             illustrator: {
               ...state.illustrator,
-              layers: [...state.illustrator.layers, nextLayer],
+              layers,
               selectedLayerIds: [nextLayer.id],
               pointSelection: null,
             },
@@ -677,6 +681,26 @@ export const useLogoStore = create<LogoStore>()(
               ),
               selectedLayerIds: [],
               pointSelection: null,
+            },
+          }
+        }),
+
+      moveIllustratorLayer: (id, direction) =>
+        set((state) => {
+          if (!state.illustrator) return state
+          const index = state.illustrator.layers.findIndex((layer) => layer.id === id)
+          if (index < 0) return state
+          const targetIndex = direction === 'up' ? index - 1 : index + 1
+          if (targetIndex < 0 || targetIndex >= state.illustrator.layers.length) return state
+
+          const layers = [...state.illustrator.layers]
+          const [layer] = layers.splice(index, 1)
+          layers.splice(targetIndex, 0, layer)
+
+          return {
+            illustrator: {
+              ...state.illustrator,
+              layers,
             },
           }
         }),
@@ -740,13 +764,17 @@ export const useLogoStore = create<LogoStore>()(
           if (selected.length < 2) return state
           const result = performIllustratorBoolean(selected, op)
           if (!result) return state
+          const insertAt = Math.min(
+            ...ids.map((id) => state.illustrator!.layers.findIndex((layer) => layer.id === id)),
+          )
           const remaining = state.illustrator.layers.filter(
             (layer) => !ids.includes(layer.id),
           )
+          remaining.splice(Math.max(0, insertAt), 0, result)
           return {
             illustrator: {
               ...state.illustrator,
-              layers: [...remaining, result],
+              layers: remaining,
               selectedLayerIds: [result.id],
               pointSelection: null,
             },
