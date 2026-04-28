@@ -39,8 +39,13 @@ function App() {
 
       // Delete/Backspace = delete selected shape in edit mode
       if ((e.key === 'Delete' || e.key === 'Backspace') && !e.metaKey && !e.ctrlKey) {
-        const { editMode, selectedShapeId } = useLogoStore.getState().ui
-        if (editMode && selectedShapeId) {
+        const { ui, activeSurface, illustrator } = useLogoStore.getState()
+        if (activeSurface === 'illustrator' && illustrator?.selectedLayerIds.length) {
+          e.preventDefault()
+          useLogoStore.getState().deleteIllustratorLayers()
+          return
+        }
+        if (ui.editMode && ui.selectedShapeId) {
           e.preventDefault()
           useLogoStore.getState().deleteSelectedShape()
         }

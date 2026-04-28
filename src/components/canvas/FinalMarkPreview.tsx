@@ -1,13 +1,14 @@
-import { useLogoStore } from '../../store/logoStore.ts'
 import { cn } from '../../lib/utils.ts'
+import { useLogoStore } from '../../store/logoStore.ts'
+import { useActiveMark } from '../../hooks/useActiveMark.ts'
 
 export function FinalMarkPreview() {
-  const result = useLogoStore((s) => s.result)
   const fillColor = useLogoStore((s) => s.params.fillColor)
+  const activeMark = useActiveMark()
 
-  const markData = result?.mark.compoundPathData
-  const fillRule = result?.mark.fillRule
-  const viewBox = result?.mark.viewBox
+  const markData = activeMark?.compoundPathData
+  const fillRule = activeMark?.fillRule
+  const viewBox = activeMark?.viewBox
 
   const hasMark = Boolean(markData && fillRule && viewBox)
   const vbString = viewBox

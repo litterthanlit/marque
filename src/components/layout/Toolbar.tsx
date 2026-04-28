@@ -8,12 +8,7 @@ export function Toolbar() {
   const hasResult = useLogoStore((s) => Boolean(s.result))
   const dissolutionEnabled = useLogoStore((s) => s.effectParams.dissolution.enabled)
   const toggleDissolution = useLogoStore((s) => s.toggleDissolution)
-  const hasCanvasEdits = useLogoStore(
-    (s) =>
-      Object.keys(s.ui.shapeOverrides).length > 0 ||
-      s.ui.drawnPaths.length > 0 ||
-      s.ui.drawnShapes.length > 0,
-  )
+  const activeSurface = useLogoStore((s) => s.activeSurface)
   const [exportOpen, setExportOpen] = useState(false)
   const [shareState, setShareState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
@@ -75,12 +70,12 @@ export function Toolbar() {
               <span className="hidden lg:inline">Effect On</span>
             </ToolbarButton>
           )}
-          {hasCanvasEdits && (
+          {activeSurface === 'illustrator' && (
             <span
-              title="Canvas edits are preview-only and are not included in SVG/PNG export yet."
-              className="hidden sm:inline-flex h-7 items-center rounded-md border border-amber-500/20 bg-amber-500/10 px-2 text-xs text-amber-300"
+              title="Export and sharing are using the editable Illustrator document."
+              className="hidden sm:inline-flex h-7 items-center rounded-md border border-sky-500/20 bg-sky-500/10 px-2 text-xs text-sky-300"
             >
-              Preview edits
+              Illustrator
             </span>
           )}
           <ToolbarButton onClick={handleCopyShareLink} className="hidden lg:inline-flex">

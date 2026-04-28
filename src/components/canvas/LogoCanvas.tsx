@@ -1,6 +1,11 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { usePaperScope } from '../../renderer/usePaperScope.ts'
 import { renderLogoOnScope } from '../../renderer/PaperRenderer.ts'
+import {
+  layerCanvasPointToLocal,
+  renderIllustratorOnScope,
+  type IllustratorControlData,
+} from '../../renderer/IllustratorRenderer.ts'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { InteractionLayer } from '../../renderer/InteractionLayer.ts'
 import { PencilTool } from '../../renderer/tools/PencilTool.ts'
@@ -12,30 +17,71 @@ import { useAnimation } from '../../hooks/useAnimation.ts'
 import { AnimationControls } from './AnimationControls.tsx'
 import type { AnimationKeyframe } from '../../engine/animation/types.ts'
 import type { DrawnPath } from '../../store/logoStore.ts'
+import { useActiveMark } from '../../hooks/useActiveMark.ts'
 
 export function LogoCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const scopeRef = usePaperScope(canvasRef)
   const interactionRef = useRef<InteractionLayer | null>(null)
   const toolRef = useRef<PencilTool | PenTool | GraffitiTool | ShapeBuilderTool | null>(null)
+  const pointDragRef = useRef<IllustratorControlData | null>(null)
   const result = useLogoStore((s) => s.result)
   const ui = useLogoStore((s) => s.ui)
   const params = useLogoStore((s) => s.params)
   const effectParams = useLogoStore((s) => s.effectParams)
+  const activeSurface = useLogoStore((s) => s.activeSurface)
+  const illustrator = useLogoStore((s) => s.illustrator)
   const selectShape = useLogoStore((s) => s.selectShape)
   const updateShapeOverride = useLogoStore((s) => s.updateShapeOverride)
   const addDrawnPath = useLogoStore((s) => s.addDrawnPath)
+  const addIllustratorPathLayer = useLogoStore((s) => s.addIllustratorPathLayer)
+  const selectIllustratorLayer = useLogoStore((s) => s.selectIllustratorLayer)
+  const updateIllustratorLayerTransform = useLogoStore((s) => s.updateIllustratorLayerTransform)
+  const setPointSelection = useLogoStore((s) => s.setPointSelection)
+  const updateIllustratorPoint = useLogoStore((s) => s.updateIllustratorPoint)
   const togglePathSelection = useLogoStore((s) => s.togglePathSelection)
+  const activeMark = useActiveMark()
 
   const dissolution = useMemo(() => {
-    if (!result || !effectParams.dissolution.enabled) return null
-    return DissolutionProcessor.process(result, effectParams.dissolution)
-  }, [result, effectParams.dissolution])
+    if (!activeMark || !effectParams.dissolution.enabled) return null
+    return DissolutionProcessor.process({ mark: activeMark }, effectParams.dissolution)
+  }, [activeMark, effectParams.dissolution])
 
   // Render logo + drawn paths + interaction layer
   useEffect(() => {
     const scope = scopeRef.current
     if (!scope || !result) return
+
+    if (activeSurface === 'illustrator' && illustrator) {
+      const itemMap = renderIllustratorOnScope(scope, illustrator, {
+        fillColor: params.fillColor,
+        dissolution,
+      })
+
+      if (illustrator.mode === 'object' && !dissolution) {
+        if (!interactionRef.current) {
+          interactionRef.current = new InteractionLayer(scope, {
+            onSelect: (id) => selectIllustratorLayer(id),
+            onMove: (id, dx, dy) => {
+              const layer = useLogoStore
+                .getState()
+                .illustrator?.layers.find((candidate) => candidate.id === id)
+              updateIllustratorLayerTransform(id, {
+                dx: (layer?.transform.dx ?? 0) + dx,
+                dy: (layer?.transform.dy ?? 0) + dy,
+              })
+            },
+          })
+        }
+        interactionRef.current.setup(itemMap)
+        interactionRef.current.showSelection(illustrator.selectedLayerIds[0] ?? null)
+      } else if (interactionRef.current) {
+        interactionRef.current.destroy()
+        interactionRef.current = null
+      }
+
+      return
+    }
 
     const itemMap = renderLogoOnScope(scope, result, {
       showGrid: ui.showGrid,
@@ -70,7 +116,26 @@ export function LogoCanvas() {
       interactionRef.current.destroy()
       interactionRef.current = null
     }
-  }, [result, ui.showGrid, ui.showConstruction, ui.drawnShapes, ui.drawnPaths, ui.editMode, ui.shapeOverrides, ui.selectedShapeId, ui.selectedPathIds, params.fillColor, dissolution, scopeRef, selectShape, updateShapeOverride])
+  }, [
+    activeSurface,
+    illustrator,
+    result,
+    ui.showGrid,
+    ui.showConstruction,
+    ui.drawnShapes,
+    ui.drawnPaths,
+    ui.editMode,
+    ui.shapeOverrides,
+    ui.selectedShapeId,
+    ui.selectedPathIds,
+    params.fillColor,
+    dissolution,
+    scopeRef,
+    selectShape,
+    updateShapeOverride,
+    selectIllustratorLayer,
+    updateIllustratorLayerTransform,
+  ])
 
   // Manage active drawing tool lifecycle
   useEffect(() => {
@@ -85,7 +150,11 @@ export function LogoCanvas() {
 
     const callbacks = {
       onPathComplete: (path: Omit<DrawnPath, 'id'>) => {
-        addDrawnPath(path)
+        if (activeSurface === 'illustrator') {
+          addIllustratorPathLayer(path)
+        } else {
+          addDrawnPath(path)
+        }
       },
     }
 
@@ -112,7 +181,14 @@ export function LogoCanvas() {
         toolRef.current = null
       }
     }
-  }, [ui.activeTool, params.fillColor, scopeRef, addDrawnPath])
+  }, [
+    activeSurface,
+    ui.activeTool,
+    params.fillColor,
+    scopeRef,
+    addDrawnPath,
+    addIllustratorPathLayer,
+  ])
 
   // Mouse events — route to active tool or interaction layer
   const getPoint = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -125,8 +201,36 @@ export function LogoCanvas() {
     const point = getPoint(e)
     if (!point) return
 
+    if (
+      activeSurface === 'illustrator' &&
+      illustrator?.mode === 'points' &&
+      scopeRef.current
+    ) {
+      const hitResult = scopeRef.current.project.hitTest(point, {
+        fill: true,
+        stroke: true,
+        tolerance: 8,
+      })
+      const control = (hitResult?.item?.data as Record<string, unknown> | undefined)
+        ?.illustratorControl as IllustratorControlData | undefined
+      if (control) {
+        pointDragRef.current = control
+        setPointSelection(control)
+        return
+      }
+    }
+
     if (toolRef.current) {
       toolRef.current.onMouseDown(point)
+      return
+    }
+
+    if (
+      activeSurface === 'illustrator' &&
+      illustrator?.mode === 'object' &&
+      interactionRef.current
+    ) {
+      interactionRef.current.onMouseDown(point)
       return
     }
 
@@ -157,11 +261,42 @@ export function LogoCanvas() {
     if (ui.editMode && interactionRef.current) {
       interactionRef.current.onMouseDown(point)
     }
-  }, [getPoint, ui.editMode, ui.activeTool, scopeRef, togglePathSelection])
+  }, [
+    activeSurface,
+    illustrator?.mode,
+    getPoint,
+    ui.editMode,
+    ui.activeTool,
+    scopeRef,
+    togglePathSelection,
+    setPointSelection,
+  ])
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const point = getPoint(e)
     if (!point) return
+
+    if (
+      pointDragRef.current &&
+      activeSurface === 'illustrator' &&
+      illustrator &&
+      scopeRef.current
+    ) {
+      const control = pointDragRef.current
+      const layer = illustrator.layers.find((candidate) => candidate.id === control.layerId)
+      if (!layer) return
+      const localPoint = layerCanvasPointToLocal(
+        scopeRef.current,
+        layer,
+        point,
+        scopeRef.current.view.center,
+      )
+      updateIllustratorPoint(control.layerId, control.segmentIndex, control.handle, {
+        x: Math.round(localPoint.x * 1000) / 1000,
+        y: Math.round(localPoint.y * 1000) / 1000,
+      })
+      return
+    }
 
     if (toolRef.current) {
       // ShapeBuilderTool needs onMouseMove for preview line when not dragging
@@ -172,23 +307,44 @@ export function LogoCanvas() {
       }
       return
     }
+    if (
+      activeSurface === 'illustrator' &&
+      illustrator?.mode === 'object' &&
+      interactionRef.current
+    ) {
+      interactionRef.current.onMouseDrag(point)
+      return
+    }
     if (ui.editMode && interactionRef.current) {
       interactionRef.current.onMouseDrag(point)
     }
-  }, [getPoint, ui.editMode])
+  }, [activeSurface, getPoint, illustrator, scopeRef, ui.editMode, updateIllustratorPoint])
 
   const handleMouseUp = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const point = getPoint(e)
     if (!point) return
 
+    if (pointDragRef.current) {
+      pointDragRef.current = null
+      return
+    }
+
     if (toolRef.current) {
       toolRef.current.onMouseUp(point)
+      return
+    }
+    if (
+      activeSurface === 'illustrator' &&
+      illustrator?.mode === 'object' &&
+      interactionRef.current
+    ) {
+      interactionRef.current.onMouseUp(point)
       return
     }
     if (ui.editMode && interactionRef.current) {
       interactionRef.current.onMouseUp(point)
     }
-  }, [getPoint, ui.editMode])
+  }, [activeSurface, getPoint, illustrator?.mode, ui.editMode])
 
   const handleDoubleClick = useCallback((_e: React.MouseEvent<HTMLCanvasElement>) => {
     // Finalize pen/shapebuilder tool on double-click

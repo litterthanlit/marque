@@ -1,6 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { useExport } from '../../hooks/useExport.ts'
-import { useLogoStore } from '../../store/logoStore.ts'
 import { cn } from '../../lib/utils.ts'
 
 interface ExportDialogProps {
@@ -15,12 +14,6 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
   const [paddingMode, setPaddingMode] = useState<'none' | 'compact' | 'presentation'>('compact')
   const titleId = useId()
   const closeButtonRef = useRef<HTMLButtonElement>(null)
-  const hasCanvasEdits = useLogoStore(
-    (s) =>
-      Object.keys(s.ui.shapeOverrides).length > 0 ||
-      s.ui.drawnPaths.length > 0 ||
-      s.ui.drawnShapes.length > 0,
-  )
 
   useEffect(() => {
     if (!open) return
@@ -57,12 +50,6 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
           {hasDissolution && (
             <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
               Dissolution effect included in export
-            </div>
-          )}
-
-          {hasCanvasEdits && (
-            <div className="rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-xs text-sky-300">
-              Preview edits are not included in export yet
             </div>
           )}
 

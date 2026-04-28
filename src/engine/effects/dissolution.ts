@@ -1,6 +1,10 @@
 import paper from 'paper'
-import type { GenerationResult } from '../types.ts'
-import type { DissolutionParams, DissolutionResult, DissolutionCell } from './types.ts'
+import type {
+  DissolutionParams,
+  DissolutionResult,
+  DissolutionCell,
+  EffectSource,
+} from './types.ts'
 import type { EffectProcessor } from './registry.ts'
 import { registerEffect } from './registry.ts'
 import { SeededPRNG } from '../random.ts'
@@ -56,7 +60,7 @@ interface GridCell {
 const DissolutionProcessor: EffectProcessor<DissolutionParams, DissolutionResult> = {
   id: 'dissolution',
 
-  process(result: GenerationResult, params: DissolutionParams): DissolutionResult | null {
+  process(result: EffectSource, params: DissolutionParams): DissolutionResult | null {
     // Early exit conditions
     if (!params.enabled) return null
     if (params.threshold === 0) return null

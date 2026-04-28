@@ -10,6 +10,15 @@ import type {
 import { DEFAULT_PARAMS } from '../engine/types.ts'
 import type { DissolutionParams, EffectParamsMap } from '../engine/effects/types.ts'
 import { DEFAULT_DISSOLUTION_PARAMS } from '../engine/effects/types.ts'
+import type {
+  ActiveSurface,
+  IllustratorDocument,
+  IllustratorLayer,
+  IllustratorMode,
+  PointSelection,
+} from '../engine/illustrator/types.ts'
+import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../engine/illustrator/types.ts'
+import { createIllustratorDocument, getLayerPathItem } from '../engine/illustrator/compose.ts'
 import { paramsEqual } from './historyMiddleware.ts'
 import {
   getAllModeParamDefaults,
@@ -71,6 +80,8 @@ interface LogoStore {
   error: string | null
   ui: UIState
   effectParams: EffectParamsMap
+  activeSurface: ActiveSurface
+  illustrator: IllustratorDocument | null
 
   setParam: <K extends keyof LogoParams>(key: K, value: LogoParams[K]) => void
   setParams: (updates: Partial<LogoParams>) => void
@@ -107,6 +118,32 @@ interface LogoStore {
   togglePathSelection: (id: string) => void
   clearPathSelection: () => void
   booleanOp: (op: 'unite' | 'subtract' | 'intersect') => void
+  setActiveSurface: (surface: ActiveSurface) => void
+  ensureIllustratorDocument: () => void
+  convertCurrentMark: () => void
+  resetIllustrator: () => void
+  setIllustratorDocument: (doc: IllustratorDocument | null) => void
+  setIllustratorMode: (mode: IllustratorMode) => void
+  selectIllustratorLayer: (id: string | null, additive?: boolean) => void
+  updateIllustratorLayer: (id: string, update: Partial<IllustratorLayer>) => void
+  updateIllustratorLayerTransform: (
+    id: string,
+    update: Partial<IllustratorLayer['transform']>,
+  ) => void
+  duplicateIllustratorLayer: (id: string) => void
+  deleteIllustratorLayers: (ids?: string[]) => void
+  toggleIllustratorLayerVisibility: (id: string) => void
+  setIllustratorLayerOperation: (id: string, operation: 'add' | 'subtract') => void
+  addIllustratorPathLayer: (path: Omit<DrawnPath, 'id'>) => void
+  booleanIllustratorLayers: (op: 'unite' | 'subtract' | 'intersect') => void
+  setPointSelection: (selection: PointSelection | null) => void
+  updateIllustratorPoint: (
+    layerId: string,
+    segmentIndex: number,
+    handle: 'anchor' | 'in' | 'out',
+    point: { x: number; y: number },
+  ) => void
+  toggleSelectedPointCurve: () => void
 }
 
 export const useLogoStore = create<LogoStore>()(
@@ -137,6 +174,8 @@ export const useLogoStore = create<LogoStore>()(
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
       },
+      activeSurface: 'generated',
+      illustrator: null,
 
       setParam: (key, value) =>
         set((state) => ({
@@ -226,7 +265,14 @@ export const useLogoStore = create<LogoStore>()(
           ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
         })),
 
-      setResult: (result) => set({ result }),
+      setResult: (result) =>
+        set((state) => ({
+          result,
+          illustrator:
+            result && state.activeSurface === 'illustrator' && !state.illustrator
+              ? createIllustratorDocument(result, state.params)
+              : state.illustrator,
+        })),
       setError: (error) => set({ error }),
 
       toggleGrid: () =>
@@ -460,10 +506,311 @@ export const useLogoStore = create<LogoStore>()(
             },
           }
         }),
+
+      setActiveSurface: (surface) =>
+        set((state) => ({
+          activeSurface: surface,
+          ui: {
+            ...state.ui,
+            activeTool: surface === 'generated' ? null : state.ui.activeTool,
+            editMode: surface === 'generated' ? false : state.ui.editMode,
+          },
+        })),
+
+      ensureIllustratorDocument: () =>
+        set((state) => {
+          if (state.illustrator || !state.result) {
+            return { activeSurface: 'illustrator' }
+          }
+          return {
+            activeSurface: 'illustrator',
+            illustrator: createIllustratorDocument(state.result, state.params),
+          }
+        }),
+
+      convertCurrentMark: () =>
+        set((state) => ({
+          activeSurface: 'illustrator',
+          illustrator: state.result
+            ? createIllustratorDocument(state.result, state.params)
+            : state.illustrator,
+          ui: {
+            ...state.ui,
+            activeTool: null,
+            editMode: true,
+            selectedShapeId: null,
+            selectedPathIds: [],
+          },
+        })),
+
+      resetIllustrator: () =>
+        set((state) => ({
+          activeSurface: 'generated',
+          illustrator: null,
+          ui: {
+            ...state.ui,
+            activeTool: null,
+            editMode: false,
+            selectedShapeId: null,
+            selectedPathIds: [],
+          },
+        })),
+
+      setIllustratorDocument: (doc) =>
+        set((state) => ({
+          illustrator: doc,
+          activeSurface: doc ? 'illustrator' : state.activeSurface,
+        })),
+
+      setIllustratorMode: (mode) =>
+        set((state) => ({
+          illustrator: state.illustrator
+            ? {
+                ...state.illustrator,
+                mode,
+                pointSelection: mode === 'object' ? null : state.illustrator.pointSelection,
+              }
+            : state.illustrator,
+          ui: {
+            ...state.ui,
+            activeTool: mode === 'points' ? null : state.ui.activeTool,
+            editMode: mode === 'object',
+          },
+        })),
+
+      selectIllustratorLayer: (id, additive = false) =>
+        set((state) => {
+          if (!state.illustrator) return state
+          const current = state.illustrator.selectedLayerIds
+          const selectedLayerIds = id
+            ? additive
+              ? current.includes(id)
+                ? current.filter((layerId) => layerId !== id)
+                : [...current, id]
+              : [id]
+            : []
+
+          return {
+            illustrator: {
+              ...state.illustrator,
+              selectedLayerIds,
+              pointSelection:
+                selectedLayerIds.length === 1
+                  ? state.illustrator.pointSelection
+                  : null,
+            },
+            ui: {
+              ...state.ui,
+              editMode: true,
+              selectedShapeId: id,
+              selectedPathIds: [],
+            },
+          }
+        }),
+
+      updateIllustratorLayer: (id, update) =>
+        set((state) => ({
+          illustrator: state.illustrator
+            ? {
+                ...state.illustrator,
+                layers: state.illustrator.layers.map((layer) =>
+                  layer.id === id ? { ...layer, ...update } : layer,
+                ),
+              }
+            : state.illustrator,
+        })),
+
+      updateIllustratorLayerTransform: (id, update) =>
+        set((state) => ({
+          illustrator: state.illustrator
+            ? {
+                ...state.illustrator,
+                layers: state.illustrator.layers.map((layer) =>
+                  layer.id === id
+                    ? {
+                        ...layer,
+                        transform: { ...layer.transform, ...update },
+                      }
+                    : layer,
+                ),
+              }
+            : state.illustrator,
+        })),
+
+      duplicateIllustratorLayer: (id) =>
+        set((state) => {
+          if (!state.illustrator) return state
+          const layer = state.illustrator.layers.find((candidate) => candidate.id === id)
+          if (!layer) return state
+          const nextLayer: IllustratorLayer = {
+            ...structuredClone(layer),
+            id: crypto.randomUUID(),
+            name: `${layer.name} copy`,
+            sourceShapeId: undefined,
+            locked: false,
+            transform: {
+              ...layer.transform,
+              dx: layer.transform.dx + 12,
+              dy: layer.transform.dy + 12,
+            },
+          }
+          return {
+            illustrator: {
+              ...state.illustrator,
+              layers: [...state.illustrator.layers, nextLayer],
+              selectedLayerIds: [nextLayer.id],
+              pointSelection: null,
+            },
+          }
+        }),
+
+      deleteIllustratorLayers: (ids) =>
+        set((state) => {
+          if (!state.illustrator) return state
+          const selected = ids ?? state.illustrator.selectedLayerIds
+          if (selected.length === 0) return state
+          return {
+            illustrator: {
+              ...state.illustrator,
+              layers: state.illustrator.layers.filter(
+                (layer) => !selected.includes(layer.id),
+              ),
+              selectedLayerIds: [],
+              pointSelection: null,
+            },
+          }
+        }),
+
+      toggleIllustratorLayerVisibility: (id) =>
+        set((state) => ({
+          illustrator: state.illustrator
+            ? {
+                ...state.illustrator,
+                layers: state.illustrator.layers.map((layer) =>
+                  layer.id === id ? { ...layer, visible: !layer.visible } : layer,
+                ),
+              }
+            : state.illustrator,
+        })),
+
+      setIllustratorLayerOperation: (id, operation) =>
+        set((state) => ({
+          illustrator: state.illustrator
+            ? {
+                ...state.illustrator,
+                layers: state.illustrator.layers.map((layer) =>
+                  layer.id === id ? { ...layer, operation } : layer,
+                ),
+              }
+            : state.illustrator,
+        })),
+
+      addIllustratorPathLayer: (path) =>
+        set((state) => {
+          if (!state.illustrator) return state
+          const layer: IllustratorLayer = {
+            id: crypto.randomUUID(),
+            name: `${path.tool} ${state.illustrator.layers.length + 1}`,
+            operation: 'add',
+            visible: true,
+            locked: false,
+            pathData: path.pathData,
+            fillRule: 'evenodd',
+            transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+          }
+          return {
+            illustrator: {
+              ...state.illustrator,
+              layers: [...state.illustrator.layers, layer],
+              selectedLayerIds: [layer.id],
+              pointSelection: null,
+            },
+            ui: { ...state.ui, activeTool: null },
+          }
+        }),
+
+      booleanIllustratorLayers: (op) =>
+        set((state) => {
+          if (!state.illustrator) return state
+          const ids = state.illustrator.selectedLayerIds
+          if (ids.length < 2) return state
+          const selected = ids
+            .map((id) => state.illustrator?.layers.find((layer) => layer.id === id))
+            .filter((layer): layer is IllustratorLayer => layer != null)
+          if (selected.length < 2) return state
+          const result = performIllustratorBoolean(selected, op)
+          if (!result) return state
+          const remaining = state.illustrator.layers.filter(
+            (layer) => !ids.includes(layer.id),
+          )
+          return {
+            illustrator: {
+              ...state.illustrator,
+              layers: [...remaining, result],
+              selectedLayerIds: [result.id],
+              pointSelection: null,
+            },
+          }
+        }),
+
+      setPointSelection: (selection) =>
+        set((state) => ({
+          illustrator: state.illustrator
+            ? { ...state.illustrator, pointSelection: selection }
+            : state.illustrator,
+        })),
+
+      updateIllustratorPoint: (layerId, segmentIndex, handle, point) =>
+        set((state) => {
+          if (!state.illustrator) return state
+          return {
+            illustrator: {
+              ...state.illustrator,
+              layers: state.illustrator.layers.map((layer) =>
+                layer.id === layerId
+                  ? {
+                      ...layer,
+                      pathData: updateLayerPointData(
+                        layer,
+                        segmentIndex,
+                        handle,
+                        point,
+                      ),
+                    }
+                  : layer,
+              ),
+              pointSelection: { layerId, segmentIndex, handle },
+            },
+          }
+        }),
+
+      toggleSelectedPointCurve: () =>
+        set((state) => {
+          const selection = state.illustrator?.pointSelection
+          if (!state.illustrator || !selection) return state
+          return {
+            illustrator: {
+              ...state.illustrator,
+              layers: state.illustrator.layers.map((layer) =>
+                layer.id === selection.layerId
+                  ? {
+                      ...layer,
+                      pathData: togglePointCurveData(layer, selection.segmentIndex),
+                    }
+                  : layer,
+              ),
+            },
+          }
+        }),
     }),
     {
       equality: paramsEqual,
-      partialize: (state) => ({ params: state.params, effectParams: state.effectParams }),
+      partialize: (state) => ({
+        params: state.params,
+        effectParams: state.effectParams,
+        activeSurface: state.activeSurface,
+        illustrator: state.illustrator,
+      }),
       limit: 50,
     },
   ),
@@ -576,4 +923,119 @@ function performBooleanOp(
     strokeWidth: 0,
     closed: true,
   }
+}
+
+function performIllustratorBoolean(
+  layers: IllustratorLayer[],
+  op: 'unite' | 'subtract' | 'intersect',
+): IllustratorLayer | null {
+  const scope = getBooleanScope()
+  scope.project.clear()
+
+  const items: paper.PathItem[] = []
+  for (const layer of layers) {
+    const item = getLayerPathItem(scope, layer, true)
+    if (!item) return null
+    items.push(item)
+  }
+
+  if (items.length < 2) return null
+
+  let result = items[0]
+  for (let i = 1; i < items.length; i++) {
+    try {
+      const next =
+        op === 'unite'
+          ? result.unite(items[i])
+          : op === 'subtract'
+            ? result.subtract(items[i])
+            : result.intersect(items[i])
+      result.remove()
+      items[i].remove()
+      result = next
+    } catch {
+      return null
+    }
+  }
+
+  const pathData = result.pathData
+  result.remove()
+  scope.project.clear()
+
+  if (!pathData) return null
+
+  return {
+    id: crypto.randomUUID(),
+    name: `${op} result`,
+    operation: layers[0].operation,
+    visible: true,
+    locked: false,
+    pathData,
+    fillRule: 'evenodd',
+    transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+  }
+}
+
+function withSegment(
+  layer: IllustratorLayer,
+  segmentIndex: number,
+  update: (segment: paper.Segment) => void,
+): string {
+  const scope = getBooleanScope()
+  scope.project.clear()
+  const item = getLayerPathItem(scope, layer, false)
+  if (!item) return layer.pathData
+
+  let index = 0
+  let updated = false
+  item.getItems({ class: scope.Path }).forEach((path) => {
+    if (updated || !(path instanceof scope.Path)) return
+    for (const segment of path.segments) {
+      if (index === segmentIndex) {
+        update(segment)
+        updated = true
+        break
+      }
+      index += 1
+    }
+  })
+
+  const pathData = item.pathData || layer.pathData
+  item.remove()
+  scope.project.clear()
+  return pathData
+}
+
+function updateLayerPointData(
+  layer: IllustratorLayer,
+  segmentIndex: number,
+  handle: 'anchor' | 'in' | 'out',
+  point: { x: number; y: number },
+): string {
+  return withSegment(layer, segmentIndex, (segment) => {
+    const next = new paper.Point(point.x, point.y)
+    if (handle === 'anchor') {
+      segment.point = next
+      return
+    }
+    if (handle === 'in') {
+      segment.handleIn = next.subtract(segment.point)
+      return
+    }
+    segment.handleOut = next.subtract(segment.point)
+  })
+}
+
+function togglePointCurveData(layer: IllustratorLayer, segmentIndex: number): string {
+  return withSegment(layer, segmentIndex, (segment) => {
+    const hasHandles = segment.handleIn.length > 0 || segment.handleOut.length > 0
+    if (hasHandles) {
+      segment.handleIn = new paper.Point(0, 0)
+      segment.handleOut = new paper.Point(0, 0)
+      return
+    }
+
+    segment.handleIn = new paper.Point(-18, 0)
+    segment.handleOut = new paper.Point(18, 0)
+  })
 }

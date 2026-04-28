@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { compressToEncodedURIComponent, decompressFromEncodedURIComponent } from 'lz-string'
 import { useLogoStore } from '../store/logoStore.ts'
 import type { LogoParams, StyleFamily } from '../engine/types.ts'
 import { DEFAULT_PARAMS } from '../engine/types.ts'
@@ -15,6 +16,7 @@ import {
 import { DEFAULT_DISSOLUTION_PARAMS } from '../engine/effects/types.ts'
 import type { DissolutionParams } from '../engine/effects/types.ts'
 import type { EffectParamsMap } from '../engine/effects/types.ts'
+import type { ActiveSurface, IllustratorDocument } from '../engine/illustrator/types.ts'
 
 const PARAM_KEYS: Array<
   | 'seed'
@@ -55,6 +57,10 @@ export function useUrlState() {
   const setError = useLogoStore((s) => s.setError)
   const effectParams = useLogoStore((s) => s.effectParams)
   const setEffectParam = useLogoStore((s) => s.setEffectParam)
+  const activeSurface = useLogoStore((s) => s.activeSurface)
+  const setActiveSurface = useLogoStore((s) => s.setActiveSurface)
+  const illustrator = useLogoStore((s) => s.illustrator)
+  const setIllustratorDocument = useLogoStore((s) => s.setIllustratorDocument)
   const initialized = useRef(false)
 
   useEffect(() => {
@@ -73,20 +79,31 @@ export function useUrlState() {
         setEffectParam(key as keyof DissolutionParams, value as DissolutionParams[keyof DissolutionParams])
       }
     }
-  }, [setError, setParams, setEffectParam])
+    if (decoded.illustrator) {
+      setIllustratorDocument(decoded.illustrator)
+    }
+    if (decoded.activeSurface) {
+      setActiveSurface(decoded.activeSurface)
+    }
+  }, [setActiveSurface, setError, setIllustratorDocument, setParams, setEffectParam])
 
   useEffect(() => {
     if (!initialized.current) return
 
-    const encoded = encodeParams(params, effectParams)
+    const encoded = encodeParams(params, effectParams, activeSurface, illustrator)
     const nextHash = encoded ? `#${encoded}` : ''
     if (window.location.hash !== nextHash) {
       window.history.replaceState(null, '', nextHash || window.location.pathname)
     }
-  }, [params, effectParams])
+  }, [activeSurface, effectParams, illustrator, params])
 }
 
-function encodeParams(params: LogoParams, effectParams: EffectParamsMap): string {
+function encodeParams(
+  params: LogoParams,
+  effectParams: EffectParamsMap,
+  activeSurface: ActiveSurface,
+  illustrator: IllustratorDocument | null,
+): string {
   const searchParams = new URLSearchParams()
   const generator = getGenerator(params.generatorId)
 
@@ -149,13 +166,37 @@ function encodeParams(params: LogoParams, effectParams: EffectParamsMap): string
     if (dp.sizeVariation !== dd.sizeVariation) searchParams.set('e.sizeVariation', String(dp.sizeVariation))
   }
 
+  if (activeSurface !== 'generated' || illustrator) {
+    searchParams.set('surface', activeSurface)
+  }
+
+  if (illustrator) {
+    searchParams.set('i', compressToEncodedURIComponent(JSON.stringify(illustrator)))
+  }
+
   return searchParams.toString()
+}
+
+interface DecodedUrlState {
+  params: Partial<LogoParams> | null
+  effectParams: Partial<DissolutionParams> | null
+  activeSurface: ActiveSurface | null
+  illustrator: IllustratorDocument | null
+  error: string | null
 }
 
 function decodeParams(
   hash: string,
-): { params: Partial<LogoParams> | null; effectParams: Partial<DissolutionParams> | null; error: string | null } {
-  if (!hash || hash === '#') return { params: null, effectParams: null, error: null }
+): DecodedUrlState {
+  if (!hash || hash === '#') {
+    return {
+      params: null,
+      effectParams: null,
+      activeSurface: null,
+      illustrator: null,
+      error: null,
+    }
+  }
 
   try {
     return decodeParamsInner(hash)
@@ -163,6 +204,8 @@ function decodeParams(
     return {
       params: null,
       effectParams: null,
+      activeSurface: null,
+      illustrator: null,
       error: `Failed to decode URL parameters: ${e instanceof Error ? e.message : String(e)}`,
     }
   }
@@ -170,7 +213,7 @@ function decodeParams(
 
 function decodeParamsInner(
   hash: string,
-): { params: Partial<LogoParams> | null; effectParams: Partial<DissolutionParams> | null; error: string | null } {
+): DecodedUrlState {
   const searchParams = new URLSearchParams(hash.replace(/^#/, ''))
   const rawUpdates: Partial<LogoParams> = {}
   const rawModeParams: Record<string, number> = {}
@@ -186,6 +229,8 @@ function decodeParamsInner(
     return {
       params: null,
       effectParams: null,
+      activeSurface: null,
+      illustrator: null,
       error: `This shared link was created for generator version ${rawVersion}, but ${generator.name} is now on ${generator.version}. Defaults were kept to avoid loading incompatible state.`,
     }
   }
@@ -196,7 +241,15 @@ function decodeParamsInner(
     : DEFAULT_PARAMS.styleFamily
 
   for (const [key, value] of searchParams.entries()) {
-    if (key === 'mode' || key === 'style' || key === 'initials' || key === 'v' || key === 'shapes') {
+    if (
+      key === 'mode' ||
+      key === 'style' ||
+      key === 'initials' ||
+      key === 'v' ||
+      key === 'shapes' ||
+      key === 'surface' ||
+      key === 'i'
+    ) {
       continue
     }
 
@@ -297,7 +350,22 @@ function decodeParamsInner(
     if (Number.isFinite(sizeVariation)) effectUpdates.sizeVariation = clampNumber(sizeVariation, 0, 1)
   }
 
-  return { params: sanitized, effectParams: Object.keys(effectUpdates).length > 0 ? effectUpdates : null, error: null }
+  const rawSurface = searchParams.get('surface')
+  const decodedIllustrator = decodeIllustrator(searchParams.get('i'))
+  const decodedSurface: ActiveSurface | null =
+    rawSurface === 'illustrator'
+      ? 'illustrator'
+      : rawSurface === 'generated'
+        ? 'generated'
+        : null
+
+  return {
+    params: sanitized,
+    effectParams: Object.keys(effectUpdates).length > 0 ? effectUpdates : null,
+    activeSurface: decodedSurface,
+    illustrator: decodedIllustrator,
+    error: null,
+  }
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -306,4 +374,27 @@ function clampNumber(value: number, min: number, max: number): number {
 
 function isHexColor(value: string): boolean {
   return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)
+}
+
+function decodeIllustrator(raw: string | null): IllustratorDocument | null {
+  if (!raw) return null
+  const json = decompressFromEncodedURIComponent(raw)
+  if (!json) throw new Error('Invalid Illustrator document encoding')
+  const parsed = JSON.parse(json) as unknown
+  if (!isIllustratorDocument(parsed)) {
+    throw new Error('Invalid Illustrator document')
+  }
+  return parsed
+}
+
+function isIllustratorDocument(value: unknown): value is IllustratorDocument {
+  if (!value || typeof value !== 'object') return false
+  const doc = value as Partial<IllustratorDocument>
+  return (
+    typeof doc.id === 'string' &&
+    Boolean(doc.source) &&
+    Array.isArray(doc.layers) &&
+    Array.isArray(doc.selectedLayerIds) &&
+    (doc.mode === 'object' || doc.mode === 'points')
+  )
 }

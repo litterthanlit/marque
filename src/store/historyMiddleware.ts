@@ -1,13 +1,26 @@
 import { temporal } from 'zundo'
 import type { LogoParams } from '../engine/types.ts'
+import type { ActiveSurface, IllustratorDocument } from '../engine/illustrator/types.ts'
 
 export function paramsEqual(
-  pastState: { params: LogoParams; effectParams?: Record<string, unknown> },
-  currentState: { params: LogoParams; effectParams?: Record<string, unknown> },
+  pastState: {
+    params: LogoParams
+    effectParams?: Record<string, unknown>
+    activeSurface?: ActiveSurface
+    illustrator?: IllustratorDocument | null
+  },
+  currentState: {
+    params: LogoParams
+    effectParams?: Record<string, unknown>
+    activeSurface?: ActiveSurface
+    illustrator?: IllustratorDocument | null
+  },
 ): boolean {
   return (
     stableParamsString(pastState.params) === stableParamsString(currentState.params) &&
-    JSON.stringify(pastState.effectParams) === JSON.stringify(currentState.effectParams)
+    JSON.stringify(pastState.effectParams) === JSON.stringify(currentState.effectParams) &&
+    pastState.activeSurface === currentState.activeSurface &&
+    JSON.stringify(pastState.illustrator) === JSON.stringify(currentState.illustrator)
   )
 }
 

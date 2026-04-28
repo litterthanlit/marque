@@ -9,8 +9,10 @@ import { EffectControls } from './EffectControls.tsx'
 import { getModeDefinition, listModes, STYLE_FAMILIES } from '../../store/modes.ts'
 import { cn } from '../../lib/utils.ts'
 import { useLocalStoragePref } from '../../hooks/useLocalStoragePref.ts'
+import { isIllustratorSourceStale } from '../../engine/illustrator/compose.ts'
+import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../../engine/illustrator/types.ts'
 
-type Tab = 'generate' | 'draw' | 'edit'
+type Tab = 'generate' | 'illustrator'
 
 const PERSPECTIVE_PRESETS = [
   { label: 'Flat', x: 0, y: 0 },
@@ -52,18 +54,29 @@ const TOOLS: Array<{ id: Tool; label: string; icon: string; fill?: boolean }> = 
 ]
 
 export function ParameterPanel() {
-  const [tab, setTab] = useState<Tab>('generate')
+  const activeSurface = useLogoStore((s) => s.activeSurface)
+  const setActiveSurface = useLogoStore((s) => s.setActiveSurface)
+  const ensureIllustratorDocument = useLogoStore((s) => s.ensureIllustratorDocument)
+  const tab: Tab = activeSurface === 'illustrator' ? 'illustrator' : 'generate'
+
+  function selectTab(nextTab: Tab) {
+    if (nextTab === 'generate') {
+      setActiveSurface('generated')
+      return
+    }
+    ensureIllustratorDocument()
+  }
 
   return (
     <div className="flex flex-col text-sm h-full">
       {/* Segmented control */}
       <div className="p-3 shrink-0 border-b border-border">
         <div className="flex gap-1 p-0.5 bg-interactive-active rounded-lg">
-          {(['generate', 'draw', 'edit'] as const).map((t) => (
+          {(['generate', 'illustrator'] as const).map((t) => (
             <button
               key={t}
               type="button"
-              onClick={() => setTab(t)}
+              onClick={() => selectTab(t)}
               className={cn(
                 'flex-1 h-8 rounded-md text-xs capitalize transition-all',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
@@ -81,8 +94,7 @@ export function ParameterPanel() {
       {/* Tab content */}
       <div className="flex-1 overflow-y-auto">
         {tab === 'generate' && <GenerateTab />}
-        {tab === 'draw' && <DrawTab />}
-        {tab === 'edit' && <EditTab />}
+        {tab === 'illustrator' && <IllustratorTab />}
       </div>
     </div>
   )
@@ -423,149 +435,342 @@ function GenerateTab() {
   )
 }
 
-/* ─── Draw Tab ─── */
+/* ─── Illustrator Tab ─── */
 
-function DrawTab() {
+function IllustratorTab() {
+  const params = useLogoStore((s) => s.params)
+  const result = useLogoStore((s) => s.result)
+  const illustrator = useLogoStore((s) => s.illustrator)
   const activeTool = useLogoStore((s) => s.ui.activeTool)
   const setActiveTool = useLogoStore((s) => s.setActiveTool)
-  const clearDrawnPaths = useLogoStore((s) => s.clearDrawnPaths)
-  const drawnPaths = useLogoStore((s) => s.ui.drawnPaths)
-  const selectedPathIds = useLogoStore((s) => s.ui.selectedPathIds)
-  const booleanOp = useLogoStore((s) => s.booleanOp)
+  const convertCurrentMark = useLogoStore((s) => s.convertCurrentMark)
+  const resetIllustrator = useLogoStore((s) => s.resetIllustrator)
+  const setIllustratorMode = useLogoStore((s) => s.setIllustratorMode)
+  const selectIllustratorLayer = useLogoStore((s) => s.selectIllustratorLayer)
+  const updateIllustratorLayer = useLogoStore((s) => s.updateIllustratorLayer)
+  const updateIllustratorLayerTransform = useLogoStore((s) => s.updateIllustratorLayerTransform)
+  const duplicateIllustratorLayer = useLogoStore((s) => s.duplicateIllustratorLayer)
+  const deleteIllustratorLayers = useLogoStore((s) => s.deleteIllustratorLayers)
+  const toggleIllustratorLayerVisibility = useLogoStore((s) => s.toggleIllustratorLayerVisibility)
+  const setIllustratorLayerOperation = useLogoStore((s) => s.setIllustratorLayerOperation)
+  const booleanIllustratorLayers = useLogoStore((s) => s.booleanIllustratorLayers)
+  const toggleSelectedPointCurve = useLogoStore((s) => s.toggleSelectedPointCurve)
 
-  const hasSelection = selectedPathIds.length >= 2
+  const stale = useMemo(
+    () => isIllustratorSourceStale(illustrator, params),
+    [illustrator, params],
+  )
+  const selectedLayers = useMemo(() => {
+    if (!illustrator) return []
+    return illustrator.selectedLayerIds
+      .map((id) => illustrator.layers.find((layer) => layer.id === id))
+      .filter((layer) => layer != null)
+  }, [illustrator])
+  const selectedLayer = selectedLayers.length === 1 ? selectedLayers[0] : null
+  const hasLayerSelection = selectedLayers.length > 0
+  const hasBooleanSelection = selectedLayers.length >= 2
 
   return (
     <div className="p-3 flex flex-col gap-3">
-      {/* Tool grid */}
-      <div>
-        <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Tool</div>
-        <div className="flex gap-1">
-          {TOOLS.map((tool) => (
-            <button
-              key={tool.id}
-              type="button"
-              onClick={() => setActiveTool(activeTool === tool.id ? null : tool.id)}
-              title={tool.label}
-              className={cn(
-                'flex-1 h-9 flex items-center justify-center rounded-lg transition-all',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
-                activeTool === tool.id
-                  ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
-                  : 'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
-              )}
-            >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill={tool.fill ? 'currentColor' : 'none'}
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinejoin="round"
-                strokeLinecap="round"
-              >
-                <path d={tool.icon} />
-              </svg>
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Boolean ops — shown when 2+ paths selected */}
-      {hasSelection && (
-        <div>
-          <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Boolean</div>
-          <div className="flex gap-1">
-            <button
-              type="button"
-              onClick={() => booleanOp('unite')}
-              className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
-            >
-              Union
-            </button>
-            <button
-              type="button"
-              onClick={() => booleanOp('subtract')}
-              className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
-            >
-              Subtract
-            </button>
-            <button
-              type="button"
-              onClick={() => booleanOp('intersect')}
-              className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
-            >
-              Intersect
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Clear — shown when paths exist */}
-      {drawnPaths.length > 0 && (
+      <div className="flex gap-2">
         <button
           type="button"
-          onClick={clearDrawnPaths}
-          className="h-8 w-full rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
+          onClick={convertCurrentMark}
+          disabled={!result}
+          className={cn(
+            'flex-1 h-8 rounded-lg text-xs font-medium transition-all',
+            'bg-interactive text-fg hover:bg-interactive-hover',
+            'disabled:opacity-40 disabled:cursor-default',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
+          )}
         >
-          Clear all paths
+          Convert Current Mark
         </button>
-      )}
+        <button
+          type="button"
+          onClick={resetIllustrator}
+          disabled={!illustrator}
+          className={cn(
+            'h-8 px-3 rounded-lg text-xs transition-all',
+            'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
+            'disabled:opacity-40 disabled:cursor-default',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
+          )}
+        >
+          Reset
+        </button>
+      </div>
 
-      {drawnPaths.length === 0 && activeTool === null && (
-        <p className="text-xs text-sidebar-muted">Select a tool above, then draw on the canvas.</p>
-      )}
-    </div>
-  )
-}
-
-/* ─── Edit Tab ─── */
-
-function EditTab() {
-  const ui = useLogoStore((s) => s.ui)
-  const deleteSelectedShape = useLogoStore((s) => s.deleteSelectedShape)
-  const clearShapeOverrides = useLogoStore((s) => s.clearShapeOverrides)
-
-  if (!ui.editMode) {
-    return (
-      <div className="p-3">
+      {!illustrator && (
         <p className="text-xs text-sidebar-muted">
-          Enter Edit mode from the canvas, then click a shape to edit.
+          Convert the generated mark to start editing paths and layers.
         </p>
-      </div>
-    )
-  }
+      )}
 
-  if (ui.selectedShapeId === null) {
-    return (
-      <div className="p-3">
-        <p className="text-xs text-sidebar-muted">Click a shape on the canvas to edit.</p>
-      </div>
-    )
-  }
+      {illustrator && stale && (
+        <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+          This editable copy was made from an older generated mark.
+        </div>
+      )}
 
-  return (
-    <div className="p-3 flex flex-col gap-2">
-      <div className="text-xs text-sidebar-muted">
-        Selected: <span className="text-fg font-mono">{ui.selectedShapeId}</span>
-      </div>
-      <div className="flex gap-1 mt-1">
-        <button
-          type="button"
-          onClick={deleteSelectedShape}
-          className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-red-400 hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
-        >
-          Delete
-        </button>
-        <button
-          type="button"
-          onClick={clearShapeOverrides}
-          className="flex-1 h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
-        >
-          Reset All
-        </button>
-      </div>
+      {illustrator && (
+        <>
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Mode</div>
+            <div className="flex gap-1 p-0.5 bg-interactive-active rounded-lg">
+              {(['object', 'points'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setIllustratorMode(mode)}
+                  className={cn(
+                    'flex-1 h-7 rounded-md px-1 text-xs capitalize transition-all',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
+                    illustrator.mode === mode
+                      ? 'bg-interactive text-fg font-medium shadow-sm'
+                      : 'text-sidebar-muted hover:text-fg',
+                  )}
+                >
+                  {mode}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Tool</div>
+            <div className="flex gap-1">
+              {TOOLS.map((tool) => (
+                <button
+                  key={tool.id}
+                  type="button"
+                  onClick={() => {
+                    setIllustratorMode('object')
+                    setActiveTool(activeTool === tool.id ? null : tool.id)
+                  }}
+                  title={tool.label}
+                  className={cn(
+                    'flex-1 h-9 flex items-center justify-center rounded-lg transition-all',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
+                    activeTool === tool.id
+                      ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
+                      : 'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
+                  )}
+                >
+                  <svg
+                    width="14"
+                    height="14"
+                    viewBox="0 0 24 24"
+                    fill={tool.fill ? 'currentColor' : 'none'}
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                  >
+                    <path d={tool.icon} />
+                  </svg>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Layers</div>
+            <div className="max-h-48 overflow-y-auto rounded-lg border border-border bg-interactive-active/40">
+              {illustrator.layers.length === 0 ? (
+                <div className="px-3 py-2 text-xs text-sidebar-muted">No layers yet.</div>
+              ) : (
+                illustrator.layers.map((layer) => {
+                  const selected = illustrator.selectedLayerIds.includes(layer.id)
+                  return (
+                    <div
+                      key={layer.id}
+                      className={cn(
+                        'flex items-center gap-1 border-b border-border/60 px-1.5 py-1 last:border-b-0',
+                        selected && 'bg-interactive',
+                      )}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => toggleIllustratorLayerVisibility(layer.id)}
+                        className={cn(
+                          'h-7 w-7 shrink-0 rounded-md text-[10px] transition-colors',
+                          layer.visible
+                            ? 'text-fg hover:bg-interactive-hover'
+                            : 'text-sidebar-muted/60 hover:text-sidebar-muted hover:bg-interactive-hover',
+                        )}
+                        aria-label={layer.visible ? `Hide ${layer.name}` : `Show ${layer.name}`}
+                      >
+                        {layer.visible ? 'On' : 'Off'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => selectIllustratorLayer(
+                          layer.id,
+                          event.shiftKey || event.metaKey,
+                        )}
+                        className="min-w-0 flex-1 h-7 rounded-md px-2 text-left text-xs text-sidebar-text hover:text-fg hover:bg-interactive-hover truncate focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
+                      >
+                        {layer.name}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIllustratorLayerOperation(
+                          layer.id,
+                          layer.operation === 'add' ? 'subtract' : 'add',
+                        )}
+                        className={cn(
+                          'h-7 w-7 shrink-0 rounded-md text-[10px] transition-colors',
+                          layer.operation === 'add'
+                            ? 'text-emerald-300 hover:bg-interactive-hover'
+                            : 'text-rose-300 hover:bg-interactive-hover',
+                        )}
+                        aria-label={`Toggle ${layer.name} operation`}
+                      >
+                        {layer.operation === 'add' ? '+' : '-'}
+                      </button>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </div>
+
+          {hasBooleanSelection && (
+            <div>
+              <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Boolean</div>
+              <div className="grid grid-cols-3 gap-1">
+                {(['unite', 'subtract', 'intersect'] as const).map((op) => (
+                  <button
+                    key={op}
+                    type="button"
+                    onClick={() => booleanIllustratorLayers(op)}
+                    className="h-8 rounded-lg text-xs capitalize bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
+                  >
+                    {op === 'unite' ? 'Union' : op}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {selectedLayer && (
+            <div className="flex flex-col gap-2.5">
+              <div className="text-[10px] uppercase tracking-widest text-sidebar-muted">Selected</div>
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={() => setIllustratorLayerOperation(selectedLayer.id, 'add')}
+                  className={cn(
+                    'flex-1 h-8 rounded-lg text-xs transition-all',
+                    selectedLayer.operation === 'add'
+                      ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
+                      : 'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
+                  )}
+                >
+                  Add
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIllustratorLayerOperation(selectedLayer.id, 'subtract')}
+                  className={cn(
+                    'flex-1 h-8 rounded-lg text-xs transition-all',
+                    selectedLayer.operation === 'subtract'
+                      ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
+                      : 'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
+                  )}
+                >
+                  Subtract
+                </button>
+              </div>
+              <SliderControl
+                label="Move X"
+                value={selectedLayer.transform.dx}
+                min={-180}
+                max={180}
+                step={1}
+                onChange={(v) => updateIllustratorLayerTransform(selectedLayer.id, { dx: v })}
+              />
+              <SliderControl
+                label="Move Y"
+                value={selectedLayer.transform.dy}
+                min={-180}
+                max={180}
+                step={1}
+                onChange={(v) => updateIllustratorLayerTransform(selectedLayer.id, { dy: v })}
+              />
+              <SliderControl
+                label="Scale"
+                value={selectedLayer.transform.scale}
+                min={0.25}
+                max={3}
+                step={0.01}
+                onChange={(v) => updateIllustratorLayerTransform(selectedLayer.id, { scale: v })}
+              />
+              <SliderControl
+                label="Rotate"
+                value={selectedLayer.transform.rotation}
+                min={-180}
+                max={180}
+                step={1}
+                onChange={(v) => updateIllustratorLayerTransform(selectedLayer.id, { rotation: v })}
+              />
+              <div className="grid grid-cols-3 gap-1">
+                <button
+                  type="button"
+                  onClick={() => updateIllustratorLayer(selectedLayer.id, {
+                    transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+                  })}
+                  className="h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
+                >
+                  Reset
+                </button>
+                <button
+                  type="button"
+                  onClick={() => duplicateIllustratorLayer(selectedLayer.id)}
+                  className="h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
+                >
+                  Copy
+                </button>
+                <button
+                  type="button"
+                  onClick={() => deleteIllustratorLayers([selectedLayer.id])}
+                  className="h-8 rounded-lg text-xs bg-interactive-active text-red-400 hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          )}
+
+          {illustrator.mode === 'points' && (
+            <div className="rounded-lg border border-border bg-interactive-active/40 p-2.5">
+              <button
+                type="button"
+                onClick={toggleSelectedPointCurve}
+                disabled={!illustrator.pointSelection}
+                className={cn(
+                  'w-full h-8 rounded-lg text-xs transition-all',
+                  'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
+                  'disabled:opacity-40 disabled:cursor-default',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
+                )}
+              >
+                Corner / Smooth
+              </button>
+              <p className="mt-2 text-xs text-sidebar-muted">
+                Select one layer, then drag anchors or handles on the canvas.
+              </p>
+            </div>
+          )}
+
+          {!hasLayerSelection && (
+            <p className="text-xs text-sidebar-muted">
+              Select a layer on the canvas or in the list to edit it.
+            </p>
+          )}
+        </>
+      )}
     </div>
   )
 }

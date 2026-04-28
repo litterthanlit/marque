@@ -1,14 +1,40 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { useExport } from '../../hooks/useExport.ts'
 import { serializeMarkToSVG } from './markSerializer.ts'
 import { cn } from '../../lib/utils.ts'
+import { useActiveMark } from '../../hooks/useActiveMark.ts'
+import { DissolutionProcessor } from '../../engine/effects/dissolution.ts'
 
 export function ExportTile() {
-  const result = useLogoStore((s) => s.result)
   const fillColor = useLogoStore((s) => s.params.fillColor)
-  const { exportPNG } = useExport()
+  const effectParams = useLogoStore((s) => s.effectParams)
+  const activeMark = useActiveMark()
+  const { exportPNG, canExport } = useExport()
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  const copyMark = useMemo(() => {
+    if (!activeMark) return null
+    if (!effectParams.dissolution.enabled) return activeMark
+
+    const dissolution = DissolutionProcessor.process(
+      { mark: activeMark },
+      effectParams.dissolution,
+    )
+    if (!dissolution) return activeMark
+
+    const parts = [
+      dissolution.solidCorePath,
+      dissolution.particlePathData,
+    ].filter(Boolean)
+    if (parts.length === 0) return null
+
+    return {
+      compoundPathData: parts.join(' '),
+      fillRule: 'evenodd' as const,
+      viewBox: dissolution.viewBox,
+    }
+  }, [activeMark, effectParams.dissolution])
 
   useEffect(() => {
     if (copyState === 'idle') return
@@ -17,8 +43,8 @@ export function ExportTile() {
   }, [copyState])
 
   async function handleCopySVG() {
-    if (!result) return
-    const { compoundPathData, fillRule, viewBox } = result.mark
+    if (!copyMark) return
+    const { compoundPathData, fillRule, viewBox } = copyMark
     const svgString = serializeMarkToSVG(compoundPathData, fillRule, viewBox, fillColor)
     try {
       await navigator.clipboard.writeText(svgString)
@@ -27,8 +53,6 @@ export function ExportTile() {
       setCopyState('failed')
     }
   }
-
-  const isDisabled = result === null
 
   return (
     <section
@@ -46,7 +70,7 @@ export function ExportTile() {
         <button
           type="button"
           onClick={handleCopySVG}
-          disabled={isDisabled}
+          disabled={!canExport}
           aria-label={copyState === 'copied' ? 'SVG copied to clipboard' : 'Copy SVG'}
           className={cn(
             'h-8 rounded-md text-[11px] font-medium',
@@ -65,7 +89,7 @@ export function ExportTile() {
         <button
           type="button"
           onClick={() => exportPNG()}
-          disabled={isDisabled}
+          disabled={!canExport}
           aria-label="Download PNG"
           className={cn(
             'h-8 rounded-md text-[11px] font-medium',
