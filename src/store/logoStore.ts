@@ -19,6 +19,13 @@ import type {
 } from '../engine/illustrator/types.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../engine/illustrator/types.ts'
 import { createIllustratorDocument, getLayerPathItem } from '../engine/illustrator/compose.ts'
+import type { VectorCommand } from '../engine/vector/commands.ts'
+import {
+  applyVectorCommand as applyVectorCommandToDocument,
+  invertVectorCommand,
+} from '../engine/vector/commands.ts'
+import { createVectorDocumentFromGeneration } from '../engine/vector/fromGeneration.ts'
+import type { VectorDocument } from '../engine/vector/types.ts'
 import { paramsEqual } from './historyMiddleware.ts'
 import {
   getAllModeParamDefaults,
@@ -82,6 +89,9 @@ interface LogoStore {
   effectParams: EffectParamsMap
   activeSurface: ActiveSurface
   illustrator: IllustratorDocument | null
+  vectorDocument: VectorDocument | null
+  vectorUndoStack: VectorCommand[]
+  vectorRedoStack: VectorCommand[]
 
   setParam: <K extends keyof LogoParams>(key: K, value: LogoParams[K]) => void
   setParams: (updates: Partial<LogoParams>) => void
@@ -119,6 +129,11 @@ interface LogoStore {
   clearPathSelection: () => void
   booleanOp: (op: 'unite' | 'subtract' | 'intersect') => void
   setActiveSurface: (surface: ActiveSurface) => void
+  ensureVectorDocument: () => void
+  setVectorDocument: (doc: VectorDocument | null) => void
+  applyVectorCommand: (command: VectorCommand) => void
+  undoVectorCommand: () => void
+  redoVectorCommand: () => void
   ensureIllustratorDocument: () => void
   convertCurrentMark: () => void
   resetIllustrator: () => void
@@ -177,6 +192,9 @@ export const useLogoStore = create<LogoStore>()(
       },
       activeSurface: 'generated',
       illustrator: null,
+      vectorDocument: null,
+      vectorUndoStack: [],
+      vectorRedoStack: [],
 
       setParam: (key, value) =>
         set((state) => ({
@@ -518,14 +536,68 @@ export const useLogoStore = create<LogoStore>()(
           },
         })),
 
+      ensureVectorDocument: () =>
+        set((state) => {
+          if (state.vectorDocument || !state.result) return {}
+          return {
+            activeSurface: 'illustrator',
+            vectorDocument: createVectorDocumentFromGeneration(state.result, state.params),
+            vectorUndoStack: [],
+            vectorRedoStack: [],
+          }
+        }),
+
+      setVectorDocument: (doc) =>
+        set({
+          vectorDocument: doc,
+          vectorUndoStack: [],
+          vectorRedoStack: [],
+        }),
+
+      applyVectorCommand: (command) =>
+        set((state) => {
+          if (!state.vectorDocument) return {}
+          return {
+            vectorDocument: applyVectorCommandToDocument(state.vectorDocument, command),
+            vectorUndoStack: [...state.vectorUndoStack, command],
+            vectorRedoStack: [],
+          }
+        }),
+
+      undoVectorCommand: () =>
+        set((state) => {
+          if (!state.vectorDocument || state.vectorUndoStack.length === 0) return {}
+          const command = state.vectorUndoStack[state.vectorUndoStack.length - 1]
+          return {
+            vectorDocument: invertVectorCommand(state.vectorDocument, command),
+            vectorUndoStack: state.vectorUndoStack.slice(0, -1),
+            vectorRedoStack: [...state.vectorRedoStack, command],
+          }
+        }),
+
+      redoVectorCommand: () =>
+        set((state) => {
+          if (!state.vectorDocument || state.vectorRedoStack.length === 0) return {}
+          const command = state.vectorRedoStack[state.vectorRedoStack.length - 1]
+          return {
+            vectorDocument: applyVectorCommandToDocument(state.vectorDocument, command),
+            vectorUndoStack: [...state.vectorUndoStack, command],
+            vectorRedoStack: state.vectorRedoStack.slice(0, -1),
+          }
+        }),
+
       ensureIllustratorDocument: () =>
         set((state) => {
-          if (state.illustrator || !state.result) {
+          if (!state.result) {
             return { activeSurface: 'illustrator' }
           }
           return {
             activeSurface: 'illustrator',
-            illustrator: createIllustratorDocument(state.result, state.params),
+            illustrator:
+              state.illustrator ?? createIllustratorDocument(state.result, state.params),
+            vectorDocument:
+              state.vectorDocument ??
+              createVectorDocumentFromGeneration(state.result, state.params),
           }
         }),
 
