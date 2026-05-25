@@ -150,7 +150,7 @@ function isVectorObject(value: unknown): boolean {
     )
   }
 
-  if (value.type === 'shape') return isRecord(value.shape) && typeof value.shape.type === 'string'
+  if (value.type === 'shape') return isVectorShape(value.shape)
 
   if (value.type === 'text') {
     return (
@@ -185,6 +185,39 @@ function isVectorPathSegment(value: unknown): boolean {
     (isVec2(value.handleOut) || value.handleOut === null) &&
     (value.pointType === 'corner' || value.pointType === 'smooth' || value.pointType === 'symmetric')
   )
+}
+
+function isVectorShape(value: unknown): boolean {
+  if (!isRecord(value)) return false
+
+  if (value.type === 'circle') {
+    return isFiniteNumber(value.cx) && isFiniteNumber(value.cy) && isFiniteNumber(value.radius)
+  }
+
+  if (value.type === 'rectangle') {
+    return (
+      isFiniteNumber(value.x) &&
+      isFiniteNumber(value.y) &&
+      isFiniteNumber(value.width) &&
+      isFiniteNumber(value.height) &&
+      isFiniteNumber(value.cornerRadius)
+    )
+  }
+
+  if (value.type === 'ellipse') {
+    return (
+      isFiniteNumber(value.cx) &&
+      isFiniteNumber(value.cy) &&
+      isFiniteNumber(value.rx) &&
+      isFiniteNumber(value.ry)
+    )
+  }
+
+  if (value.type === 'polygon') {
+    return Array.isArray(value.points) && value.points.every(isVec2)
+  }
+
+  return false
 }
 
 function isVectorAppearance(value: unknown): boolean {
