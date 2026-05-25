@@ -14,6 +14,20 @@ function paramsHash(params: LogoParams): string {
   })
 }
 
+function titleCaseShapeType(type: string): string {
+  return type
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1).toLowerCase()}`)
+    .join(' ')
+}
+
+function generatedObjectName(type: string, operation: 'add' | 'subtract', index: number): string {
+  const number = String(index + 1).padStart(2, '0')
+  if (operation === 'subtract') return `Cutout ${number}`
+  return `Generated ${titleCaseShapeType(type)} ${number}`
+}
+
 export function createVectorDocumentFromGeneration(
   result: GenerationResult,
   params: LogoParams,
@@ -37,7 +51,9 @@ export function createVectorDocumentFromGeneration(
     return paths.map((path, pathIndex): PathObject => ({
       id: crypto.randomUUID(),
       type: 'path',
-      name: `${shape.type} ${index + 1}${paths.length > 1 ? `.${pathIndex + 1}` : ''}`,
+      name: `${generatedObjectName(shape.type, shape.operation, index)}${
+        paths.length > 1 ? `.${pathIndex + 1}` : ''
+      }`,
       parentId: null,
       artboardId: artboard.id,
       visible: true,
@@ -49,7 +65,7 @@ export function createVectorDocumentFromGeneration(
         sourceShapeId: shape.id,
       },
       path,
-      fillRule: shape.operation === 'subtract' ? 'evenodd' : result.mark.fillRule,
+      fillRule: 'evenodd',
     }))
   })
 
