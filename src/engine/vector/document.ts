@@ -158,6 +158,7 @@ function isVectorObject(value: unknown): boolean {
       isRect(value.box) &&
       typeof value.fontFamily === 'string' &&
       isFiniteNumber(value.fontSize) &&
+      (typeof value.fontWeight === 'string' || isFiniteNumber(value.fontWeight)) &&
       isFiniteNumber(value.lineHeight) &&
       isFiniteNumber(value.letterSpacing) &&
       (value.textAlign === 'left' || value.textAlign === 'center' || value.textAlign === 'right')
