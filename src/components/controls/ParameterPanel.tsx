@@ -14,6 +14,11 @@ import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../../engine/illustrator/types.ts
 
 type Tab = 'generate' | 'illustrator'
 
+const TAB_LABELS: Record<Tab, string> = {
+  generate: 'Generate',
+  illustrator: 'Vector Maker',
+}
+
 const PERSPECTIVE_PRESETS = [
   { label: 'Flat', x: 0, y: 0 },
   { label: 'Iso L', x: 25, y: -30 },
@@ -85,7 +90,7 @@ export function ParameterPanel() {
                   : 'text-sidebar-muted hover:text-fg',
               )}
             >
-              {t}
+              {TAB_LABELS[t]}
             </button>
           ))}
         </div>
