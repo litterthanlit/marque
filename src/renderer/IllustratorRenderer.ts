@@ -8,6 +8,14 @@ interface IllustratorRenderOptions {
   dissolution?: DissolutionResult | null
 }
 
+export interface IllustratorRenderCache {
+  items: Map<string, paper.Item>
+}
+
+export function createIllustratorRenderCache(): IllustratorRenderCache {
+  return { items: new Map() }
+}
+
 export interface IllustratorControlData {
   layerId: string
   segmentIndex: number
@@ -50,9 +58,11 @@ export function renderIllustratorOnScope(
   scope: paper.PaperScope,
   doc: IllustratorDocument,
   options: IllustratorRenderOptions,
+  cache?: IllustratorRenderCache,
 ): Map<string, paper.Item> {
   scope.activate()
   scope.project.clear()
+  cache?.items.clear()
 
   const center = getCenter(scope)
   const itemMap = new Map<string, paper.Item>()
@@ -76,6 +86,7 @@ export function renderIllustratorOnScope(
     item.strokeColor = null
     item.data = { illustratorLayerId: layer.id }
     itemMap.set(layer.id, item)
+    cache?.items.set(layer.id, item)
   }
 
   if (doc.mode !== 'object' || doc.selectedLayerIds.length > 1) {
