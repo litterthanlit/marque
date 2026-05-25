@@ -13,66 +13,89 @@ function touch(document: VectorDocument): VectorDocument {
   return { ...document, updatedAt: new Date().toISOString() }
 }
 
+function cloneSelection(selection: VectorSelection): VectorSelection {
+  return { targets: selection.targets.map((target) => ({ ...target })) }
+}
+
+function cloneObjects(objects: VectorObject[]): VectorObject[] {
+  return structuredClone(objects) as VectorObject[]
+}
+
+function withoutObjectTargets(selection: VectorSelection, objectIds: Set<string>): VectorSelection {
+  return {
+    targets: selection.targets.filter((target) => !objectIds.has(target.objectId)),
+  }
+}
+
 export function applyVectorCommand(document: VectorDocument, command: VectorCommand): VectorDocument {
   return touch(command.apply(document))
 }
 
+export function invertVectorCommand(document: VectorDocument, command: VectorCommand): VectorDocument {
+  return touch(command.invert(document))
+}
+
 export function createSetSelectionCommand(selection: VectorSelection): VectorCommand {
+  const nextSelection = cloneSelection(selection)
   let previous: VectorSelection | null = null
   return {
     id: crypto.randomUUID(),
     label: 'Set selection',
     timestamp: Date.now(),
     apply(document) {
-      previous = document.selection
-      return { ...document, selection }
+      previous = cloneSelection(document.selection)
+      return { ...document, selection: cloneSelection(nextSelection) }
     },
     invert(document) {
-      return { ...document, selection: previous ?? { targets: [] } }
+      return { ...document, selection: previous ? cloneSelection(previous) : { targets: [] } }
     },
   }
 }
 
 export function createAddObjectsCommand(objects: VectorObject[]): VectorCommand {
+  const objectsToAdd = cloneObjects(objects)
+  const ids = new Set(objectsToAdd.map((object) => object.id))
   return {
     id: crypto.randomUUID(),
     label: 'Add objects',
     timestamp: Date.now(),
     apply(document) {
-      return { ...document, objects: [...document.objects, ...objects] }
+      return { ...document, objects: [...document.objects, ...cloneObjects(objectsToAdd)] }
     },
     invert(document) {
-      const ids = new Set(objects.map((object) => object.id))
       return {
         ...document,
         objects: document.objects.filter((object) => !ids.has(object.id)),
-        selection: {
-          targets: document.selection.targets.filter(
-            (target) => target.type !== 'object' || !ids.has(target.objectId),
-          ),
-        },
+        selection: withoutObjectTargets(document.selection, ids),
       }
     },
   }
 }
 
 export function createDeleteObjectsCommand(objectIds: string[]): VectorCommand {
-  let deleted: VectorObject[] = []
-  const ids = new Set(objectIds)
+  const ids = new Set([...objectIds])
+  let deleted: Array<{ index: number; object: VectorObject }> | null = null
   return {
     id: crypto.randomUUID(),
     label: 'Delete objects',
     timestamp: Date.now(),
     apply(document) {
-      deleted = document.objects.filter((object) => ids.has(object.id))
+      deleted = document.objects
+        .map((object, index) => ({ index, object }))
+        .filter(({ object }) => ids.has(object.id))
+        .map(({ index, object }) => ({ index, object: cloneObjects([object])[0] }))
       return {
         ...document,
         objects: document.objects.filter((object) => !ids.has(object.id)),
-        selection: { targets: [] },
+        selection: withoutObjectTargets(document.selection, ids),
       }
     },
     invert(document) {
-      return { ...document, objects: [...document.objects, ...deleted] }
+      const restoredObjects = [...document.objects]
+      for (const { index, object } of deleted ?? []) {
+        restoredObjects.splice(index, 0, cloneObjects([object])[0])
+      }
+      return { ...document, objects: restoredObjects }
     },
   }
 }
