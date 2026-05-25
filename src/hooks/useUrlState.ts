@@ -379,10 +379,10 @@ function isHexColor(value: string): boolean {
 function decodeIllustrator(raw: string | null): IllustratorDocument | null {
   if (!raw) return null
   const json = decompressFromEncodedURIComponent(raw)
-  if (!json) throw new Error('Invalid Illustrator document encoding')
+  if (!json) throw new Error('Invalid Vector Maker document encoding')
   const parsed = JSON.parse(json) as unknown
   if (!isIllustratorDocument(parsed)) {
-    throw new Error('Invalid Illustrator document')
+    throw new Error('Invalid Vector Maker document')
   }
   return parsed
 }
