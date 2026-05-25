@@ -86,6 +86,7 @@ export function isVectorDocument(value: unknown): value is VectorDocument {
     candidate.artboards.length > 0 &&
     candidate.artboards.every(isVectorArtboard) &&
     Array.isArray(candidate.objects) &&
+    candidate.objects.every(isVectorObject) &&
     isVectorSelection(candidate.selection)
   )
 }
@@ -119,6 +120,111 @@ function isVectorArtboard(value: unknown): value is VectorArtboard {
     isRect(value.rect) &&
     (typeof value.background === 'string' || value.background === null)
   )
+}
+
+function isVectorObject(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  if (
+    typeof value.id !== 'string' ||
+    typeof value.name !== 'string' ||
+    !(typeof value.parentId === 'string' || value.parentId === null) ||
+    typeof value.artboardId !== 'string' ||
+    typeof value.visible !== 'boolean' ||
+    typeof value.locked !== 'boolean' ||
+    !isMatrix(value.transform) ||
+    !(isRecord(value.source) || value.source === null)
+  ) {
+    return false
+  }
+
+  if (value.type === 'group') {
+    return Array.isArray(value.childIds) && value.childIds.every((id) => typeof id === 'string')
+  }
+
+  if (!isVectorAppearance(value.appearance)) return false
+
+  if (value.type === 'path') {
+    return (
+      isVectorPath(value.path) &&
+      (value.fillRule === 'nonzero' || value.fillRule === 'evenodd')
+    )
+  }
+
+  if (value.type === 'shape') return isRecord(value.shape) && typeof value.shape.type === 'string'
+
+  if (value.type === 'text') {
+    return (
+      typeof value.text === 'string' &&
+      isRect(value.box) &&
+      typeof value.fontFamily === 'string' &&
+      isFiniteNumber(value.fontSize) &&
+      isFiniteNumber(value.lineHeight) &&
+      isFiniteNumber(value.letterSpacing) &&
+      (value.textAlign === 'left' || value.textAlign === 'center' || value.textAlign === 'right')
+    )
+  }
+
+  return false
+}
+
+function isVectorPath(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.id === 'string' &&
+    typeof value.closed === 'boolean' &&
+    Array.isArray(value.segments) &&
+    value.segments.every(isVectorPathSegment)
+  )
+}
+
+function isVectorPathSegment(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isVec2(value.point) &&
+    (isVec2(value.handleIn) || value.handleIn === null) &&
+    (isVec2(value.handleOut) || value.handleOut === null) &&
+    (value.pointType === 'corner' || value.pointType === 'smooth' || value.pointType === 'symmetric')
+  )
+}
+
+function isVectorAppearance(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isPaint(value.fill) &&
+    isPaint(value.stroke) &&
+    isFiniteNumber(value.strokeWidth) &&
+    (value.strokeCap === 'butt' || value.strokeCap === 'round' || value.strokeCap === 'square') &&
+    (value.strokeJoin === 'miter' || value.strokeJoin === 'round' || value.strokeJoin === 'bevel') &&
+    isFiniteNumber(value.strokeMiterLimit) &&
+    Array.isArray(value.strokeDashArray) &&
+    value.strokeDashArray.every(isFiniteNumber) &&
+    isFiniteNumber(value.opacity) &&
+    value.blendMode === 'normal'
+  )
+}
+
+function isPaint(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    ((value.type === 'none') ||
+      (value.type === 'solid' && typeof value.color === 'string'))
+  )
+}
+
+function isMatrix(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isFiniteNumber(value.a) &&
+    isFiniteNumber(value.b) &&
+    isFiniteNumber(value.c) &&
+    isFiniteNumber(value.d) &&
+    isFiniteNumber(value.e) &&
+    isFiniteNumber(value.f)
+  )
+}
+
+function isVec2(value: unknown): boolean {
+  return isRecord(value) && isFiniteNumber(value.x) && isFiniteNumber(value.y)
 }
 
 function isRect(value: unknown): value is Rect {

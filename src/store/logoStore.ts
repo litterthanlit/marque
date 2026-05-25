@@ -291,6 +291,10 @@ export const useLogoStore = create<LogoStore>()(
             result && state.activeSurface === 'illustrator' && !state.illustrator
               ? createIllustratorDocument(result, state.params)
               : state.illustrator,
+          vectorDocument:
+            result && state.activeSurface === 'illustrator' && !state.vectorDocument
+              ? createVectorDocumentFromGeneration(result, state.params)
+              : state.vectorDocument,
         })),
       setError: (error) => set({ error }),
 
@@ -607,6 +611,11 @@ export const useLogoStore = create<LogoStore>()(
           illustrator: state.result
             ? createIllustratorDocument(state.result, state.params)
             : state.illustrator,
+          vectorDocument: state.result
+            ? createVectorDocumentFromGeneration(state.result, state.params)
+            : state.vectorDocument,
+          vectorUndoStack: [],
+          vectorRedoStack: [],
           ui: {
             ...state.ui,
             activeTool: null,
@@ -620,6 +629,9 @@ export const useLogoStore = create<LogoStore>()(
         set((state) => ({
           activeSurface: 'generated',
           illustrator: null,
+          vectorDocument: null,
+          vectorUndoStack: [],
+          vectorRedoStack: [],
           ui: {
             ...state.ui,
             activeTool: null,
