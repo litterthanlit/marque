@@ -84,7 +84,7 @@ export function isVectorDocument(value: unknown): value is VectorDocument {
     typeof candidate.updatedAt === 'string' &&
     Array.isArray(candidate.artboards) &&
     candidate.artboards.length > 0 &&
-    isVectorArtboard(candidate.artboards[0]) &&
+    candidate.artboards.every(isVectorArtboard) &&
     Array.isArray(candidate.objects) &&
     isVectorSelection(candidate.selection)
   )
