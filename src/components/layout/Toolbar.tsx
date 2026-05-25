@@ -72,10 +72,10 @@ export function Toolbar() {
           )}
           {activeSurface === 'illustrator' && (
             <span
-              title="Export and sharing are using the editable Illustrator document."
+              title="Export and sharing are using the editable Vector Maker document."
               className="hidden sm:inline-flex h-7 items-center rounded-md border border-sky-500/20 bg-sky-500/10 px-2 text-xs text-sky-300"
             >
-              Illustrator
+              Vector Maker
             </span>
           )}
           <ToolbarButton onClick={handleCopyShareLink} className="hidden lg:inline-flex">
