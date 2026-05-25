@@ -8,7 +8,6 @@ function getScope(): paper.PaperScope {
     vectorPathScope = new paper.PaperScope()
     vectorPathScope.setup(new paper.Size(1, 1))
   }
-  vectorPathScope.activate()
   return vectorPathScope
 }
 
@@ -31,38 +30,41 @@ export function pathDataToVectorPaths(pathData: string): VectorPath[] {
   const scope = getScope()
   scope.project.clear()
 
-  const item = new scope.CompoundPath(pathData)
-  const paths = item.getItems({ class: scope.Path })
-  const result = paths
-    .filter((path): path is paper.Path => path instanceof scope.Path)
-    .map((path) => ({
-      id: crypto.randomUUID(),
-      closed: path.closed,
-      segments: path.segments.map(toSegment),
-    }))
-    .filter((path) => path.segments.length > 0)
-
-  scope.project.clear()
-  return result
+  try {
+    const item = new scope.CompoundPath(pathData)
+    const paths = item.getItems({ class: scope.Path })
+    return paths
+      .filter((path): path is paper.Path => path instanceof scope.Path)
+      .map((path) => ({
+        id: crypto.randomUUID(),
+        closed: path.closed,
+        segments: path.segments.map(toSegment),
+      }))
+      .filter((path) => path.segments.length > 0)
+  } finally {
+    scope.project.clear()
+  }
 }
 
 export function vectorPathToPathData(path: VectorPath): string {
   const scope = getScope()
   scope.project.clear()
 
-  const paperPath = new scope.Path()
-  paperPath.closed = path.closed
-  for (const segment of path.segments) {
-    paperPath.add(
-      new scope.Segment(
-        new scope.Point(segment.point.x, segment.point.y),
-        segment.handleIn ? new scope.Point(segment.handleIn.x, segment.handleIn.y) : undefined,
-        segment.handleOut ? new scope.Point(segment.handleOut.x, segment.handleOut.y) : undefined,
-      ),
-    )
-  }
+  try {
+    const paperPath = new scope.Path()
+    paperPath.closed = path.closed
+    for (const segment of path.segments) {
+      paperPath.add(
+        new scope.Segment(
+          new scope.Point(segment.point.x, segment.point.y),
+          segment.handleIn ? new scope.Point(segment.handleIn.x, segment.handleIn.y) : undefined,
+          segment.handleOut ? new scope.Point(segment.handleOut.x, segment.handleOut.y) : undefined,
+        ),
+      )
+    }
 
-  const pathData = paperPath.pathData
-  scope.project.clear()
-  return pathData
+    return paperPath.pathData
+  } finally {
+    scope.project.clear()
+  }
 }
