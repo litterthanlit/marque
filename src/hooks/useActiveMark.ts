@@ -11,12 +11,12 @@ export function useActiveMark(): MarkData | null {
   const vectorDocument = useLogoStore((s) => s.vectorDocument)
 
   return useMemo(() => {
-    if (activeSurface === 'illustrator' && illustrator) {
-      return composeIllustratorMark(illustrator)
-    }
-
     if (activeSurface === 'illustrator' && vectorDocument) {
       return composeVectorMark(vectorDocument)
+    }
+
+    if (activeSurface === 'illustrator' && illustrator) {
+      return composeIllustratorMark(illustrator)
     }
 
     return result?.mark ?? null

@@ -1,4 +1,6 @@
 import type { MarkData } from '../illustrator/types.ts'
+import { composeIllustratorMark } from '../illustrator/compose.ts'
+import { vectorDocumentToIllustratorDocument } from './legacyIllustratorAdapter.ts'
 import { vectorPathToPathData } from './pathSerialization.ts'
 import type { Matrix2D, Paint, PathObject, VectorDocument, VectorObject } from './types.ts'
 
@@ -25,26 +27,7 @@ function serializeTransform(transform: Matrix2D): string {
 
 export function composeVectorMark(document: VectorDocument | null): MarkData | null {
   if (!document) return null
-
-  const artboard = document.artboards[0]
-  if (!artboard) return null
-
-  const paths = document.objects
-    .filter(isVisiblePath)
-    .filter(isOnArtboard(artboard.id))
-    .map((object) => vectorPathToPathData(object.path))
-    .filter(Boolean)
-
-  return {
-    compoundPathData: paths.join(' '),
-    fillRule: 'evenodd',
-    viewBox: {
-      x: artboard.rect.x,
-      y: artboard.rect.y,
-      width: artboard.rect.width,
-      height: artboard.rect.height,
-    },
-  }
+  return composeIllustratorMark(vectorDocumentToIllustratorDocument(document))
 }
 
 export function serializeVectorDocumentToSvg(

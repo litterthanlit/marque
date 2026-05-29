@@ -66,6 +66,7 @@ export interface VectorSourceRef {
   sourceShapeId?: string
   paramsHash?: string
   convertedAt?: string
+  compatOperation?: 'add' | 'subtract'
 }
 
 export interface VectorBaseObject {

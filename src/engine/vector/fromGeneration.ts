@@ -63,6 +63,7 @@ export function createVectorDocumentFromGeneration(
       source: {
         ...source,
         sourceShapeId: shape.id,
+        compatOperation: shape.operation,
       },
       path,
       fillRule: 'evenodd',

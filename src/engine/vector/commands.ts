@@ -52,6 +52,26 @@ export function createSetSelectionCommand(selection: VectorSelection): VectorCom
   }
 }
 
+export function createReplaceVectorDocumentCommand(
+  label: string,
+  before: VectorDocument,
+  after: VectorDocument,
+): VectorCommand {
+  const previousDocument = structuredClone(before) as VectorDocument
+  const nextDocument = structuredClone(after) as VectorDocument
+  return {
+    id: crypto.randomUUID(),
+    label,
+    timestamp: Date.now(),
+    apply() {
+      return structuredClone(nextDocument) as VectorDocument
+    },
+    invert() {
+      return structuredClone(previousDocument) as VectorDocument
+    },
+  }
+}
+
 export function createAddObjectsCommand(objects: VectorObject[]): VectorCommand {
   const objectsToAdd = cloneObjects(objects)
   const ids = new Set(objectsToAdd.map((object) => object.id))

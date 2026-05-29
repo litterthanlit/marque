@@ -17,6 +17,8 @@ import { DEFAULT_DISSOLUTION_PARAMS } from '../engine/effects/types.ts'
 import type { DissolutionParams } from '../engine/effects/types.ts'
 import type { EffectParamsMap } from '../engine/effects/types.ts'
 import type { ActiveSurface, IllustratorDocument } from '../engine/illustrator/types.ts'
+import type { VectorDocument } from '../engine/vector/types.ts'
+import { isVectorDocument } from '../engine/vector/document.ts'
 
 const PARAM_KEYS: Array<
   | 'seed'
@@ -61,6 +63,8 @@ export function useUrlState() {
   const setActiveSurface = useLogoStore((s) => s.setActiveSurface)
   const illustrator = useLogoStore((s) => s.illustrator)
   const setIllustratorDocument = useLogoStore((s) => s.setIllustratorDocument)
+  const vectorDocument = useLogoStore((s) => s.vectorDocument)
+  const setVectorDocument = useLogoStore((s) => s.setVectorDocument)
   const initialized = useRef(false)
 
   useEffect(() => {
@@ -79,29 +83,38 @@ export function useUrlState() {
         setEffectParam(key as keyof DissolutionParams, value as DissolutionParams[keyof DissolutionParams])
       }
     }
-    if (decoded.illustrator) {
+    if (decoded.vectorDocument) {
+      setVectorDocument(decoded.vectorDocument)
+    } else if (decoded.illustrator) {
       setIllustratorDocument(decoded.illustrator)
     }
     if (decoded.activeSurface) {
       setActiveSurface(decoded.activeSurface)
     }
-  }, [setActiveSurface, setError, setIllustratorDocument, setParams, setEffectParam])
+  }, [setActiveSurface, setError, setIllustratorDocument, setParams, setEffectParam, setVectorDocument])
 
   useEffect(() => {
     if (!initialized.current) return
 
-    const encoded = encodeParams(params, effectParams, activeSurface, illustrator)
+    const encoded = encodeParams(
+      params,
+      effectParams,
+      activeSurface,
+      vectorDocument,
+      illustrator,
+    )
     const nextHash = encoded ? `#${encoded}` : ''
     if (window.location.hash !== nextHash) {
       window.history.replaceState(null, '', nextHash || window.location.pathname)
     }
-  }, [activeSurface, effectParams, illustrator, params])
+  }, [activeSurface, effectParams, illustrator, params, vectorDocument])
 }
 
 function encodeParams(
   params: LogoParams,
   effectParams: EffectParamsMap,
   activeSurface: ActiveSurface,
+  vectorDocument: VectorDocument | null,
   illustrator: IllustratorDocument | null,
 ): string {
   const searchParams = new URLSearchParams()
@@ -166,11 +179,13 @@ function encodeParams(
     if (dp.sizeVariation !== dd.sizeVariation) searchParams.set('e.sizeVariation', String(dp.sizeVariation))
   }
 
-  if (activeSurface !== 'generated' || illustrator) {
+  if (activeSurface !== 'generated' || vectorDocument || illustrator) {
     searchParams.set('surface', activeSurface)
   }
 
-  if (illustrator) {
+  if (vectorDocument) {
+    searchParams.set('vd', compressToEncodedURIComponent(JSON.stringify(vectorDocument)))
+  } else if (illustrator) {
     searchParams.set('i', compressToEncodedURIComponent(JSON.stringify(illustrator)))
   }
 
@@ -181,6 +196,7 @@ interface DecodedUrlState {
   params: Partial<LogoParams> | null
   effectParams: Partial<DissolutionParams> | null
   activeSurface: ActiveSurface | null
+  vectorDocument: VectorDocument | null
   illustrator: IllustratorDocument | null
   error: string | null
 }
@@ -193,6 +209,7 @@ function decodeParams(
       params: null,
       effectParams: null,
       activeSurface: null,
+      vectorDocument: null,
       illustrator: null,
       error: null,
     }
@@ -205,6 +222,7 @@ function decodeParams(
       params: null,
       effectParams: null,
       activeSurface: null,
+      vectorDocument: null,
       illustrator: null,
       error: `Failed to decode URL parameters: ${e instanceof Error ? e.message : String(e)}`,
     }
@@ -230,6 +248,7 @@ function decodeParamsInner(
       params: null,
       effectParams: null,
       activeSurface: null,
+      vectorDocument: null,
       illustrator: null,
       error: `This shared link was created for generator version ${rawVersion}, but ${generator.name} is now on ${generator.version}. Defaults were kept to avoid loading incompatible state.`,
     }
@@ -248,6 +267,7 @@ function decodeParamsInner(
       key === 'v' ||
       key === 'shapes' ||
       key === 'surface' ||
+      key === 'vd' ||
       key === 'i'
     ) {
       continue
@@ -351,6 +371,7 @@ function decodeParamsInner(
   }
 
   const rawSurface = searchParams.get('surface')
+  const decodedVectorDocument = decodeVectorDocument(searchParams.get('vd'))
   const decodedIllustrator = decodeIllustrator(searchParams.get('i'))
   const decodedSurface: ActiveSurface | null =
     rawSurface === 'illustrator'
@@ -363,6 +384,7 @@ function decodeParamsInner(
     params: sanitized,
     effectParams: Object.keys(effectUpdates).length > 0 ? effectUpdates : null,
     activeSurface: decodedSurface,
+    vectorDocument: decodedVectorDocument,
     illustrator: decodedIllustrator,
     error: null,
   }
@@ -382,6 +404,17 @@ function decodeIllustrator(raw: string | null): IllustratorDocument | null {
   if (!json) throw new Error('Invalid Vector Maker document encoding')
   const parsed = JSON.parse(json) as unknown
   if (!isIllustratorDocument(parsed)) {
+    throw new Error('Invalid Vector Maker document')
+  }
+  return parsed
+}
+
+function decodeVectorDocument(raw: string | null): VectorDocument | null {
+  if (!raw) return null
+  const json = decompressFromEncodedURIComponent(raw)
+  if (!json) throw new Error('Invalid Vector Maker document encoding')
+  const parsed = JSON.parse(json) as unknown
+  if (!isVectorDocument(parsed)) {
     throw new Error('Invalid Vector Maker document')
   }
   return parsed

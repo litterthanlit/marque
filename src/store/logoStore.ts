@@ -18,14 +18,20 @@ import type {
   PointSelection,
 } from '../engine/illustrator/types.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../engine/illustrator/types.ts'
-import { createIllustratorDocument, getLayerPathItem } from '../engine/illustrator/compose.ts'
+import { getLayerPathItem } from '../engine/illustrator/compose.ts'
 import type { VectorCommand } from '../engine/vector/commands.ts'
 import {
   applyVectorCommand as applyVectorCommandToDocument,
+  createReplaceVectorDocumentCommand,
+  createSetSelectionCommand,
   invertVectorCommand,
 } from '../engine/vector/commands.ts'
 import { createVectorDocumentFromGeneration } from '../engine/vector/fromGeneration.ts'
 import type { VectorDocument } from '../engine/vector/types.ts'
+import {
+  illustratorDocumentToVectorDocument,
+  vectorDocumentToIllustratorDocument,
+} from '../engine/vector/legacyIllustratorAdapter.ts'
 import { paramsEqual } from './historyMiddleware.ts'
 import {
   getAllModeParamDefaults,
@@ -285,17 +291,25 @@ export const useLogoStore = create<LogoStore>()(
         })),
 
       setResult: (result) =>
-        set((state) => ({
-          result,
-          illustrator:
-            result && state.activeSurface === 'illustrator' && !state.illustrator
-              ? createIllustratorDocument(result, state.params)
-              : state.illustrator,
-          vectorDocument:
+        set((state) => {
+          const vectorDocument =
             result && state.activeSurface === 'illustrator' && !state.vectorDocument
               ? createVectorDocumentFromGeneration(result, state.params)
-              : state.vectorDocument,
-        })),
+              : state.vectorDocument
+          const shouldSyncLegacy =
+            result &&
+            state.activeSurface === 'illustrator' &&
+            vectorDocument &&
+            (!state.illustrator || !state.vectorDocument)
+
+          return {
+            result,
+            illustrator: shouldSyncLegacy
+              ? vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator)
+              : state.illustrator,
+            vectorDocument,
+          }
+        }),
       setError: (error) => set({ error }),
 
       toggleGrid: () =>
@@ -543,26 +557,31 @@ export const useLogoStore = create<LogoStore>()(
       ensureVectorDocument: () =>
         set((state) => {
           if (state.vectorDocument || !state.result) return {}
+          const vectorDocument = createVectorDocumentFromGeneration(state.result, state.params)
           return {
             activeSurface: 'illustrator',
-            vectorDocument: createVectorDocumentFromGeneration(state.result, state.params),
+            vectorDocument,
+            illustrator: vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator),
             vectorUndoStack: [],
             vectorRedoStack: [],
           }
         }),
 
       setVectorDocument: (doc) =>
-        set({
+        set((state) => ({
           vectorDocument: doc,
+          illustrator: doc ? vectorDocumentToIllustratorDocument(doc, state.illustrator) : null,
           vectorUndoStack: [],
           vectorRedoStack: [],
-        }),
+        })),
 
       applyVectorCommand: (command) =>
         set((state) => {
           if (!state.vectorDocument) return {}
+          const vectorDocument = applyVectorCommandToDocument(state.vectorDocument, command)
           return {
-            vectorDocument: applyVectorCommandToDocument(state.vectorDocument, command),
+            vectorDocument,
+            illustrator: vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator),
             vectorUndoStack: [...state.vectorUndoStack, command],
             vectorRedoStack: [],
           }
@@ -572,8 +591,10 @@ export const useLogoStore = create<LogoStore>()(
         set((state) => {
           if (!state.vectorDocument || state.vectorUndoStack.length === 0) return {}
           const command = state.vectorUndoStack[state.vectorUndoStack.length - 1]
+          const vectorDocument = invertVectorCommand(state.vectorDocument, command)
           return {
-            vectorDocument: invertVectorCommand(state.vectorDocument, command),
+            vectorDocument,
+            illustrator: vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator),
             vectorUndoStack: state.vectorUndoStack.slice(0, -1),
             vectorRedoStack: [...state.vectorRedoStack, command],
           }
@@ -583,8 +604,10 @@ export const useLogoStore = create<LogoStore>()(
         set((state) => {
           if (!state.vectorDocument || state.vectorRedoStack.length === 0) return {}
           const command = state.vectorRedoStack[state.vectorRedoStack.length - 1]
+          const vectorDocument = applyVectorCommandToDocument(state.vectorDocument, command)
           return {
-            vectorDocument: applyVectorCommandToDocument(state.vectorDocument, command),
+            vectorDocument,
+            illustrator: vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator),
             vectorUndoStack: [...state.vectorUndoStack, command],
             vectorRedoStack: state.vectorRedoStack.slice(0, -1),
           }
@@ -595,35 +618,44 @@ export const useLogoStore = create<LogoStore>()(
           if (!state.result) {
             return { activeSurface: 'illustrator' }
           }
+          const vectorDocument =
+            state.vectorDocument ??
+            (state.illustrator
+              ? illustratorDocumentToVectorDocument(
+                  state.illustrator,
+                  null,
+                  state.params.fillColor,
+                )
+              : createVectorDocumentFromGeneration(state.result, state.params))
           return {
             activeSurface: 'illustrator',
-            illustrator:
-              state.illustrator ?? createIllustratorDocument(state.result, state.params),
-            vectorDocument:
-              state.vectorDocument ??
-              createVectorDocumentFromGeneration(state.result, state.params),
+            illustrator: vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator),
+            vectorDocument,
           }
         }),
 
       convertCurrentMark: () =>
-        set((state) => ({
-          activeSurface: 'illustrator',
-          illustrator: state.result
-            ? createIllustratorDocument(state.result, state.params)
-            : state.illustrator,
-          vectorDocument: state.result
+        set((state) => {
+          const vectorDocument = state.result
             ? createVectorDocumentFromGeneration(state.result, state.params)
-            : state.vectorDocument,
-          vectorUndoStack: [],
-          vectorRedoStack: [],
-          ui: {
-            ...state.ui,
-            activeTool: null,
-            editMode: true,
-            selectedShapeId: null,
-            selectedPathIds: [],
-          },
-        })),
+            : state.vectorDocument
+          return {
+            activeSurface: 'illustrator',
+            illustrator: vectorDocument
+              ? vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator)
+              : state.illustrator,
+            vectorDocument,
+            vectorUndoStack: [],
+            vectorRedoStack: [],
+            ui: {
+              ...state.ui,
+              activeTool: null,
+              editMode: true,
+              selectedShapeId: null,
+              selectedPathIds: [],
+            },
+          }
+        }),
 
       resetIllustrator: () =>
         set((state) => ({
@@ -642,10 +674,20 @@ export const useLogoStore = create<LogoStore>()(
         })),
 
       setIllustratorDocument: (doc) =>
-        set((state) => ({
-          illustrator: doc,
-          activeSurface: doc ? 'illustrator' : state.activeSurface,
-        })),
+        set((state) => {
+          const vectorDocument = doc
+            ? illustratorDocumentToVectorDocument(doc, null, state.params.fillColor)
+            : null
+          return {
+            illustrator: vectorDocument
+              ? vectorDocumentToIllustratorDocument(vectorDocument, doc)
+              : null,
+            vectorDocument,
+            vectorUndoStack: [],
+            vectorRedoStack: [],
+            activeSurface: doc ? 'illustrator' : state.activeSurface,
+          }
+        }),
 
       setIllustratorMode: (mode) =>
         set((state) => ({
@@ -665,6 +707,28 @@ export const useLogoStore = create<LogoStore>()(
 
       selectIllustratorLayer: (id, additive = false) =>
         set((state) => {
+          if (state.vectorDocument) {
+            const current = state.vectorDocument.selection.targets.map((target) => target.objectId)
+            const selectedLayerIds = id
+              ? additive
+                ? current.includes(id)
+                  ? current.filter((layerId) => layerId !== id)
+                  : [...current, id]
+                : [id]
+              : []
+            const command = createSetSelectionCommand({
+              targets: selectedLayerIds.map((objectId) => ({ type: 'object', objectId })),
+            })
+            return {
+              ...applyVectorCommandToStore(state, command),
+              ui: {
+                ...state.ui,
+                editMode: true,
+                selectedShapeId: id,
+                selectedPathIds: [],
+              },
+            }
+          }
           if (!state.illustrator) return state
           const current = state.illustrator.selectedLayerIds
           const selectedLayerIds = id
@@ -694,36 +758,83 @@ export const useLogoStore = create<LogoStore>()(
         }),
 
       updateIllustratorLayer: (id, update) =>
-        set((state) => ({
-          illustrator: state.illustrator
-            ? {
-                ...state.illustrator,
-                layers: state.illustrator.layers.map((layer) =>
-                  layer.id === id ? { ...layer, ...update } : layer,
-                ),
-              }
-            : state.illustrator,
-        })),
+        set((state) =>
+          mutateVectorViaIllustrator(state, 'Update layer', (doc) => ({
+            ...doc,
+            layers: doc.layers.map((layer) =>
+              layer.id === id ? { ...layer, ...update } : layer,
+            ),
+          })) ??
+          ({
+            illustrator: state.illustrator
+              ? {
+                  ...state.illustrator,
+                  layers: state.illustrator.layers.map((layer) =>
+                    layer.id === id ? { ...layer, ...update } : layer,
+                  ),
+                }
+              : state.illustrator,
+          })
+        ),
 
       updateIllustratorLayerTransform: (id, update) =>
-        set((state) => ({
-          illustrator: state.illustrator
-            ? {
-                ...state.illustrator,
-                layers: state.illustrator.layers.map((layer) =>
-                  layer.id === id
-                    ? {
-                        ...layer,
-                        transform: { ...layer.transform, ...update },
-                      }
-                    : layer,
-                ),
-              }
-            : state.illustrator,
-        })),
+        set((state) =>
+          mutateVectorViaIllustrator(state, 'Transform layer', (doc) => ({
+            ...doc,
+            layers: doc.layers.map((layer) =>
+              layer.id === id
+                ? {
+                    ...layer,
+                    transform: { ...layer.transform, ...update },
+                  }
+                : layer,
+            ),
+          })) ??
+          ({
+            illustrator: state.illustrator
+              ? {
+                  ...state.illustrator,
+                  layers: state.illustrator.layers.map((layer) =>
+                    layer.id === id
+                      ? {
+                          ...layer,
+                          transform: { ...layer.transform, ...update },
+                        }
+                      : layer,
+                  ),
+                }
+              : state.illustrator,
+          })
+        ),
 
       duplicateIllustratorLayer: (id) =>
         set((state) => {
+          const vectorUpdate = mutateVectorViaIllustrator(state, 'Duplicate layer', (doc) => {
+            const index = doc.layers.findIndex((candidate) => candidate.id === id)
+            const layer = doc.layers[index]
+            if (!layer) return null
+            const nextLayer: IllustratorLayer = {
+              ...structuredClone(layer),
+              id: crypto.randomUUID(),
+              name: `${layer.name} copy`,
+              sourceShapeId: undefined,
+              locked: false,
+              transform: {
+                ...layer.transform,
+                dx: layer.transform.dx + 12,
+                dy: layer.transform.dy + 12,
+              },
+            }
+            const layers = [...doc.layers]
+            layers.splice(index + 1, 0, nextLayer)
+            return {
+              ...doc,
+              layers,
+              selectedLayerIds: [nextLayer.id],
+              pointSelection: null,
+            }
+          })
+          if (vectorUpdate) return vectorUpdate
           if (!state.illustrator) return state
           const index = state.illustrator.layers.findIndex((candidate) => candidate.id === id)
           const layer = state.illustrator.layers[index]
@@ -754,6 +865,17 @@ export const useLogoStore = create<LogoStore>()(
 
       deleteIllustratorLayers: (ids) =>
         set((state) => {
+          const vectorUpdate = mutateVectorViaIllustrator(state, 'Delete layers', (doc) => {
+            const selected = ids ?? doc.selectedLayerIds
+            if (selected.length === 0) return null
+            return {
+              ...doc,
+              layers: doc.layers.filter((layer) => !selected.includes(layer.id)),
+              selectedLayerIds: [],
+              pointSelection: null,
+            }
+          })
+          if (vectorUpdate) return vectorUpdate
           if (!state.illustrator) return state
           const selected = ids ?? state.illustrator.selectedLayerIds
           if (selected.length === 0) return state
@@ -771,6 +893,17 @@ export const useLogoStore = create<LogoStore>()(
 
       moveIllustratorLayer: (id, direction) =>
         set((state) => {
+          const vectorUpdate = mutateVectorViaIllustrator(state, 'Move layer', (doc) => {
+            const index = doc.layers.findIndex((layer) => layer.id === id)
+            if (index < 0) return null
+            const targetIndex = direction === 'up' ? index - 1 : index + 1
+            if (targetIndex < 0 || targetIndex >= doc.layers.length) return null
+            const layers = [...doc.layers]
+            const [layer] = layers.splice(index, 1)
+            layers.splice(targetIndex, 0, layer)
+            return { ...doc, layers }
+          })
+          if (vectorUpdate) return vectorUpdate
           if (!state.illustrator) return state
           const index = state.illustrator.layers.findIndex((layer) => layer.id === id)
           if (index < 0) return state
@@ -790,31 +923,71 @@ export const useLogoStore = create<LogoStore>()(
         }),
 
       toggleIllustratorLayerVisibility: (id) =>
-        set((state) => ({
-          illustrator: state.illustrator
-            ? {
-                ...state.illustrator,
-                layers: state.illustrator.layers.map((layer) =>
-                  layer.id === id ? { ...layer, visible: !layer.visible } : layer,
-                ),
-              }
-            : state.illustrator,
-        })),
+        set((state) =>
+          mutateVectorViaIllustrator(state, 'Toggle layer visibility', (doc) => ({
+            ...doc,
+            layers: doc.layers.map((layer) =>
+              layer.id === id ? { ...layer, visible: !layer.visible } : layer,
+            ),
+          })) ??
+          ({
+            illustrator: state.illustrator
+              ? {
+                  ...state.illustrator,
+                  layers: state.illustrator.layers.map((layer) =>
+                    layer.id === id ? { ...layer, visible: !layer.visible } : layer,
+                  ),
+                }
+              : state.illustrator,
+          })
+        ),
 
       setIllustratorLayerOperation: (id, operation) =>
-        set((state) => ({
-          illustrator: state.illustrator
-            ? {
-                ...state.illustrator,
-                layers: state.illustrator.layers.map((layer) =>
-                  layer.id === id ? { ...layer, operation } : layer,
-                ),
-              }
-            : state.illustrator,
-        })),
+        set((state) =>
+          mutateVectorViaIllustrator(state, 'Set layer operation', (doc) => ({
+            ...doc,
+            layers: doc.layers.map((layer) =>
+              layer.id === id ? { ...layer, operation } : layer,
+            ),
+          })) ??
+          ({
+            illustrator: state.illustrator
+              ? {
+                  ...state.illustrator,
+                  layers: state.illustrator.layers.map((layer) =>
+                    layer.id === id ? { ...layer, operation } : layer,
+                  ),
+                }
+              : state.illustrator,
+          })
+        ),
 
       addIllustratorPathLayer: (path) =>
         set((state) => {
+          const vectorUpdate = mutateVectorViaIllustrator(state, 'Add path layer', (doc) => {
+            const layer: IllustratorLayer = {
+              id: crypto.randomUUID(),
+              name: `${path.tool} ${doc.layers.length + 1}`,
+              operation: 'add',
+              visible: true,
+              locked: false,
+              pathData: path.pathData,
+              fillRule: 'evenodd',
+              transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+            }
+            return {
+              ...doc,
+              layers: [...doc.layers, layer],
+              selectedLayerIds: [layer.id],
+              pointSelection: null,
+            }
+          })
+          if (vectorUpdate) {
+            return {
+              ...vectorUpdate,
+              ui: { ...state.ui, activeTool: null },
+            }
+          }
           if (!state.illustrator) return state
           const layer: IllustratorLayer = {
             id: crypto.randomUUID(),
@@ -839,6 +1012,28 @@ export const useLogoStore = create<LogoStore>()(
 
       booleanIllustratorLayers: (op) =>
         set((state) => {
+          const vectorUpdate = mutateVectorViaIllustrator(state, `${op} layers`, (doc) => {
+            const ids = doc.selectedLayerIds
+            if (ids.length < 2) return null
+            const selected = ids
+              .map((id) => doc.layers.find((layer) => layer.id === id))
+              .filter((layer): layer is IllustratorLayer => layer != null)
+            if (selected.length < 2) return null
+            const result = performIllustratorBoolean(selected, op)
+            if (!result) return null
+            const insertAt = Math.min(
+              ...ids.map((id) => doc.layers.findIndex((layer) => layer.id === id)),
+            )
+            const remaining = doc.layers.filter((layer) => !ids.includes(layer.id))
+            remaining.splice(Math.max(0, insertAt), 0, result)
+            return {
+              ...doc,
+              layers: remaining,
+              selectedLayerIds: [result.id],
+              pointSelection: null,
+            }
+          })
+          if (vectorUpdate) return vectorUpdate
           if (!state.illustrator) return state
           const ids = state.illustrator.selectedLayerIds
           if (ids.length < 2) return state
@@ -866,14 +1061,55 @@ export const useLogoStore = create<LogoStore>()(
         }),
 
       setPointSelection: (selection) =>
-        set((state) => ({
-          illustrator: state.illustrator
-            ? { ...state.illustrator, pointSelection: selection }
-            : state.illustrator,
-        })),
+        set((state) => {
+          if (state.vectorDocument) {
+            const command = createSetSelectionCommand({
+              targets: selection
+                ? [
+                    selection.handle === 'anchor' || selection.handle === null
+                      ? {
+                          type: 'anchor',
+                          objectId: selection.layerId,
+                          segmentIndex: selection.segmentIndex,
+                        }
+                      : {
+                          type: 'handle',
+                          objectId: selection.layerId,
+                          segmentIndex: selection.segmentIndex,
+                          handle: selection.handle,
+                        },
+                  ]
+                : [],
+            })
+            return applyVectorCommandToStore(state, command)
+          }
+          return {
+            illustrator: state.illustrator
+              ? { ...state.illustrator, pointSelection: selection }
+              : state.illustrator,
+          }
+        }),
 
       updateIllustratorPoint: (layerId, segmentIndex, handle, point) =>
         set((state) => {
+          const vectorUpdate = mutateVectorViaIllustrator(state, 'Edit point', (doc) => ({
+            ...doc,
+            layers: doc.layers.map((layer) =>
+              layer.id === layerId
+                ? {
+                    ...layer,
+                    pathData: updateLayerPointData(
+                      layer,
+                      segmentIndex,
+                      handle,
+                      point,
+                    ),
+                  }
+                : layer,
+            ),
+            pointSelection: { layerId, segmentIndex, handle },
+          }))
+          if (vectorUpdate) return vectorUpdate
           if (!state.illustrator) return state
           return {
             illustrator: {
@@ -898,6 +1134,22 @@ export const useLogoStore = create<LogoStore>()(
 
       toggleSelectedPointCurve: () =>
         set((state) => {
+          const vectorUpdate = mutateVectorViaIllustrator(state, 'Toggle point curve', (doc) => {
+            const selection = doc.pointSelection
+            if (!selection) return null
+            return {
+              ...doc,
+              layers: doc.layers.map((layer) =>
+                layer.id === selection.layerId
+                  ? {
+                      ...layer,
+                      pathData: togglePointCurveData(layer, selection.segmentIndex),
+                    }
+                  : layer,
+              ),
+            }
+          })
+          if (vectorUpdate) return vectorUpdate
           const selection = state.illustrator?.pointSelection
           if (!state.illustrator || !selection) return state
           return {
@@ -927,6 +1179,76 @@ export const useLogoStore = create<LogoStore>()(
     },
   ),
 )
+
+function applyVectorCommandToStore(
+  state: LogoStore,
+  command: VectorCommand,
+): Partial<LogoStore> {
+  if (!state.vectorDocument) return {}
+  const vectorDocument = applyVectorCommandToDocument(state.vectorDocument, command)
+  return {
+    vectorDocument,
+    illustrator: vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator),
+    vectorUndoStack: [...state.vectorUndoStack, command],
+    vectorRedoStack: [],
+  }
+}
+
+function commitVectorDocumentUpdate(
+  state: LogoStore,
+  baseDocument: VectorDocument,
+  nextDocument: VectorDocument,
+  label: string,
+  illustratorHint?: IllustratorDocument | null,
+): Partial<LogoStore> {
+  const command = createReplaceVectorDocumentCommand(label, baseDocument, nextDocument)
+  const vectorDocument = applyVectorCommandToDocument(baseDocument, command)
+  return {
+    vectorDocument,
+    illustrator: vectorDocumentToIllustratorDocument(
+      vectorDocument,
+      illustratorHint ?? state.illustrator,
+    ),
+    vectorUndoStack: [...state.vectorUndoStack, command],
+    vectorRedoStack: [],
+  }
+}
+
+function getVectorDocumentForLegacyMutation(state: LogoStore): VectorDocument | null {
+  if (state.vectorDocument) return state.vectorDocument
+  if (state.illustrator) {
+    return illustratorDocumentToVectorDocument(
+      state.illustrator,
+      null,
+      state.params.fillColor,
+    )
+  }
+  return null
+}
+
+function mutateVectorViaIllustrator(
+  state: LogoStore,
+  label: string,
+  mutate: (doc: IllustratorDocument) => IllustratorDocument | null,
+): Partial<LogoStore> | null {
+  const baseDocument = getVectorDocumentForLegacyMutation(state)
+  if (!baseDocument) return null
+  const legacyDocument = vectorDocumentToIllustratorDocument(baseDocument, state.illustrator)
+  const nextLegacyDocument = mutate(structuredClone(legacyDocument) as IllustratorDocument)
+  if (!nextLegacyDocument) return null
+  const nextVectorDocument = illustratorDocumentToVectorDocument(
+    nextLegacyDocument,
+    baseDocument,
+    state.params.fillColor,
+  )
+  return commitVectorDocumentUpdate(
+    state,
+    baseDocument,
+    nextVectorDocument,
+    label,
+    nextLegacyDocument,
+  )
+}
 
 function mergeLogoParams(
   current: LogoParams,

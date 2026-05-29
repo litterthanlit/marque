@@ -9,20 +9,26 @@ export function Toolbar() {
   const dissolutionEnabled = useLogoStore((s) => s.effectParams.dissolution.enabled)
   const toggleDissolution = useLogoStore((s) => s.toggleDissolution)
   const activeSurface = useLogoStore((s) => s.activeSurface)
+  const undoVectorCommand = useLogoStore((s) => s.undoVectorCommand)
+  const redoVectorCommand = useLogoStore((s) => s.redoVectorCommand)
+  const canUndoVector = useLogoStore((s) => s.vectorUndoStack.length > 0)
+  const canRedoVector = useLogoStore((s) => s.vectorRedoStack.length > 0)
   const [exportOpen, setExportOpen] = useState(false)
   const [shareState, setShareState] = useState<'idle' | 'copied' | 'failed'>('idle')
 
   const { undo, redo } = useLogoStore.temporal.getState()
-  const canUndo = useSyncExternalStore(
+  const canUndoGenerated = useSyncExternalStore(
     (listener) => useLogoStore.temporal.subscribe(listener),
     () => useLogoStore.temporal.getState().pastStates.length > 0,
     () => false,
   )
-  const canRedo = useSyncExternalStore(
+  const canRedoGenerated = useSyncExternalStore(
     (listener) => useLogoStore.temporal.subscribe(listener),
     () => useLogoStore.temporal.getState().futureStates.length > 0,
     () => false,
   )
+  const canUndo = activeSurface === 'illustrator' ? canUndoVector : canUndoGenerated
+  const canRedo = activeSurface === 'illustrator' ? canRedoVector : canRedoGenerated
 
   useEffect(() => {
     function handleOpenExport() { setExportOpen(true) }
@@ -45,6 +51,22 @@ export function Toolbar() {
     }
   }
 
+  function handleUndo() {
+    if (activeSurface === 'illustrator') {
+      undoVectorCommand()
+    } else {
+      undo()
+    }
+  }
+
+  function handleRedo() {
+    if (activeSurface === 'illustrator') {
+      redoVectorCommand()
+    } else {
+      redo()
+    }
+  }
+
   return (
     <>
       <header className="flex items-center justify-between h-12 gap-2 px-3 sm:px-5 border-b border-border bg-surface-raised">
@@ -53,10 +75,10 @@ export function Toolbar() {
           <span className="font-mono-tabular text-[11px] text-sidebar-muted">#{seed}</span>
         </div>
         <div className="flex min-w-0 shrink-0 items-center gap-1">
-          <ToolbarButton onClick={() => undo()} disabled={!canUndo} title="Undo (Cmd+Z)" className="hidden sm:inline-flex">
+          <ToolbarButton onClick={handleUndo} disabled={!canUndo} title="Undo (Cmd+Z)" className="hidden sm:inline-flex">
             <UndoIcon />
           </ToolbarButton>
-          <ToolbarButton onClick={() => redo()} disabled={!canRedo} title="Redo (Cmd+Shift+Z)" className="hidden sm:inline-flex">
+          <ToolbarButton onClick={handleRedo} disabled={!canRedo} title="Redo (Cmd+Shift+Z)" className="hidden sm:inline-flex">
             <RedoIcon />
           </ToolbarButton>
           <div className="hidden sm:block w-px h-3.5 bg-border mx-1" />
