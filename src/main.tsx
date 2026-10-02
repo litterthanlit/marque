@@ -8,6 +8,10 @@ import '@fontsource/fraunces/500.css'
 import '@fontsource/jetbrains-mono/400.css'
 import App from './App.tsx'
 import './index.css'
+import { installDevHook } from './devHook.ts'
+
+// Development-only hook for the end-to-end checks; production builds leave it out.
+if (import.meta.env.DEV) installDevHook()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

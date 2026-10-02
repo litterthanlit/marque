@@ -8,6 +8,7 @@ import type {
 import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../illustrator/types.ts'
 import { createDefaultAppearance, createDefaultArtboard } from './document.ts'
 import { pathDataToVectorPaths, vectorPathToPathData } from './pathSerialization.ts'
+import { syncCarve } from '../carve/sync.ts'
 import type {
   Matrix2D,
   PathObject,
@@ -114,9 +115,15 @@ function pointSelectionToVectorSelection(
   }
 }
 
+// Objects are immutable once in a document, so their layer view can be
+// reused: a selection change then costs nothing per path.
+const layerCache = new WeakMap<VectorObject, IllustratorLayer>()
+
 function vectorObjectToLayer(object: VectorObject): IllustratorLayer | null {
   if (object.type !== 'path') return null
-  return {
+  const cached = layerCache.get(object)
+  if (cached) return cached
+  const layer: IllustratorLayer = {
     id: object.id,
     name: object.name,
     sourceShapeId: object.source?.sourceShapeId,
@@ -126,7 +133,10 @@ function vectorObjectToLayer(object: VectorObject): IllustratorLayer | null {
     pathData: vectorPathToPathData(object.path),
     fillRule: object.fillRule,
     transform: illustratorTransformFromMatrix(object.transform),
+    ...(object.carve ? { carve: object.carve } : {}),
   }
+  layerCache.set(object, layer)
+  return layer
 }
 
 export function vectorDocumentToIllustratorDocument(
@@ -153,6 +163,32 @@ function layerToObjects(
   fillColor: string,
 ): PathObject[] {
   const paths = pathDataToVectorPaths(layer.pathData)
+
+  // Recipe layers: keep the recipe only while it still matches the path, and
+  // fold any stray transform into it so recipe layers stay untransformed.
+  const synced = layer.carve && paths.length === 1 ? syncCarve(layer.carve, paths[0], layer.transform) : null
+  if (synced) {
+    return [{
+      id: layer.id,
+      type: 'path',
+      name: layer.name,
+      parentId: null,
+      artboardId,
+      visible: layer.visible,
+      locked: layer.locked,
+      transform: matrixFromIllustratorTransform(synced.transform),
+      appearance: createDefaultAppearance(fillColor),
+      source: {
+        ...source,
+        sourceShapeId: layer.sourceShapeId,
+        compatOperation: layer.operation,
+      },
+      path: synced.path,
+      fillRule: layer.fillRule,
+      carve: synced.carve,
+    }]
+  }
+
   return paths.map((path, index) => ({
     id: paths.length === 1 ? layer.id : `${layer.id}_${index + 1}`,
     type: 'path',

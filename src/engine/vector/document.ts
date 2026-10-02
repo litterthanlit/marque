@@ -1,3 +1,4 @@
+import { isObjectCarveValid } from '../carve/sync.ts'
 import type {
   Matrix2D,
   Paint,
@@ -281,4 +282,22 @@ function isFiniteNumber(value: unknown): value is number {
 
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0
+}
+
+/**
+ * Drop recipes that no longer describe their path (invalid data, an older
+ * build edited the path, or a transform crept in). The visible geometry is
+ * always kept. Run on every document that comes from outside the editor.
+ */
+export function sanitizeVectorDocument(document: VectorDocument): VectorDocument {
+  let changed = false
+  const objects = document.objects.map((object) => {
+    if (object.type !== 'path' || object.carve === undefined) return object
+    if (isObjectCarveValid(object.carve, object.path, object.transform)) return object
+    changed = true
+    const next = { ...object }
+    delete next.carve
+    return next
+  })
+  return changed ? { ...document, objects } : document
 }

@@ -1,7 +1,7 @@
 import paper from 'paper'
 import type { GenerationResult, LogoParams } from '../types.ts'
 import { getGenerator } from '../generators/registry.ts'
-import { composeBooleanResult } from '../boolean/operations.ts'
+import { composeOrderedPaths } from '../boolean/operations.ts'
 import type { IllustratorDocument, IllustratorLayer, MarkData } from './types.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM } from './types.ts'
 
@@ -58,13 +58,27 @@ export function getLayerPathItem(
   return item
 }
 
+/**
+ * Generators describe a mark as "everything added, minus everything cut".
+ * Layers compose in order, so put adds first (stable) to keep a converted mark
+ * identical to the generated one.
+ */
+export function generatedShapesInApplyOrder<T extends { pathData?: string; operation: 'add' | 'subtract' }>(
+  shapes: T[],
+): T[] {
+  const withPath = shapes.filter((shape) => Boolean(shape.pathData))
+  return [
+    ...withPath.filter((shape) => shape.operation === 'add'),
+    ...withPath.filter((shape) => shape.operation === 'subtract'),
+  ]
+}
+
 export function createIllustratorDocument(
   result: GenerationResult,
   params: LogoParams,
 ): IllustratorDocument {
   const generator = getGenerator(params.generatorId)
-  const layers = result.shapes
-    .filter((shape) => Boolean(shape.pathData))
+  const layers = generatedShapesInApplyOrder(result.shapes)
     .map((shape, index): IllustratorLayer => ({
       id: `layer_${shape.id}_${index}`,
       name: `${shape.type} ${index + 1}`,
@@ -90,6 +104,17 @@ export function createIllustratorDocument(
     pointSelection: null,
     mode: 'object',
   }
+}
+
+/** A layer's path with its transform applied, in layer space. */
+export function layerTransformedPathData(layer: IllustratorLayer): string {
+  const scope = getScope()
+  scope.project.clear()
+  const item = getLayerPathItem(scope, layer, true)
+  const pathData = item?.pathData ?? ''
+  item?.remove()
+  scope.project.clear()
+  return pathData
 }
 
 export function composeIllustratorMark(doc: IllustratorDocument | null): MarkData | null {
@@ -120,10 +145,10 @@ export function composeIllustratorMark(doc: IllustratorDocument | null): MarkDat
     }
   }
 
-  const result = composeBooleanResult(inputs)
+  const result = composeOrderedPaths(inputs)
   return {
     compoundPathData: result.compoundPathData,
-    fillRule: result.fillRule,
+    fillRule: 'evenodd',
     viewBox: result.viewBox,
   }
 }
@@ -133,6 +158,8 @@ export function isIllustratorSourceStale(
   params: LogoParams,
 ): boolean {
   if (!doc) return false
+  // A carved slab has no generated source to drift from.
+  if (doc.source.generatorId === 'slab') return false
   const generator = getGenerator(params.generatorId)
   return (
     doc.source.seed !== params.seed ||

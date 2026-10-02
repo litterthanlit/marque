@@ -30,6 +30,22 @@ export function composeVectorMark(document: VectorDocument | null): MarkData | n
   return composeIllustratorMark(vectorDocumentToIllustratorDocument(document))
 }
 
+const markCache = new WeakMap<VectorObject[], MarkData | null>()
+
+/**
+ * The composed mark for a document, computed once per set of objects.
+ * Selection changes keep the same objects array, so they cost nothing; the
+ * canvas, previews and export all read this one result.
+ */
+export function composeVectorMarkCached(document: VectorDocument | null): MarkData | null {
+  if (!document) return null
+  const hit = markCache.get(document.objects)
+  if (hit !== undefined) return hit
+  const mark = composeVectorMark(document)
+  markCache.set(document.objects, mark)
+  return mark
+}
+
 export function serializeVectorDocumentToSvg(
   document: VectorDocument,
   fallbackFill = '#111111',

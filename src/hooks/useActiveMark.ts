@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { useLogoStore } from '../store/logoStore.ts'
 import { composeIllustratorMark } from '../engine/illustrator/compose.ts'
 import type { MarkData } from '../engine/illustrator/types.ts'
-import { composeVectorMark } from '../engine/vector/export.ts'
+import { composeVectorMarkCached } from '../engine/vector/export.ts'
 
 export function useActiveMark(): MarkData | null {
   const result = useLogoStore((s) => s.result)
@@ -12,7 +12,7 @@ export function useActiveMark(): MarkData | null {
 
   return useMemo(() => {
     if (activeSurface === 'illustrator' && vectorDocument) {
-      return composeVectorMark(vectorDocument)
+      return composeVectorMarkCached(vectorDocument)
     }
 
     if (activeSurface === 'illustrator' && illustrator) {

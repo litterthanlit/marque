@@ -53,6 +53,8 @@ const PARAM_RANGES: Record<string, { min: number; max: number }> = {
   animationSpeed: { min: 0, max: 5 },
 }
 
+const URL_WRITE_DELAY_MS = 300
+
 export function useUrlState() {
   const params = useLogoStore((s) => s.params)
   const setParams = useLogoStore((s) => s.setParams)
@@ -93,21 +95,44 @@ export function useUrlState() {
     }
   }, [setActiveSurface, setError, setIllustratorDocument, setParams, setEffectParam, setVectorDocument])
 
+  // What the link was last written from; selection changes alone don't rewrite it.
+  const writtenFrom = useRef<unknown[] | null>(null)
+  const pendingWrite = useRef<(() => void) | null>(null)
+
   useEffect(() => {
     if (!initialized.current) return
-
-    const encoded = encodeParams(
+    const inputs = [
       params,
       effectParams,
       activeSurface,
-      vectorDocument,
-      illustrator,
-    )
-    const nextHash = encoded ? `#${encoded}` : ''
-    if (window.location.hash !== nextHash) {
-      window.history.replaceState(null, '', nextHash || window.location.pathname)
+      vectorDocument?.objects ?? null,
+      vectorDocument?.artboards ?? null,
+      vectorDocument ? null : illustrator,
+    ]
+    const last = writtenFrom.current
+    if (last && last.every((value, i) => value === inputs[i])) return
+
+    // Encoding compresses the whole document: do it once things settle, not on every step.
+    const write = () => {
+      pendingWrite.current = null
+      writtenFrom.current = inputs
+      const encoded = encodeParams(params, effectParams, activeSurface, vectorDocument, illustrator)
+      const nextHash = encoded ? `#${encoded}` : ''
+      if (window.location.hash !== nextHash) {
+        window.history.replaceState(null, '', nextHash || window.location.pathname)
+      }
     }
+    pendingWrite.current = write
+    const timer = window.setTimeout(write, URL_WRITE_DELAY_MS)
+    return () => window.clearTimeout(timer)
   }, [activeSurface, effectParams, illustrator, params, vectorDocument])
+
+  // Leaving or reloading right after an edit still keeps it in the link.
+  useEffect(() => {
+    const flush = () => pendingWrite.current?.()
+    window.addEventListener('pagehide', flush)
+    return () => window.removeEventListener('pagehide', flush)
+  }, [])
 }
 
 function encodeParams(

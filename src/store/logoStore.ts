@@ -14,25 +14,32 @@ import type {
   ActiveSurface,
   IllustratorDocument,
   IllustratorLayer,
-  IllustratorMode,
-  PointSelection,
 } from '../engine/illustrator/types.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../engine/illustrator/types.ts'
+import { bakedEditablePath } from '../engine/illustrator/layerPath.ts'
+import { deleteAnchor, editablePathToPathData, toggleSmooth } from '../engine/path/editPath.ts'
 import { getLayerPathItem } from '../engine/illustrator/compose.ts'
 import type { VectorCommand } from '../engine/vector/commands.ts'
 import {
   applyVectorCommand as applyVectorCommandToDocument,
   createReplaceVectorDocumentCommand,
-  createSetSelectionCommand,
   invertVectorCommand,
 } from '../engine/vector/commands.ts'
 import { createVectorDocumentFromGeneration } from '../engine/vector/fromGeneration.ts'
-import type { VectorDocument } from '../engine/vector/types.ts'
+import type { VectorDocument, VectorSelection } from '../engine/vector/types.ts'
 import {
   illustratorDocumentToVectorDocument,
   vectorDocumentToIllustratorDocument,
 } from '../engine/vector/legacyIllustratorAdapter.ts'
 import { paramsEqual } from './historyMiddleware.ts'
+import type { CutSpec, PunchShape, SlabKind } from '../engine/carve/geometry.ts'
+import { carveOutline } from '../engine/carve/outline.ts'
+import { carveFromCut, carveLayerName, roundCarveSpec, slabSpec, type CarveSpec } from '../engine/carve/spec.ts'
+import { translateCarve } from '../engine/carve/edit.ts'
+import { sanitizeVectorDocument } from '../engine/vector/document.ts'
+import { composeVectorMarkCached } from '../engine/vector/export.ts'
+import { placeSlab } from '../engine/carve/placement.ts'
+import type { SurvivalSize } from '../engine/carve/survival.ts'
 import {
   getAllModeParamDefaults,
   getModeGeneratorId,
@@ -83,8 +90,57 @@ interface UIState {
   selectedShapeId: string | null
   shapeOverrides: Record<string, ShapeOverride>
   drawnPaths: DrawnPath[]
-  activeTool: 'select' | 'pencil' | 'pen' | 'graffiti' | 'shapebuilder' | null
+  activeTool: EditorTool | null
   selectedPathIds: string[]
+  carve: CarveSettings
+  /** Size of the Vector Maker canvas in layer units, for placing new slabs. */
+  viewport: { width: number; height: number }
+}
+
+/** One layer change inside a single undoable commit. */
+export interface LayerEdit {
+  layerId: string
+  /** New recipe; the path is regenerated from it. */
+  carve?: CarveSpec
+  /** New path data for free shapes (already in untransformed layer space). */
+  pathData?: string
+}
+
+export interface LayerEditCommit {
+  label: string
+  edits: LayerEdit[]
+  /** Selection to leave behind; defaults to the current one. */
+  select?: string[]
+  /** Selected anchor on the single selected layer, or null to clear it. */
+  anchor?: { layerId: string; segmentIndex: number } | null
+}
+
+export type EditorTool =
+  | 'select'
+  | 'pencil'
+  | 'pen'
+  | 'graffiti'
+  | 'shapebuilder'
+  | 'punch'
+  | 'channel'
+  | 'slice'
+
+export interface CarveSettings {
+  punchShape: PunchShape
+  /** Width of new channels and slices, in layer units. */
+  cutWidth: number
+  survivalSize: SurvivalSize
+  showWeakSpots: boolean
+  /** Snap drags to points, edges, alignment and 15° angles (Cmd/Ctrl turns it off while held). */
+  snapping: boolean
+}
+
+export const DEFAULT_CARVE_SETTINGS: CarveSettings = {
+  punchShape: 'circle',
+  cutWidth: 44,
+  survivalSize: 32,
+  showWeakSpots: true,
+  snapping: true,
 }
 
 interface LogoStore {
@@ -130,7 +186,7 @@ interface LogoStore {
   addDrawnPath: (path: Omit<DrawnPath, 'id'>) => void
   removeDrawnPath: (id: string) => void
   clearDrawnPaths: () => void
-  setActiveTool: (tool: 'select' | 'pencil' | 'pen' | 'graffiti' | 'shapebuilder' | null) => void
+  setActiveTool: (tool: EditorTool | null) => void
   togglePathSelection: (id: string) => void
   clearPathSelection: () => void
   booleanOp: (op: 'unite' | 'subtract' | 'intersect') => void
@@ -144,7 +200,6 @@ interface LogoStore {
   convertCurrentMark: () => void
   resetIllustrator: () => void
   setIllustratorDocument: (doc: IllustratorDocument | null) => void
-  setIllustratorMode: (mode: IllustratorMode) => void
   selectIllustratorLayer: (id: string | null, additive?: boolean) => void
   updateIllustratorLayer: (id: string, update: Partial<IllustratorLayer>) => void
   updateIllustratorLayerTransform: (
@@ -157,15 +212,18 @@ interface LogoStore {
   toggleIllustratorLayerVisibility: (id: string) => void
   setIllustratorLayerOperation: (id: string, operation: 'add' | 'subtract') => void
   addIllustratorPathLayer: (path: Omit<DrawnPath, 'id'>) => void
+  setCarveSettings: (update: Partial<CarveSettings>) => void
+  addSlab: (kind: SlabKind) => void
+  startOver: () => void
+  setSelection: (layerIds: string[], anchor?: { layerId: string; segmentIndex: number } | null) => void
+  commitLayerEdits: (commit: LayerEditCommit) => void
+  setViewport: (viewport: { width: number; height: number }) => void
+  addCarveCut: (spec: CutSpec) => void
+  /** A closed shape drawn with the pen (layer space): added on top, selected, back to direct editing. */
+  addPenShape: (pathData: string) => void
   booleanIllustratorLayers: (op: 'unite' | 'subtract' | 'intersect') => void
-  setPointSelection: (selection: PointSelection | null) => void
-  updateIllustratorPoint: (
-    layerId: string,
-    segmentIndex: number,
-    handle: 'anchor' | 'in' | 'out',
-    point: { x: number; y: number },
-  ) => void
-  toggleSelectedPointCurve: () => void
+  /** Sharp/smooth or delete one point of a free shape: one undo step. */
+  editAnchor: (layerId: string, index: number, op: 'toggle-smooth' | 'delete') => void
 }
 
 export const useLogoStore = create<LogoStore>()(
@@ -185,13 +243,15 @@ export const useLogoStore = create<LogoStore>()(
         drawingMode: false,
         activeDrawShape: 'circle',
         drawnShapes: [],
-        theme: (window.localStorage.getItem('dalat.theme') as ThemeMode) || 'dark',
+        theme: readStoredTheme(),
         editMode: false,
         selectedShapeId: null,
         shapeOverrides: {},
         drawnPaths: [],
         activeTool: null,
         selectedPathIds: [],
+        carve: { ...DEFAULT_CARVE_SETTINGS },
+        viewport: { width: 600, height: 600 },
       },
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
@@ -567,13 +627,16 @@ export const useLogoStore = create<LogoStore>()(
           }
         }),
 
-      setVectorDocument: (doc) =>
-        set((state) => ({
-          vectorDocument: doc,
-          illustrator: doc ? vectorDocumentToIllustratorDocument(doc, state.illustrator) : null,
-          vectorUndoStack: [],
-          vectorRedoStack: [],
-        })),
+      setVectorDocument: (incoming) =>
+        set((state) => {
+          const doc = incoming ? sanitizeVectorDocument(incoming) : null
+          return {
+            vectorDocument: doc,
+            illustrator: doc ? vectorDocumentToIllustratorDocument(doc, state.illustrator) : null,
+            vectorUndoStack: [],
+            vectorRedoStack: [],
+          }
+        }),
 
       applyVectorCommand: (command) =>
         set((state) => {
@@ -582,7 +645,7 @@ export const useLogoStore = create<LogoStore>()(
           return {
             vectorDocument,
             illustrator: vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator),
-            vectorUndoStack: [...state.vectorUndoStack, command],
+            vectorUndoStack: capHistory([...state.vectorUndoStack, command]),
             vectorRedoStack: [],
           }
         }),
@@ -639,6 +702,21 @@ export const useLogoStore = create<LogoStore>()(
           const vectorDocument = state.result
             ? createVectorDocumentFromGeneration(state.result, state.params)
             : state.vectorDocument
+          const ui = {
+            ...state.ui,
+            activeTool: null,
+            editMode: true,
+            selectedShapeId: null,
+            selectedPathIds: [],
+          }
+          if (vectorDocument && state.vectorDocument && vectorDocument !== state.vectorDocument) {
+            // Replacing an open document is one undo step, like any other edit.
+            return {
+              ...commitVectorDocumentUpdate(state, state.vectorDocument, vectorDocument, 'Convert current mark'),
+              activeSurface: 'illustrator',
+              ui,
+            }
+          }
           return {
             activeSurface: 'illustrator',
             illustrator: vectorDocument
@@ -647,13 +725,7 @@ export const useLogoStore = create<LogoStore>()(
             vectorDocument,
             vectorUndoStack: [],
             vectorRedoStack: [],
-            ui: {
-              ...state.ui,
-              activeTool: null,
-              editMode: true,
-              selectedShapeId: null,
-              selectedPathIds: [],
-            },
+            ui,
           }
         }),
 
@@ -689,22 +761,6 @@ export const useLogoStore = create<LogoStore>()(
           }
         }),
 
-      setIllustratorMode: (mode) =>
-        set((state) => ({
-          illustrator: state.illustrator
-            ? {
-                ...state.illustrator,
-                mode,
-                pointSelection: mode === 'object' ? null : state.illustrator.pointSelection,
-              }
-            : state.illustrator,
-          ui: {
-            ...state.ui,
-            activeTool: mode === 'points' ? null : state.ui.activeTool,
-            editMode: mode === 'object',
-          },
-        })),
-
       selectIllustratorLayer: (id, additive = false) =>
         set((state) => {
           if (state.vectorDocument) {
@@ -716,11 +772,10 @@ export const useLogoStore = create<LogoStore>()(
                   : [...current, id]
                 : [id]
               : []
-            const command = createSetSelectionCommand({
-              targets: selectedLayerIds.map((objectId) => ({ type: 'object', objectId })),
-            })
             return {
-              ...applyVectorCommandToStore(state, command),
+              ...selectionUpdate(state, {
+                targets: selectedLayerIds.map((objectId) => ({ type: 'object', objectId })),
+              }),
               ui: {
                 ...state.ui,
                 editMode: true,
@@ -813,18 +868,7 @@ export const useLogoStore = create<LogoStore>()(
             const index = doc.layers.findIndex((candidate) => candidate.id === id)
             const layer = doc.layers[index]
             if (!layer) return null
-            const nextLayer: IllustratorLayer = {
-              ...structuredClone(layer),
-              id: crypto.randomUUID(),
-              name: `${layer.name} copy`,
-              sourceShapeId: undefined,
-              locked: false,
-              transform: {
-                ...layer.transform,
-                dx: layer.transform.dx + 12,
-                dy: layer.transform.dy + 12,
-              },
-            }
+            const nextLayer = duplicateLayer(layer)
             const layers = [...doc.layers]
             layers.splice(index + 1, 0, nextLayer)
             return {
@@ -839,18 +883,7 @@ export const useLogoStore = create<LogoStore>()(
           const index = state.illustrator.layers.findIndex((candidate) => candidate.id === id)
           const layer = state.illustrator.layers[index]
           if (!layer) return state
-          const nextLayer: IllustratorLayer = {
-            ...structuredClone(layer),
-            id: crypto.randomUUID(),
-            name: `${layer.name} copy`,
-            sourceShapeId: undefined,
-            locked: false,
-            transform: {
-              ...layer.transform,
-              dx: layer.transform.dx + 12,
-              dy: layer.transform.dy + 12,
-            },
-          }
+          const nextLayer = duplicateLayer(layer)
           const layers = [...state.illustrator.layers]
           layers.splice(index + 1, 0, nextLayer)
           return {
@@ -962,6 +995,147 @@ export const useLogoStore = create<LogoStore>()(
           })
         ),
 
+      setCarveSettings: (update) =>
+        set((state) => ({
+          ui: { ...state.ui, carve: { ...state.ui.carve, ...update } },
+        })),
+
+      addSlab: (kind) =>
+        set((state) => {
+          const ui = {
+            ...state.ui,
+            activeTool: null,
+            editMode: true,
+            selectedShapeId: null,
+            selectedPathIds: [],
+          }
+          // Opening Vector Maker converts the generated mark automatically. If
+          // nothing has been edited since, a slab starts a fresh carving instead
+          // of landing on top of a mark nobody chose to work on (undo returns it).
+          if (
+            state.vectorDocument &&
+            state.vectorDocument.source?.generatorId !== 'slab' &&
+            state.vectorUndoStack.length === 0
+          ) {
+            const fresh = slabDocument([recipeLayer(slabSpec(kind), 'add')], state.params.fillColor)
+            return {
+              ...commitVectorDocumentUpdate(state, state.vectorDocument, fresh, 'Start from slab'),
+              activeSurface: 'illustrator',
+              ui,
+            }
+          }
+
+          const existing = state.vectorDocument ? composeVectorMarkCached(state.vectorDocument) : null
+          const spec = existing?.compoundPathData
+            ? placeSlab(kind, existing.viewBox, state.ui.viewport)
+            : slabSpec(kind)
+          const slab = recipeLayer(spec, 'add')
+          if (state.vectorDocument || state.illustrator) {
+            // New material goes on top: older cuts can't bite into it.
+            const update = mutateVectorViaIllustrator(state, 'Add slab', (doc) => ({
+              ...doc,
+              mode: 'object',
+              layers: [...doc.layers, slab],
+              selectedLayerIds: [slab.id],
+              pointSelection: null,
+            }))
+            if (update) return { ...update, activeSurface: 'illustrator', ui }
+          }
+          const fresh = slabDocument([slab], state.params.fillColor)
+          return {
+            activeSurface: 'illustrator',
+            vectorDocument: fresh,
+            illustrator: vectorDocumentToIllustratorDocument(fresh, null),
+            vectorUndoStack: [],
+            vectorRedoStack: [],
+            ui,
+          }
+        }),
+
+      startOver: () =>
+        set((state) => {
+          const fresh = slabDocument([], state.params.fillColor)
+          const ui = {
+            ...state.ui,
+            activeTool: null,
+            editMode: true,
+            selectedShapeId: null,
+            selectedPathIds: [],
+          }
+          if (state.vectorDocument) {
+            return {
+              ...commitVectorDocumentUpdate(state, state.vectorDocument, fresh, 'Start over'),
+              activeSurface: 'illustrator',
+              ui,
+            }
+          }
+          return {
+            activeSurface: 'illustrator',
+            vectorDocument: fresh,
+            illustrator: vectorDocumentToIllustratorDocument(fresh, null),
+            vectorUndoStack: [],
+            vectorRedoStack: [],
+            ui,
+          }
+        }),
+
+      setSelection: (layerIds, anchor) =>
+        set((state) =>
+          selectionUpdate(state, {
+            targets:
+              anchor && layerIds.length === 1
+                ? [{ type: 'anchor', objectId: anchor.layerId, segmentIndex: anchor.segmentIndex }]
+                : layerIds.map((objectId) => ({ type: 'object', objectId })),
+          }),
+        ),
+
+      commitLayerEdits: (commit) => set((state) => layerEditsUpdate(state, commit)),
+
+      setViewport: (viewport) =>
+        set((state) =>
+          state.ui.viewport.width === viewport.width && state.ui.viewport.height === viewport.height
+            ? {}
+            : { ui: { ...state.ui, viewport } },
+        ),
+
+      addCarveCut: (spec) =>
+        set((state) => {
+          const layer = recipeLayer(carveFromCut(spec), 'subtract')
+          if (!layer.pathData) return state
+          const vectorUpdate = mutateVectorViaIllustrator(state, `Add ${layer.name}`, (doc) => {
+            return {
+              ...doc,
+              mode: 'object',
+              layers: [...doc.layers, layer],
+              selectedLayerIds: [layer.id],
+              pointSelection: null,
+            }
+          })
+          // The carve tool stays active so cuts can be made one after another.
+          return vectorUpdate ?? state
+        }),
+
+      addPenShape: (pathData) =>
+        set((state) => {
+          const vectorUpdate = mutateVectorViaIllustrator(state, 'Draw shape', (doc) => {
+            const taken = new Set(doc.layers.map((layer) => layer.name))
+            let n = doc.layers.length + 1
+            while (taken.has(`Shape ${n}`)) n++
+            const layer: IllustratorLayer = {
+              id: crypto.randomUUID(),
+              name: `Shape ${n}`,
+              operation: 'add',
+              visible: true,
+              locked: false,
+              pathData,
+              fillRule: 'nonzero',
+              transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+            }
+            return { ...doc, mode: 'object', layers: [...doc.layers, layer], selectedLayerIds: [layer.id], pointSelection: null }
+          })
+          return vectorUpdate ? { ...vectorUpdate, ui: { ...state.ui, activeTool: null } } : state
+        }),
+
       addIllustratorPathLayer: (path) =>
         set((state) => {
           const vectorUpdate = mutateVectorViaIllustrator(state, 'Add path layer', (doc) => {
@@ -1060,139 +1234,42 @@ export const useLogoStore = create<LogoStore>()(
           }
         }),
 
-      setPointSelection: (selection) =>
+      editAnchor: (layerId, index, op) =>
         set((state) => {
-          if (state.vectorDocument) {
-            const command = createSetSelectionCommand({
-              targets: selection
-                ? [
-                    selection.handle === 'anchor' || selection.handle === null
-                      ? {
-                          type: 'anchor',
-                          objectId: selection.layerId,
-                          segmentIndex: selection.segmentIndex,
-                        }
-                      : {
-                          type: 'handle',
-                          objectId: selection.layerId,
-                          segmentIndex: selection.segmentIndex,
-                          handle: selection.handle,
-                        },
-                  ]
-                : [],
+          const layer = state.illustrator?.layers.find((candidate) => candidate.id === layerId)
+          if (!layer || layer.carve) return {}
+          const path = bakedEditablePath(layer)
+          if (!path || !path.segs[index]) return {}
+          if (op === 'delete') {
+            const next = deleteAnchor(path, index)
+            if (!next) return {}
+            return layerEditsUpdate(state, {
+              label: 'Delete point',
+              edits: [{ layerId, pathData: editablePathToPathData(next) }],
+              select: [layerId],
+              anchor: null,
             })
-            return applyVectorCommandToStore(state, command)
           }
-          return {
-            illustrator: state.illustrator
-              ? { ...state.illustrator, pointSelection: selection }
-              : state.illustrator,
-          }
-        }),
-
-      updateIllustratorPoint: (layerId, segmentIndex, handle, point) =>
-        set((state) => {
-          const vectorUpdate = mutateVectorViaIllustrator(state, 'Edit point', (doc) => ({
-            ...doc,
-            layers: doc.layers.map((layer) =>
-              layer.id === layerId
-                ? {
-                    ...layer,
-                    pathData: updateLayerPointData(
-                      layer,
-                      segmentIndex,
-                      handle,
-                      point,
-                    ),
-                  }
-                : layer,
-            ),
-            pointSelection: { layerId, segmentIndex, handle },
-          }))
-          if (vectorUpdate) return vectorUpdate
-          if (!state.illustrator) return state
-          return {
-            illustrator: {
-              ...state.illustrator,
-              layers: state.illustrator.layers.map((layer) =>
-                layer.id === layerId
-                  ? {
-                      ...layer,
-                      pathData: updateLayerPointData(
-                        layer,
-                        segmentIndex,
-                        handle,
-                        point,
-                      ),
-                    }
-                  : layer,
-              ),
-              pointSelection: { layerId, segmentIndex, handle },
-            },
-          }
-        }),
-
-      toggleSelectedPointCurve: () =>
-        set((state) => {
-          const vectorUpdate = mutateVectorViaIllustrator(state, 'Toggle point curve', (doc) => {
-            const selection = doc.pointSelection
-            if (!selection) return null
-            return {
-              ...doc,
-              layers: doc.layers.map((layer) =>
-                layer.id === selection.layerId
-                  ? {
-                      ...layer,
-                      pathData: togglePointCurveData(layer, selection.segmentIndex),
-                    }
-                  : layer,
-              ),
-            }
+          return layerEditsUpdate(state, {
+            label: 'Sharp / smooth',
+            edits: [{ layerId, pathData: editablePathToPathData(toggleSmooth(path, index)) }],
+            select: [layerId],
+            anchor: { layerId, segmentIndex: index },
           })
-          if (vectorUpdate) return vectorUpdate
-          const selection = state.illustrator?.pointSelection
-          if (!state.illustrator || !selection) return state
-          return {
-            illustrator: {
-              ...state.illustrator,
-              layers: state.illustrator.layers.map((layer) =>
-                layer.id === selection.layerId
-                  ? {
-                      ...layer,
-                      pathData: togglePointCurveData(layer, selection.segmentIndex),
-                    }
-                  : layer,
-              ),
-            },
-          }
         }),
     }),
     {
       equality: paramsEqual,
+      // Generate's history only. Vector Maker keeps its own command history,
+      // so its documents must never be restored from here.
       partialize: (state) => ({
         params: state.params,
         effectParams: state.effectParams,
-        activeSurface: state.activeSurface,
-        illustrator: state.illustrator,
       }),
       limit: 50,
     },
   ),
 )
-
-function applyVectorCommandToStore(
-  state: LogoStore,
-  command: VectorCommand,
-): Partial<LogoStore> {
-  if (!state.vectorDocument) return {}
-  const vectorDocument = applyVectorCommandToDocument(state.vectorDocument, command)
-  return {
-    vectorDocument,
-    illustrator: vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator),
-    vectorUndoStack: [...state.vectorUndoStack, command],
-    vectorRedoStack: [],
-  }
-}
 
 function commitVectorDocumentUpdate(
   state: LogoStore,
@@ -1209,7 +1286,7 @@ function commitVectorDocumentUpdate(
       vectorDocument,
       illustratorHint ?? state.illustrator,
     ),
-    vectorUndoStack: [...state.vectorUndoStack, command],
+    vectorUndoStack: capHistory([...state.vectorUndoStack, command]),
     vectorRedoStack: [],
   }
 }
@@ -1248,6 +1325,136 @@ function mutateVectorViaIllustrator(
     label,
     nextLegacyDocument,
   )
+}
+
+function layerEditsUpdate(state: LogoStore, commit: LayerEditCommit): Partial<LogoStore> {
+  const update = mutateVectorViaIllustrator(state, commit.label, (doc) => {
+    let changed = false
+    const layers = doc.layers.map((layer) => {
+      const edit = commit.edits.find((candidate) => candidate.layerId === layer.id)
+      if (!edit) return layer
+      if (edit.carve) {
+        const carve = roundCarveSpec(edit.carve)
+        const pathData = carveOutline(carve).pathData
+        if (layer.carve && JSON.stringify(layer.carve) === JSON.stringify(carve) && isIdentity(layer.transform)) {
+          return layer
+        }
+        changed = true
+        return { ...layer, carve, pathData, transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM } }
+      }
+      if (edit.pathData !== undefined && edit.pathData !== layer.pathData) {
+        changed = true
+        const next: IllustratorLayer = {
+          ...layer,
+          pathData: edit.pathData,
+          transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+        }
+        delete next.carve
+        return next
+      }
+      return layer
+    })
+    if (!changed) return null
+    const selectedLayerIds = commit.select ?? doc.selectedLayerIds
+    const pointSelection =
+      commit.anchor === undefined
+        ? doc.pointSelection
+        : commit.anchor
+          ? { layerId: commit.anchor.layerId, segmentIndex: commit.anchor.segmentIndex, handle: 'anchor' as const }
+          : null
+    return { ...doc, layers, selectedLayerIds, pointSelection }
+  })
+  return update ?? {}
+}
+
+/** Vector Maker's own history is capped; each step stores two documents. */
+const MAX_VECTOR_HISTORY = 100
+
+function capHistory<T>(stack: T[]): T[] {
+  return stack.length > MAX_VECTOR_HISTORY ? stack.slice(stack.length - MAX_VECTOR_HISTORY) : stack
+}
+
+/**
+ * Change the selection without entering the undo history. Undo restores the
+ * selection captured with each edit, so redo stays valid too.
+ */
+function selectionUpdate(state: LogoStore, selection: VectorSelection): Partial<LogoStore> {
+  if (!state.vectorDocument) return {}
+  const vectorDocument = { ...state.vectorDocument, selection }
+  return {
+    vectorDocument,
+    illustrator: vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator),
+  }
+}
+
+function isIdentity(t: IllustratorLayer['transform']): boolean {
+  return t.dx === 0 && t.dy === 0 && t.scale === 1 && t.rotation === 0
+}
+
+/** A slab document: carved marks have no generated source to go stale. */
+function slabDocument(layers: IllustratorLayer[], fillColor: string): VectorDocument {
+  const legacy: IllustratorDocument = {
+    id: crypto.randomUUID(),
+    source: { seed: 0, modeId: 'slab', generatorId: 'slab', generatorVersion: 'v1' },
+    layers,
+    selectedLayerIds: layers.length ? [layers[layers.length - 1].id] : [],
+    pointSelection: null,
+    mode: 'object',
+  }
+  const doc = illustratorDocumentToVectorDocument(legacy, null, fillColor)
+  doc.name = 'Slab'
+  return doc
+}
+
+/** A layer generated from a recipe: the path always comes from the (rounded) recipe. */
+function recipeLayer(spec: CarveSpec, operation: 'add' | 'subtract'): IllustratorLayer {
+  const carve = roundCarveSpec(spec)
+  return {
+    id: crypto.randomUUID(),
+    name: carveLayerName(carve),
+    operation,
+    visible: true,
+    locked: false,
+    pathData: carveOutline(carve).pathData,
+    fillRule: 'evenodd',
+    transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+    carve,
+  }
+}
+
+const DUPLICATE_OFFSET = 12
+
+/** A copy offset down-right. Recipe layers move their recipe, not a transform. */
+function duplicateLayer(layer: IllustratorLayer): IllustratorLayer {
+  const copy: IllustratorLayer = {
+    ...structuredClone(layer),
+    id: crypto.randomUUID(),
+    name: `${layer.name} copy`,
+    sourceShapeId: undefined,
+    locked: false,
+  }
+  if (layer.carve) {
+    const carve = roundCarveSpec(translateCarve(layer.carve, { x: DUPLICATE_OFFSET, y: DUPLICATE_OFFSET }))
+    return { ...copy, carve, pathData: carveOutline(carve).pathData }
+  }
+  return {
+    ...copy,
+    transform: {
+      ...layer.transform,
+      dx: layer.transform.dx + DUPLICATE_OFFSET,
+      dy: layer.transform.dy + DUPLICATE_OFFSET,
+    },
+  }
+}
+
+// Storage can be missing (tests, server rendering) or throw (blocked site data).
+function readStoredTheme(): ThemeMode {
+  try {
+    if (typeof window === 'undefined') return 'dark'
+    return (window.localStorage.getItem('dalat.theme') as ThemeMode) || 'dark'
+  } catch {
+    return 'dark'
+  }
 }
 
 function mergeLogoParams(
@@ -1410,66 +1617,3 @@ function performIllustratorBoolean(
   }
 }
 
-function withSegment(
-  layer: IllustratorLayer,
-  segmentIndex: number,
-  update: (segment: paper.Segment) => void,
-): string {
-  const scope = getBooleanScope()
-  scope.project.clear()
-  const item = getLayerPathItem(scope, layer, false)
-  if (!item) return layer.pathData
-
-  let index = 0
-  let updated = false
-  item.getItems({ class: scope.Path }).forEach((path) => {
-    if (updated || !(path instanceof scope.Path)) return
-    for (const segment of path.segments) {
-      if (index === segmentIndex) {
-        update(segment)
-        updated = true
-        break
-      }
-      index += 1
-    }
-  })
-
-  const pathData = item.pathData || layer.pathData
-  item.remove()
-  scope.project.clear()
-  return pathData
-}
-
-function updateLayerPointData(
-  layer: IllustratorLayer,
-  segmentIndex: number,
-  handle: 'anchor' | 'in' | 'out',
-  point: { x: number; y: number },
-): string {
-  return withSegment(layer, segmentIndex, (segment) => {
-    const next = new paper.Point(point.x, point.y)
-    if (handle === 'anchor') {
-      segment.point = next
-      return
-    }
-    if (handle === 'in') {
-      segment.handleIn = next.subtract(segment.point)
-      return
-    }
-    segment.handleOut = next.subtract(segment.point)
-  })
-}
-
-function togglePointCurveData(layer: IllustratorLayer, segmentIndex: number): string {
-  return withSegment(layer, segmentIndex, (segment) => {
-    const hasHandles = segment.handleIn.length > 0 || segment.handleOut.length > 0
-    if (hasHandles) {
-      segment.handleIn = new paper.Point(0, 0)
-      segment.handleOut = new paper.Point(0, 0)
-      return
-    }
-
-    segment.handleIn = new paper.Point(-18, 0)
-    segment.handleOut = new paper.Point(18, 0)
-  })
-}
