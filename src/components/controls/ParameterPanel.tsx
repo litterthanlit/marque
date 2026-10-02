@@ -679,7 +679,7 @@ function IllustratorTab() {
                     {describeCarve(selectedLayer.carve)}
                   </p>
                   <p className="mt-1 text-[11px] leading-snug text-sidebar-muted">
-                    Drag it on the canvas to move it.
+                    Drag the handles on the canvas to resize, round or turn it.
                   </p>
                 </div>
               ) : (

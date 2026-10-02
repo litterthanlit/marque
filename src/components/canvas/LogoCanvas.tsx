@@ -21,6 +21,7 @@ import { DissolutionProcessor } from '../../engine/effects/dissolution.ts'
 import { useAnimation } from '../../hooks/useAnimation.ts'
 import { AnimationControls } from './AnimationControls.tsx'
 import { CanvasHud } from './CanvasHud.tsx'
+import { canvasPixelRatio, fitView, STILL, visibleUnits, type ViewMotion } from '../../renderer/viewFit.ts'
 import type { AnimationKeyframe } from '../../engine/animation/types.ts'
 import type { DrawnPath } from '../../store/logoStore.ts'
 import { useActiveMark } from '../../hooks/useActiveMark.ts'
@@ -40,6 +41,11 @@ export function LogoCanvas() {
   const toolRef = useRef<Tool | null>(null)
   const controllerRef = useRef<DirectEditController | null>(null)
   const carveSessionRef = useRef<{ doc: IllustratorDocument; session: ComposeSession } | null>(null)
+  // Who received the current press in Vector Maker: a tool, or the editor (handles stay live under tools).
+  const pressOwnerRef = useRef<'tool' | 'editor' | null>(null)
+  // The canvas's layout size in CSS pixels, and the Generate animation's current motion.
+  const cssSizeRef = useRef<{ width: number; height: number } | null>(null)
+  const motionRef = useRef<ViewMotion>(STILL)
   const result = useLogoStore((s) => s.result)
   const ui = useLogoStore((s) => s.ui)
   const params = useLogoStore((s) => s.params)
@@ -67,27 +73,54 @@ export function LogoCanvas() {
     return checkSurvival(activeMark, ui.carve.survivalSize)
   }, [activeSurface, activeMark, dissolution, ui.carve.showWeakSpots, ui.carve.survivalSize])
 
-  // Keep the paper view exactly the size of the canvas on screen (1 layer unit
-  // = 1 CSS pixel) and tell the store, so pointers map exactly and new slabs fit.
+  /** Fit the design area to the canvas. Vector Maker edits in a still view, so pointers map exactly. */
+  const applyView = useCallback(() => {
+    const scope = scopeRef.current
+    const size = cssSizeRef.current
+    if (!scope || !size) return
+    const still = useLogoStore.getState().activeSurface === 'illustrator'
+    fitView(scope, size.width, size.height, canvasPixelRatio(), still ? STILL : motionRef.current)
+  }, [scopeRef])
+
+  // Follow the canvas's size on screen (and the screen's pixel density), and
+  // tell the store how much of the design area is visible so new slabs fit.
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
+    let media: MediaQueryList | null = null
     const resize = () => {
-      const rect = canvas.getBoundingClientRect()
-      const width = Math.round(rect.width)
-      const height = Math.round(rect.height)
+      // Layout size: unaffected by the perspective tilt on Generate.
+      const width = canvas.clientWidth
+      const height = canvas.clientHeight
       if (width <= 0 || height <= 0) return
-      const scope = scopeRef.current
-      if (scope && (scope.view.viewSize.width !== width || scope.view.viewSize.height !== height)) {
-        scope.view.viewSize = new scope.Size(width, height)
-      }
-      setViewport({ width, height })
+      cssSizeRef.current = { width, height }
+      applyView()
+      setViewport(visibleUnits(width, height))
+      controllerRef.current?.refresh()
+    }
+    const onPixelRatio = () => {
+      watchPixelRatio()
+      resize()
+    }
+    const watchPixelRatio = () => {
+      media?.removeEventListener('change', onPixelRatio)
+      media = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`)
+      media.addEventListener('change', onPixelRatio)
     }
     resize()
+    watchPixelRatio()
     const observer = new ResizeObserver(resize)
     observer.observe(canvas)
-    return () => observer.disconnect()
-  }, [scopeRef, setViewport])
+    return () => {
+      observer.disconnect()
+      media?.removeEventListener('change', onPixelRatio)
+    }
+  }, [applyView, setViewport])
+
+  // Switching tabs stops (or resumes) the animation's motion.
+  useEffect(() => {
+    applyView()
+  }, [activeSurface, applyView])
 
   // Direct editing lives only on the Vector Maker surface.
   useEffect(() => {
@@ -341,11 +374,16 @@ export function LogoCanvas() {
     e.currentTarget.setPointerCapture(e.pointerId)
 
     if (activeSurface === 'illustrator') {
-      if (toolRef.current) {
+      const controller = controllerRef.current
+      const p = { x: point.x, y: point.y }
+      const touch = e.pointerType === 'touch'
+      if (toolRef.current && !controller?.handleAt(p, touch)) {
+        pressOwnerRef.current = 'tool'
         toolRef.current.onMouseDown(point)
         return
       }
-      controllerRef.current?.pointerDown({ x: point.x, y: point.y }, modifiersOf(e), e.pointerType === 'touch')
+      pressOwnerRef.current = 'editor'
+      controller?.pointerDown(p, modifiersOf(e), touch)
       return
     }
 
@@ -385,15 +423,27 @@ export function LogoCanvas() {
     const point = toProject(e)
     if (!point) return
 
+    if (activeSurface === 'illustrator') {
+      const controller = controllerRef.current
+      const p = { x: point.x, y: point.y }
+      const touch = e.pointerType === 'touch'
+      const tool = toolRef.current
+      if (tool && pressOwnerRef.current !== 'editor') {
+        if (e.buttons === 0 && controller) {
+          e.currentTarget.style.cursor = controller.toolHover(p, touch) ?? 'crosshair'
+        }
+        if (tool instanceof ShapeBuilderTool && e.buttons === 0) tool.onMouseMove(point)
+        else tool.onMouseDrag(point)
+        return
+      }
+      controller?.pointerMove(p, modifiersOf(e), touch)
+      return
+    }
+
     const tool = toolRef.current
     if (tool) {
       if (tool instanceof ShapeBuilderTool && e.buttons === 0) tool.onMouseMove(point)
       else tool.onMouseDrag(point)
-      return
-    }
-
-    if (activeSurface === 'illustrator') {
-      controllerRef.current?.pointerMove({ x: point.x, y: point.y }, modifiersOf(e), e.pointerType === 'touch')
       return
     }
 
@@ -408,13 +458,19 @@ export function LogoCanvas() {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
     if (!point) return
 
-    if (toolRef.current) {
-      toolRef.current.onMouseUp(point)
+    if (activeSurface === 'illustrator') {
+      const owner = pressOwnerRef.current
+      pressOwnerRef.current = null
+      if (owner === 'tool' && toolRef.current) {
+        toolRef.current.onMouseUp(point)
+        return
+      }
+      controllerRef.current?.pointerUp()
       return
     }
 
-    if (activeSurface === 'illustrator') {
-      controllerRef.current?.pointerUp()
+    if (toolRef.current) {
+      toolRef.current.onMouseUp(point)
       return
     }
 
@@ -426,6 +482,7 @@ export function LogoCanvas() {
   /** The gesture was interrupted (pointer cancelled or capture lost): undo the preview. */
   const handlePointerCancel = useCallback(() => {
     if (activeSurface !== 'illustrator') return
+    pressOwnerRef.current = null
     if (toolRef.current instanceof CarveTool) toolRef.current.cancel()
     controllerRef.current?.cancel()
   }, [activeSurface])
@@ -446,19 +503,12 @@ export function LogoCanvas() {
   }, [])
 
   const onFrame = useCallback((keyframe: AnimationKeyframe) => {
-    const scope = scopeRef.current
-    if (!scope) return
-    const view = scope.view
-    // Vector Maker edits in a still view: rotation would break pointer mapping.
-    if (useLogoStore.getState().activeSurface === 'illustrator' || (keyframe.rotation === 0 && keyframe.scale === 1)) {
-      view.rotation = 0
-      view.scaling = new scope.Point(1, 1)
-    } else {
-      view.rotation = (keyframe.rotation * 180) / Math.PI
-      view.scaling = new scope.Point(keyframe.scale, keyframe.scale)
-    }
-    view.update()
-  }, [scopeRef])
+    motionRef.current =
+      keyframe.rotation === 0 && keyframe.scale === 1
+        ? STILL
+        : { rotation: (keyframe.rotation * 180) / Math.PI, scale: keyframe.scale }
+    applyView()
+  }, [applyView])
 
   const { playing, togglePlaying, canAnimate } = useAnimation(onFrame)
 

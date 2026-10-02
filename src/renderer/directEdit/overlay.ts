@@ -1,8 +1,17 @@
 import type { Vec } from '../../engine/path/bezier.ts'
 import type { EditablePath } from '../../engine/path/editPath.ts'
+import type { CarveHandle } from '../../engine/carve/edit.ts'
 
 export const SELECTION_COLOR = '#3b82f6'
 export const GUIDE_COLOR = '#ec4899'
+
+// Layer units per CSS pixel: overlay marks keep a constant on-screen size
+// whatever the view zoom.
+let u = 1
+
+export function setOverlayScale(unitsPerPx: number): void {
+  u = unitsPerPx
+}
 const OVERLAY_NAME = '__overlay'
 
 /** The editor's own layer, on top of everything, emptied for a redraw. */
@@ -30,8 +39,8 @@ interface StrokeStyle {
 function styleStroke(scope: paper.PaperScope, item: paper.Item, style: StrokeStyle) {
   item.fillColor = null
   item.strokeColor = new scope.Color(style.color ?? SELECTION_COLOR)
-  item.strokeWidth = style.width ?? 1.5
-  item.dashArray = style.dashed ? [4, 4] : []
+  item.strokeWidth = (style.width ?? 1.5) * u
+  item.dashArray = style.dashed ? [4 * u, 4 * u] : []
   item.opacity = style.opacity ?? 1
   item.locked = true
 }
@@ -87,27 +96,110 @@ export function drawAnchors(
       const end = at({ x: seg.p.x + h.x, y: seg.p.y + h.y })
       const line = new scope.Path.Line(at(seg.p), end)
       line.strokeColor = new scope.Color(SELECTION_COLOR)
-      line.strokeWidth = 1
+      line.strokeWidth = u
       line.locked = true
       layer.addChild(line)
-      const dot = new scope.Path.Circle(end, 3.5)
+      const dot = new scope.Path.Circle(end, 3.5 * u)
       dot.fillColor = new scope.Color('#ffffff')
       dot.strokeColor = new scope.Color(SELECTION_COLOR)
-      dot.strokeWidth = 1.25
+      dot.strokeWidth = 1.25 * u
       dot.locked = true
       layer.addChild(dot)
     }
   }
   path.segs.forEach((seg, i) => {
-    const size = i === hoverIndex || i === selectedIndex ? 8 : 6.5
+    const size = (i === hoverIndex || i === selectedIndex ? 8 : 6.5) * u
     const square = new scope.Path.Rectangle({
       point: [seg.p.x + center.x - size / 2, seg.p.y + center.y - size / 2],
       size: [size, size],
     })
     square.fillColor = new scope.Color(i === selectedIndex ? SELECTION_COLOR : '#ffffff')
     square.strokeColor = new scope.Color(SELECTION_COLOR)
-    square.strokeWidth = 1.25
+    square.strokeWidth = 1.25 * u
     square.locked = true
     layer.addChild(square)
   })
+}
+
+/**
+ * Handles of the selected recipe: resize squares on a frame just outside the
+ * shape, a rounding dot, a rotate dot on a short stem, end points and a width
+ * dot for grooves. The frame line ties the handles together visually.
+ */
+export function drawCarveHandles(
+  scope: paper.PaperScope,
+  layer: paper.Layer,
+  handles: CarveHandle[],
+  center: Vec,
+  hoverId: string | null,
+) {
+  const at = (v: Vec) => new scope.Point(v.x + center.x, v.y + center.y)
+  const byId = new Map(handles.map((h) => [h.id, h]))
+  const blue = new scope.Color(SELECTION_COLOR)
+  const white = new scope.Color('#ffffff')
+
+  const corners = (['nw', 'ne', 'se', 'sw'] as const).map((id) => byId.get(id)).filter((h): h is CarveHandle => Boolean(h))
+  if (corners.length === 4) {
+    const frame = new scope.Path({ segments: corners.map((h) => at(h.at)), closed: true })
+    frame.strokeColor = blue
+    frame.strokeWidth = u
+    frame.opacity = 0.55
+    frame.locked = true
+    layer.addChild(frame)
+  }
+
+  // The rotate stem starts at the top edge's handle, or the middle of the top edge if that's hidden.
+  const rotate = byId.get('rotate')
+  if (rotate) {
+    const top = byId.get('n')
+    const anchor = top
+      ? at(top.at)
+      : corners.length === 4
+        ? at({ x: (corners[0].at.x + corners[1].at.x) / 2, y: (corners[0].at.y + corners[1].at.y) / 2 })
+        : null
+    if (anchor) {
+      const stem = new scope.Path.Line(anchor, at(rotate.at))
+      stem.strokeColor = blue
+      stem.strokeWidth = u
+      stem.locked = true
+      layer.addChild(stem)
+    }
+  }
+
+  const width = byId.get('width')
+  const from = byId.get('from')
+  const to = byId.get('to')
+  if (width && from && to) {
+    const mid = at({ x: (from.at.x + to.at.x) / 2, y: (from.at.y + to.at.y) / 2 })
+    const stem = new scope.Path.Line(mid, at(width.at))
+    stem.strokeColor = blue
+    stem.strokeWidth = u
+    stem.dashArray = [3 * u, 3 * u]
+    stem.locked = true
+    layer.addChild(stem)
+  }
+
+  for (const handle of handles) {
+    const hot = handle.id === hoverId
+    const p = at(handle.at)
+    let shape: paper.Path
+    if (handle.kind === 'resize' || handle.kind === 'scale') {
+      const size = (hot ? 9 : 7.5) * u
+      shape = new scope.Path.Rectangle({ point: [p.x - size / 2, p.y - size / 2], size: [size, size] })
+      shape.fillColor = white
+    } else if (handle.kind === 'radius') {
+      shape = new scope.Path.Circle(p, (hot ? 5.5 : 4.5) * u)
+      shape.fillColor = blue
+    } else if (handle.kind === 'endpoint') {
+      shape = new scope.Path.Circle(p, (hot ? 6 : 5) * u)
+      shape.fillColor = white
+    } else {
+      shape = new scope.Path.Circle(p, (hot ? 5 : 4) * u)
+      shape.fillColor = white
+    }
+    shape.strokeColor = handle.kind === 'radius' ? white : blue
+    shape.strokeWidth = 1.5 * u
+    shape.locked = true
+    layer.addChild(shape)
+  }
 }

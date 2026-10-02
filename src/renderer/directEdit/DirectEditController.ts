@@ -6,20 +6,28 @@ import {
   translatePath,
   type EditablePath,
 } from '../../engine/path/editPath.ts'
-import { translateCarve } from '../../engine/carve/edit.ts'
+import {
+  carveHandles,
+  DEFAULT_HANDLE_LAYOUT,
+  dragCarveHandle,
+  translateCarve,
+  type CarveHandle,
+  type HandleLayout,
+} from '../../engine/carve/edit.ts'
 import { carveOutline } from '../../engine/carve/outline.ts'
-import type { CarveSpec } from '../../engine/carve/spec.ts'
+import { bentEdgeCount, isGroove, type CarveSpec } from '../../engine/carve/spec.ts'
 import { bakedEditablePath } from '../../engine/illustrator/layerPath.ts'
 import { createComposeSession } from '../../engine/illustrator/composeSession.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
 import type { LayerEditCommit } from '../../store/logoStore.ts'
 import { getInkItem, setInkPathData, setSurvivalVisible } from '../IllustratorRenderer.ts'
 import { carriedCuts } from './carry.ts'
-import { CURSORS } from './cursors.ts'
+import { CURSORS, resizeCursor } from './cursors.ts'
 import { hud } from './hud.ts'
 import { EMPTY_ZONE, findZone, zoneKey, type HitContext, type Zone } from './hitZones.ts'
 import { canvasOwnsArrowKeys, registerEditorKeys, setEditorInteracting } from './keyboard.ts'
-import { drawAnchors, outlineItem, outlinePathData, resetOverlay } from './overlay.ts'
+import { drawAnchors, drawCarveHandles, outlineItem, outlinePathData, resetOverlay, setOverlayScale } from './overlay.ts'
+import { unitsPerCssPixel } from '../viewFit.ts'
 
 export interface Modifiers {
   shift: boolean
@@ -66,6 +74,53 @@ interface MovePlan {
   drawOverlay(layer: paper.Layer): void
 }
 
+/** The same recipe with every bend removed: drawn dashed behind a bent shape. */
+function unbent(spec: CarveSpec): CarveSpec {
+  if (isGroove(spec)) {
+    const next = { ...spec }
+    delete next.bend
+    return next
+  }
+  const next = { ...spec }
+  delete next.sides
+  delete next.corners
+  return next
+}
+
+const r0 = (v: number) => Math.round(v)
+
+/** The number that matters while dragging a handle, shown next to the pointer. */
+function handleReadout(spec: CarveSpec, handle: CarveHandle): string {
+  if (spec.kind === 'slab') {
+    if (handle.kind === 'radius') return `corner ${r0(Math.min(spec.radius, spec.width / 2, spec.height / 2))}`
+    if (handle.kind === 'rotate') return `${r0(spec.rotation)}°`
+    return `${r0(spec.width)} × ${r0(spec.height)}`
+  }
+  if (spec.kind === 'punch') {
+    if (handle.kind === 'rotate') return `${r0(spec.rotation)}°`
+    return `${r0(spec.radius * 2)} across`
+  }
+  if (handle.kind === 'width') return `${r0(spec.width)} wide`
+  const len = Math.hypot(spec.to.x - spec.from.x, spec.to.y - spec.from.y)
+  const angle = (Math.atan2(spec.to.y - spec.from.y, spec.to.x - spec.from.x) * 180) / Math.PI
+  return `${r0(len)} long · ${r0(angle)}°`
+}
+
+function handleLabel(handle: CarveHandle): string {
+  switch (handle.kind) {
+    case 'radius':
+      return 'Round corners'
+    case 'rotate':
+      return 'Rotate'
+    case 'endpoint':
+      return 'Move end'
+    case 'width':
+      return 'Change width'
+    default:
+      return 'Resize'
+  }
+}
+
 const DOUBLE_CLICK_MS = 300
 const DOUBLE_CLICK_PX = 6
 const NUDGE_COMMIT_MS = 450
@@ -109,6 +164,11 @@ export class DirectEditController {
 
   get isInteracting(): boolean {
     return this.session !== null
+  }
+
+  /** The canvas changed size on screen: redraw handles at their constant on-screen size. */
+  refresh(): void {
+    this.drawOverlay()
   }
 
   destroy(): void {
@@ -226,12 +286,34 @@ export class DirectEditController {
     return this.freeCache
   }
 
+  /** Layer units per CSS pixel, for sizes and tolerances that stay constant on screen. */
+  private unitsPerPx(): number {
+    return unitsPerCssPixel(this.scope)
+  }
+
+  private handleLayout(): HandleLayout {
+    const u = this.unitsPerPx()
+    return {
+      pad: DEFAULT_HANDLE_LAYOUT.pad * u,
+      rotateOffset: DEFAULT_HANDLE_LAYOUT.rotateOffset * u,
+      minEdgeHandleSize: DEFAULT_HANDLE_LAYOUT.minEdgeHandleSize * u,
+    }
+  }
+
+  /** The single selected recipe layer, if any: it gets handles. */
+  private selectedRecipe(doc: IllustratorDocument, selectedIds: string[]): IllustratorLayer | null {
+    if (selectedIds.length !== 1) return null
+    const layer = doc.layers.find((candidate) => candidate.id === selectedIds[0])
+    return layer && layer.carve && layer.visible && !layer.locked ? layer : null
+  }
+
   private context(touch: boolean): HitContext | null {
     const doc = this.host.getDoc()
     if (!doc) return null
     const ids = new Set(doc.layers.map((layer) => layer.id))
     const selectedIds = doc.selectedLayerIds.filter((id) => ids.has(id))
     const freePath = this.selectedFreePath(doc, selectedIds)
+    const recipe = this.selectedRecipe(doc, selectedIds)
     const anchorIndex =
       freePath && doc.pointSelection && doc.pointSelection.layerId === freePath.layerId
         ? doc.pointSelection.segmentIndex
@@ -245,8 +327,8 @@ export class DirectEditController {
       selectedIds,
       freePath,
       anchorIndex,
-      handles: null,
-      unitsPerPx: 1 / this.scope.view.zoom,
+      handles: recipe ? { layerId: recipe.id, list: carveHandles(recipe.carve!, this.handleLayout()) } : null,
+      unitsPerPx: this.unitsPerPx(),
       touch,
       edges: false,
     }
@@ -268,6 +350,10 @@ export class DirectEditController {
 
   private cursorFor(zone: Zone): string {
     switch (zone.kind) {
+      case 'handle':
+        if (zone.handle.kind === 'rotate') return CURSORS.rotate
+        if (zone.handle.kind === 'radius' || zone.handle.kind === 'endpoint') return CURSORS.point
+        return resizeCursor(zone.handle.axisDeg)
       case 'body':
         return CURSORS.move
       case 'anchor':
@@ -328,6 +414,8 @@ export class DirectEditController {
   private startSession(press: Press, mods: Modifiers): Session | null {
     const zone = press.zone
     switch (zone.kind) {
+      case 'handle':
+        return this.handleSession(press, zone.layerId, zone.handle)
       case 'body':
         return this.moveSession(press, zone.layerId, mods)
       case 'anchor':
@@ -453,6 +541,65 @@ export class DirectEditController {
     }
   }
 
+  private handleSession(press: Press, layerId: string, handle: CarveHandle): Session | null {
+    const doc = this.host.getDoc()
+    const layer = this.layer(layerId)
+    if (!doc || !layer?.carve) return null
+    const start = layer.carve
+    const compose = createComposeSession(doc, [layerId])
+    const center = this.center()
+    const startLocal = sub(press.point, center)
+    let current = start
+    return {
+      editedIds: new Set([layerId]),
+      update: (p, mods) => {
+        current = dragCarveHandle(start, handle.id, startLocal, sub(p, center), mods)
+        setInkPathData(this.scope, compose.compose(new Map([[layerId, carveOutline(current).pathData]])))
+        hud.set({ chip: handleReadout(current, handle) })
+        this.drawOverlay()
+      },
+      commit: () => {
+        if (current === start) return
+        this.host.commitLayerEdits({ label: handleLabel(handle), edits: [{ layerId, carve: current }], select: [layerId] })
+      },
+      cancel: () => setInkPathData(this.scope, this.host.getInkPathData()),
+      drawOverlay: (overlay) => this.drawRecipe(overlay, current, handle.id),
+    }
+  }
+
+  /** Outline, unbent ghost (if bent) and handles of a recipe being shown or edited. */
+  private drawRecipe(overlay: paper.Layer, spec: CarveSpec, hotHandle: string | null, outline = true) {
+    const center = this.center()
+    this.scope.activate()
+    overlay.activate()
+    if (bentEdgeCount(spec)) {
+      outlinePathData(this.scope, overlay, carveOutline(unbent(spec)).pathData, center, { dashed: true, width: 1, opacity: 0.6 })
+    }
+    if (outline) outlinePathData(this.scope, overlay, carveOutline(spec).pathData, center)
+    drawCarveHandles(this.scope, overlay, carveHandles(spec, this.handleLayout()), center, hotHandle)
+  }
+
+  /** While a tool is active: is the pointer over a handle of the selected cut? */
+  handleAt(p: Vec, touch: boolean): boolean {
+    if (!this.host.isEnabled()) return false
+    const ctx = this.context(touch)
+    return Boolean(ctx && findZone(ctx, p).kind === 'handle')
+  }
+
+  /** Hover while a tool is active: only handles react. Returns the cursor to show, if any. */
+  toolHover(p: Vec, touch: boolean): string | null {
+    if (!this.host.isEnabled()) return null
+    const ctx = this.context(touch)
+    if (!ctx) return null
+    const zone = findZone(ctx, p)
+    const hot = zone.kind === 'handle' ? zone : EMPTY_ZONE
+    if (zoneKey(hot) !== zoneKey(this.hover)) {
+      this.hover = hot
+      this.drawOverlay()
+    }
+    return zone.kind === 'handle' ? this.cursorFor(zone) : null
+  }
+
   private pointSession(
     press: Press,
     layerId: string,
@@ -498,6 +645,7 @@ export class DirectEditController {
   private drawOverlay(): void {
     if (this.destroyed) return
     const doc = this.host.getDoc()
+    setOverlayScale(this.unitsPerPx())
     const layer = resetOverlay(this.scope)
     if (!doc || !this.host.isEnabled()) {
       this.scope.view.update()
@@ -521,6 +669,10 @@ export class DirectEditController {
     if (editing) {
       editing.drawOverlay(layer)
     } else {
+      const recipe = this.selectedRecipe(doc, selected)
+      if (recipe?.carve) {
+        this.drawRecipe(layer, recipe.carve, this.hover.kind === 'handle' ? this.hover.handle.id : null, false)
+      }
       const free = this.selectedFreePath(doc, selected)
       if (free) {
         const anchorIndex = doc.pointSelection?.layerId === free.layerId ? doc.pointSelection.segmentIndex : null
