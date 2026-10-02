@@ -3,13 +3,13 @@ import { useLogoStore } from '../../store/logoStore.ts'
 import { useExport } from '../../hooks/useExport.ts'
 import { serializeMarkToSVG } from './markSerializer.ts'
 import { cn } from '../../lib/utils.ts'
-import { useActiveMark } from '../../hooks/useActiveMark.ts'
+import { useFinishedMark } from '../../hooks/useActiveMark.ts'
 import { DissolutionProcessor } from '../../engine/effects/dissolution.ts'
 
 export function ExportTile() {
   const fillColor = useLogoStore((s) => s.params.fillColor)
   const effectParams = useLogoStore((s) => s.effectParams)
-  const activeMark = useActiveMark()
+  const activeMark = useFinishedMark()
   const { exportPNG, canExport } = useExport()
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
 

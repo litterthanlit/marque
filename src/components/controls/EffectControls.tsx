@@ -2,6 +2,8 @@ import { useLogoStore } from '../../store/logoStore.ts'
 import { SliderControl } from './SliderControl.tsx'
 import { cn } from '../../lib/utils.ts'
 
+const focusRing = 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised'
+
 export function EffectControls() {
   const dissolution = useLogoStore((s) => s.effectParams.dissolution)
   const toggleDissolution = useLogoStore((s) => s.toggleDissolution)
@@ -9,18 +11,9 @@ export function EffectControls() {
 
   return (
     <div className="flex flex-col gap-2">
-      <button
-        type="button"
-        onClick={toggleDissolution}
-        className={cn(
-          'flex items-center justify-between h-7 px-2.5 rounded-md text-xs',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
-          dissolution.enabled ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring' : 'bg-interactive-active text-sidebar-text hover:bg-interactive-hover',
-        )}
-      >
-        <span>Dissolution</span>
-        <span className={cn('size-1.5 rounded-full', dissolution.enabled ? 'bg-emerald-500' : 'bg-sidebar-muted')} />
-      </button>
+      <ImperfectionControls />
+
+      <EffectToggle label="Dissolution" enabled={dissolution.enabled} onToggle={toggleDissolution} />
 
       {dissolution.enabled && (
         <div className="flex flex-col gap-2 pl-1">
@@ -32,6 +25,66 @@ export function EffectControls() {
         </div>
       )}
     </div>
+  )
+}
+
+/** Imperfection: the mark redrawn by hand. Shared by Generate and Vector Maker. */
+export function ImperfectionControls() {
+  const imperfection = useLogoStore((s) => s.effectParams.imperfection)
+  const toggleImperfection = useLogoStore((s) => s.toggleImperfection)
+  const setImperfectionParams = useLogoStore((s) => s.setImperfectionParams)
+
+  return (
+    <div className="flex flex-col gap-2">
+      <EffectToggle label="Imperfection" enabled={imperfection.enabled} onToggle={toggleImperfection} />
+
+      {imperfection.enabled && (
+        <div className="flex flex-col gap-2 pl-1" role="group" aria-label="Imperfection settings">
+          <SliderControl label="Wobble" value={imperfection.wobble} min={0} max={1} step={0.01} onChange={(v) => setImperfectionParams({ wobble: v })} />
+          <SliderControl label="Grain" value={imperfection.grain} min={0} max={1} step={0.01} onChange={(v) => setImperfectionParams({ grain: v })} />
+          <SliderControl label="Ink Spread" value={imperfection.soften} min={0} max={1} step={0.01} onChange={(v) => setImperfectionParams({ soften: v })} />
+          <button
+            type="button"
+            onClick={() => setImperfectionParams({ seed: nextHandSeed(imperfection.seed) })}
+            aria-label="Redraw with a new hand"
+            title="Same settings, drawn again by a different hand"
+            className={cn(
+              'flex items-center justify-between h-7 px-2.5 rounded-md text-xs',
+              'bg-interactive-active text-sidebar-text hover:bg-interactive-hover hover:text-fg',
+              focusRing,
+            )}
+          >
+            <span>New hand</span>
+            <span className="text-[10px] text-sidebar-muted font-mono tabular-nums">#{imperfection.seed}</span>
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** A different hand every time, never the one you just had. */
+function nextHandSeed(current: number): number {
+  let seed = current
+  while (seed === current) seed = 1 + Math.floor(Math.random() * 9999)
+  return seed
+}
+
+function EffectToggle({ label, enabled, onToggle }: { label: string; enabled: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={enabled}
+      className={cn(
+        'flex items-center justify-between h-7 px-2.5 rounded-md text-xs',
+        focusRing,
+        enabled ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring' : 'bg-interactive-active text-sidebar-text hover:bg-interactive-hover',
+      )}
+    >
+      <span>{label}</span>
+      <span aria-hidden="true" className={cn('size-1.5 rounded-full', enabled ? 'bg-emerald-500' : 'bg-sidebar-muted')} />
+    </button>
   )
 }
 

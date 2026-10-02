@@ -395,28 +395,15 @@ test('a reload from the link keeps recipes, and their handles still work', async
   expect(Math.abs(((await carves(page))[0] as SlabSpec).width - (slab.width + 30))).toBeLessThanOrEqual(1)
 })
 
-test('Copy SVG and the canvas show the same mark', async ({ page, context }) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
-  await openVectorMaker(page)
-  await startOver(page)
-  await addSlab(page, 'Rounded')
-  const f = await frame(page)
-  await pickTool(page, 'Channel')
-  await drag(page, f.at(-150, 40), f.at(150, 40))
-  await pickTool(page, 'Punch')
-  await drag(page, f.at(0, -90), f.at(40, -90))
-  await page.keyboard.press('Escape')
-  await page.keyboard.press('Escape')
-  await pointerAway(page, f)
-
+async function copySvgPath(page: Page): Promise<string | undefined> {
   await page.getByRole('button', { name: 'Copy SVG' }).click()
   const svg = await page.evaluate(() => navigator.clipboard.readText())
-  const copied = /\sd="([^"]+)"/.exec(svg)?.[1]
-  expect(copied).toBeTruthy()
-  expect(copied).toBe(await page.evaluate(() => window.__marque.mark()?.compoundPathData))
+  return /\sd="([^"]+)"/.exec(svg)?.[1]
+}
 
-  // Sample the canvas on a grid and compare with the copied path, away from its edges.
-  const mismatches = await page.evaluate((d) => {
+/** Sample the canvas on a grid and compare with a path, away from its edges. */
+function canvasMismatches(page: Page, d: string) {
+  return page.evaluate((d) => {
     const canvas = document.querySelector('main canvas') as HTMLCanvasElement
     const ctx = canvas.getContext('2d')!
     const path = new Path2D(d)
@@ -442,7 +429,55 @@ test('Copy SVG and the canvas show the same mark', async ({ page, context }) => 
       }
     }
     return { bad, checked }
-  }, copied!)
+  }, d)
+}
+
+test('Copy SVG and the canvas show the same mark', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await openVectorMaker(page)
+  await startOver(page)
+  await addSlab(page, 'Rounded')
+  const f = await frame(page)
+  await pickTool(page, 'Channel')
+  await drag(page, f.at(-150, 40), f.at(150, 40))
+  await pickTool(page, 'Punch')
+  await drag(page, f.at(0, -90), f.at(40, -90))
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+  await pointerAway(page, f)
+
+  const copied = await copySvgPath(page)
+  expect(copied).toBeTruthy()
+  expect(copied).toBe(await page.evaluate(() => window.__marque.mark()?.compoundPathData))
+
+  const mismatches = await canvasMismatches(page, copied!)
   expect(mismatches.checked).toBeGreaterThan(500)
   expect(mismatches.bad).toBe(0)
+})
+
+test('imperfection redraws the mark by hand, and the export is what the canvas shows', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await openVectorMaker(page)
+  await startOver(page)
+  await addSlab(page, 'Rounded')
+  const f = await frame(page)
+  await pickTool(page, 'Punch')
+  await drag(page, f.at(0, -60), f.at(50, -60))
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+  await pointerAway(page, f)
+  const clean = await page.evaluate(() => window.__marque.mark()?.compoundPathData)
+
+  const toggle = (panel: Locator) => panel.getByRole('button', { name: 'Imperfection', exact: true }).click()
+  await withPanel(page, toggle)
+  const handmade = await copySvgPath(page)
+  expect(handmade).toBeTruthy()
+  expect(handmade).not.toBe(clean)
+  const mismatches = await canvasMismatches(page, handmade!)
+  expect(mismatches.checked).toBeGreaterThan(500)
+  expect(mismatches.bad).toBe(0)
+  await expect.poll(() => page.evaluate(() => window.location.hash)).toContain('e.hand=1')
+
+  await withPanel(page, toggle)
+  expect(await copySvgPath(page)).toBe(clean)
 })

@@ -43,6 +43,27 @@ export const DEFAULT_DISSOLUTION_PARAMS: DissolutionParams = {
   sizeVariation: 0.3,
 }
 
+/**
+ * Imperfection: redraws the mark's outline as if it were cut or printed by
+ * hand. Amounts are 0-1 and scale with the mark's size.
+ */
+export interface ImperfectionParams {
+  enabled: boolean
+  wobble: number          // 0-1: slow drift of the hand along each edge
+  grain: number           // 0-1: fine ragged edge, like ink on paper
+  soften: number          // 0-1: ink spread that rounds sharp corners
+  seed: number            // which "hand": same seed, same drawing
+}
+
+export const DEFAULT_IMPERFECTION_PARAMS: ImperfectionParams = {
+  enabled: false,
+  wobble: 0.6,
+  grain: 0.4,
+  soften: 0.45,
+  seed: 1,
+}
+
 export type EffectParamsMap = {
   dissolution: DissolutionParams
+  imperfection: ImperfectionParams
 }

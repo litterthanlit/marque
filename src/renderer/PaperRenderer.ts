@@ -1,6 +1,7 @@
 import type { GenerationResult } from '../engine/types.ts'
 import type { DissolutionResult } from '../engine/effects/types.ts'
 import type { DrawnShape } from '../store/logoStore.ts'
+import type { MarkData } from '../engine/illustrator/types.ts'
 import { renderConstruction } from './ConstructionView.ts'
 import { renderFinalMark, renderDissolution, renderIndividualShapes } from './FinalView.ts'
 import { createPrimitivePath, type PrimitiveType } from '../engine/primitives/index.ts'
@@ -11,6 +12,8 @@ interface RenderOptions {
   showConstruction: boolean
   fillColor: string
   dissolution?: DissolutionResult | null
+  /** Draw this mark instead of the generated one (e.g. its handmade version). */
+  mark?: MarkData | null
   drawnShapes?: DrawnShape[]
   editMode?: boolean
 }
@@ -50,7 +53,7 @@ export function renderLogoOnScope(
   } else if (options.dissolution) {
     renderDissolution(scope, options.dissolution, center, options.fillColor)
   } else {
-    renderFinalMark(scope, result, center, options.fillColor)
+    renderFinalMark(scope, options.mark ? { ...result, mark: { ...result.mark, ...options.mark } } : result, center, options.fillColor)
   }
 
   // Draw user-placed shapes on top

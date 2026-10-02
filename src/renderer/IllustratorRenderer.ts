@@ -89,12 +89,26 @@ export function renderIllustratorOnScope(
   return itemMap
 }
 
+const inkFilters = new WeakMap<paper.PaperScope, (pathData: string) => string>()
+
+/**
+ * A look applied to every live frame of the ink (imperfection), so drags and
+ * carves preview the mark as it will render. Pass null to draw the ink as is.
+ */
+export function setInkFilter(scope: paper.PaperScope, filter: ((pathData: string) => string) | null): void {
+  if (filter) inkFilters.set(scope, filter)
+  else inkFilters.delete(scope)
+}
+
 /** Replace the drawn ink (layer-space path data) without a full re-render. */
 export function setInkPathData(scope: paper.PaperScope, pathData: string): void {
+  const filter = inkFilters.get(scope)
+  // The filter may use its own headless scope: run it before activating ours.
+  const shown = filter ? filter(pathData) : pathData
   scope.activate()
   const ink = scope.project.getItem({ name: INK_ITEM_NAME }) as paper.CompoundPath | null
   if (!ink) return
-  ink.pathData = pathData
+  ink.pathData = shown
   ink.translate(scope.view.center)
   scope.view.update()
 }

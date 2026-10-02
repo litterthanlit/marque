@@ -8,6 +8,8 @@ export function Toolbar() {
   const hasResult = useLogoStore((s) => Boolean(s.result))
   const dissolutionEnabled = useLogoStore((s) => s.effectParams.dissolution.enabled)
   const toggleDissolution = useLogoStore((s) => s.toggleDissolution)
+  const imperfectionEnabled = useLogoStore((s) => s.effectParams.imperfection.enabled)
+  const toggleImperfection = useLogoStore((s) => s.toggleImperfection)
   const activeSurface = useLogoStore((s) => s.activeSurface)
   const undoVectorCommand = useLogoStore((s) => s.undoVectorCommand)
   const redoVectorCommand = useLogoStore((s) => s.redoVectorCommand)
@@ -82,6 +84,16 @@ export function Toolbar() {
             <RedoIcon />
           </ToolbarButton>
           <div className="hidden sm:block w-px h-3.5 bg-border mx-1" />
+          {imperfectionEnabled && (
+            <ToolbarButton
+              onClick={toggleImperfection}
+              title="Imperfection is on: the mark is drawn and exported by hand. Click to turn it off."
+              className="text-amber-300 bg-amber-500/10 hover:bg-amber-500/15 hover:text-amber-200"
+            >
+              <span className="lg:hidden">Hand</span>
+              <span className="hidden lg:inline">Handmade</span>
+            </ToolbarButton>
+          )}
           {dissolutionEnabled && (
             <ToolbarButton
               onClick={toggleDissolution}

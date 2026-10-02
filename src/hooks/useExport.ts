@@ -2,7 +2,7 @@ import { useLogoStore } from '../store/logoStore.ts'
 import { getGenerator } from '../engine/generators/registry.ts'
 import { DissolutionProcessor } from '../engine/effects/dissolution.ts'
 import type { DissolutionResult } from '../engine/effects/types.ts'
-import { useActiveMark } from './useActiveMark.ts'
+import { useFinishedMark } from './useActiveMark.ts'
 
 export type ArtboardMode = 'tight' | 'square'
 export type PaddingMode = 'none' | 'compact' | 'presentation'
@@ -55,7 +55,7 @@ function downloadBlob(blob: Blob, filename: string) {
 export function useExport(dissolution?: DissolutionResult | null) {
   const params = useLogoStore((s) => s.params)
   const effectParams = useLogoStore((s) => s.effectParams)
-  const activeMark = useActiveMark()
+  const activeMark = useFinishedMark()
   const generator = getGenerator(params.generatorId)
   const filenameBase = `logo-${params.seed}-${params.modeId}-${generator?.version ?? 'v0'}`
 

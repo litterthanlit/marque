@@ -1,6 +1,6 @@
 import { useLogoStore } from '../../store/logoStore.ts'
 import { useSavedVariations } from '../../hooks/useSavedVariations.ts'
-import type { DissolutionParams } from '../../engine/effects/types.ts'
+import { DEFAULT_IMPERFECTION_PARAMS, type DissolutionParams } from '../../engine/effects/types.ts'
 
 export function SavedVariationsRail() {
   const params = useLogoStore((s) => s.params)
@@ -13,6 +13,7 @@ export function SavedVariationsRail() {
   const setVectorDocument = useLogoStore((s) => s.setVectorDocument)
   const setIllustratorDocument = useLogoStore((s) => s.setIllustratorDocument)
   const setEffectParam = useLogoStore((s) => s.setEffectParam)
+  const setImperfectionParams = useLogoStore((s) => s.setImperfectionParams)
   const { variations, saveVariation, removeVariation } = useSavedVariations()
 
   function restoreVariation(variation: (typeof variations)[number]) {
@@ -34,6 +35,8 @@ export function SavedVariationsRail() {
           value as DissolutionParams[keyof DissolutionParams],
         )
       }
+      // Saved before imperfection existed: those were drawn clean.
+      setImperfectionParams(variation.effectParams.imperfection ?? DEFAULT_IMPERFECTION_PARAMS)
     }
   }
 

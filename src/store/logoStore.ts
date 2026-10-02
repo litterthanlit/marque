@@ -8,8 +8,8 @@ import type {
   StyleFamily,
 } from '../engine/types.ts'
 import { DEFAULT_PARAMS } from '../engine/types.ts'
-import type { DissolutionParams, EffectParamsMap } from '../engine/effects/types.ts'
-import { DEFAULT_DISSOLUTION_PARAMS } from '../engine/effects/types.ts'
+import type { DissolutionParams, EffectParamsMap, ImperfectionParams } from '../engine/effects/types.ts'
+import { DEFAULT_DISSOLUTION_PARAMS, DEFAULT_IMPERFECTION_PARAMS } from '../engine/effects/types.ts'
 import type {
   ActiveSurface,
   IllustratorDocument,
@@ -178,6 +178,8 @@ interface LogoStore {
   toggleShape: (shape: string) => void
   setEffectParam: <K extends keyof DissolutionParams>(key: K, value: DissolutionParams[K]) => void
   toggleDissolution: () => void
+  setImperfectionParams: (updates: Partial<ImperfectionParams>) => void
+  toggleImperfection: () => void
   toggleEditMode: () => void
   selectShape: (id: string | null) => void
   updateShapeOverride: (id: string, update: Partial<ShapeOverride>) => void
@@ -255,6 +257,7 @@ export const useLogoStore = create<LogoStore>()(
       },
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
+        imperfection: { ...DEFAULT_IMPERFECTION_PARAMS },
       },
       activeSurface: 'generated',
       illustrator: null,
@@ -470,6 +473,25 @@ export const useLogoStore = create<LogoStore>()(
             dissolution: {
               ...state.effectParams.dissolution,
               enabled: !state.effectParams.dissolution.enabled,
+            },
+          },
+        })),
+
+      setImperfectionParams: (updates) =>
+        set((state) => ({
+          effectParams: {
+            ...state.effectParams,
+            imperfection: { ...state.effectParams.imperfection, ...updates },
+          },
+        })),
+
+      toggleImperfection: () =>
+        set((state) => ({
+          effectParams: {
+            ...state.effectParams,
+            imperfection: {
+              ...state.effectParams.imperfection,
+              enabled: !state.effectParams.imperfection.enabled,
             },
           },
         })),

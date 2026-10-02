@@ -1,10 +1,10 @@
 import { cn } from '../../lib/utils.ts'
 import { useLogoStore } from '../../store/logoStore.ts'
-import { useActiveMark } from '../../hooks/useActiveMark.ts'
+import { useFinishedMark } from '../../hooks/useActiveMark.ts'
 
 export function FinalMarkPreview() {
   const fillColor = useLogoStore((s) => s.params.fillColor)
-  const activeMark = useActiveMark()
+  const activeMark = useFinishedMark()
 
   const markData = activeMark?.compoundPathData
   const fillRule = activeMark?.fillRule

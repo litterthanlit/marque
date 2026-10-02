@@ -5,7 +5,7 @@ import { SeedInput } from './SeedInput.tsx'
 import { ColorPicker } from './ColorPicker.tsx'
 import { PresetSelector } from './PresetSelector.tsx'
 import { SavedVariationsRail } from './SavedVariationsRail.tsx'
-import { EffectControls } from './EffectControls.tsx'
+import { EffectControls, ImperfectionControls } from './EffectControls.tsx'
 import { getModeDefinition, listModes, STYLE_FAMILIES } from '../../store/modes.ts'
 import { cn } from '../../lib/utils.ts'
 import { useLocalStoragePref } from '../../hooks/useLocalStoragePref.ts'
@@ -15,7 +15,7 @@ import type { MarkData } from '../../engine/illustrator/types.ts'
 import { PUNCH_SHAPES, SLAB_KINDS } from '../../engine/carve/geometry.ts'
 import { describeCarve } from '../../engine/carve/spec.ts'
 import { checkSurvival, SURVIVAL_SIZES } from '../../engine/carve/survival.ts'
-import { useActiveMark } from '../../hooks/useActiveMark.ts'
+import { useFinishedMark } from '../../hooks/useActiveMark.ts'
 
 type Tab = 'generate' | 'illustrator'
 
@@ -803,6 +803,10 @@ function IllustratorTab() {
           )}
 
           <SurvivalCheck />
+          <div className="flex flex-col gap-2 border-t border-border pt-3">
+            <div className="text-[10px] uppercase tracking-widest text-sidebar-muted">Finish</div>
+            <ImperfectionControls />
+          </div>
         </>
       )}
     </div>
@@ -923,7 +927,7 @@ function SurvivalCheck() {
   const carve = useLogoStore((s) => s.ui.carve)
   const setCarveSettings = useLogoStore((s) => s.setCarveSettings)
   const fillColor = useLogoStore((s) => s.params.fillColor)
-  const mark = useActiveMark()
+  const mark = useFinishedMark()
   const survival = useMemo(() => checkSurvival(mark, carve.survivalSize), [mark, carve.survivalSize])
   const percent = survival ? Math.max(1, Math.round(survival.weakRatio * 100)) : 0
   const weak = Boolean(survival && survival.weakRatio > 0)

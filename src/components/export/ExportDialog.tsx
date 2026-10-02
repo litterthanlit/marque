@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { useExport } from '../../hooks/useExport.ts'
+import { useLogoStore } from '../../store/logoStore.ts'
 import { cn } from '../../lib/utils.ts'
 
 interface ExportDialogProps {
@@ -9,6 +10,7 @@ interface ExportDialogProps {
 
 export function ExportDialog({ open, onClose }: ExportDialogProps) {
   const { exportSVG, exportPNG, canExport, hasDissolution } = useExport()
+  const hasImperfection = useLogoStore((s) => s.effectParams.imperfection.enabled)
   const [pngScale, setPngScale] = useState(2)
   const [artboardMode, setArtboardMode] = useState<'tight' | 'square'>('tight')
   const [paddingMode, setPaddingMode] = useState<'none' | 'compact' | 'presentation'>('compact')
@@ -47,9 +49,13 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
             <SelectField label="Padding" value={paddingMode} onChange={(v) => setPaddingMode(v as 'none' | 'compact' | 'presentation')} options={[['none', 'None'], ['compact', 'Compact'], ['presentation', 'Presentation']]} />
           </div>
 
-          {hasDissolution && (
+          {(hasDissolution || hasImperfection) && (
             <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-              Dissolution effect included in export
+              {hasDissolution && hasImperfection
+                ? 'Imperfection and dissolution included in export'
+                : hasImperfection
+                  ? 'Handmade imperfection included in export'
+                  : 'Dissolution effect included in export'}
             </div>
           )}
 

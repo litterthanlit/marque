@@ -13,8 +13,8 @@ import {
   normalizeInitials,
   STYLE_FAMILIES,
 } from '../store/modes.ts'
-import { DEFAULT_DISSOLUTION_PARAMS } from '../engine/effects/types.ts'
-import type { DissolutionParams } from '../engine/effects/types.ts'
+import { DEFAULT_DISSOLUTION_PARAMS, DEFAULT_IMPERFECTION_PARAMS } from '../engine/effects/types.ts'
+import type { DissolutionParams, ImperfectionParams } from '../engine/effects/types.ts'
 import type { EffectParamsMap } from '../engine/effects/types.ts'
 import type { ActiveSurface, IllustratorDocument } from '../engine/illustrator/types.ts'
 import type { VectorDocument } from '../engine/vector/types.ts'
@@ -61,6 +61,7 @@ export function useUrlState() {
   const setError = useLogoStore((s) => s.setError)
   const effectParams = useLogoStore((s) => s.effectParams)
   const setEffectParam = useLogoStore((s) => s.setEffectParam)
+  const setImperfectionParams = useLogoStore((s) => s.setImperfectionParams)
   const activeSurface = useLogoStore((s) => s.activeSurface)
   const setActiveSurface = useLogoStore((s) => s.setActiveSurface)
   const illustrator = useLogoStore((s) => s.illustrator)
@@ -85,6 +86,9 @@ export function useUrlState() {
         setEffectParam(key as keyof DissolutionParams, value as DissolutionParams[keyof DissolutionParams])
       }
     }
+    if (decoded.imperfection) {
+      setImperfectionParams(decoded.imperfection)
+    }
     if (decoded.vectorDocument) {
       setVectorDocument(decoded.vectorDocument)
     } else if (decoded.illustrator) {
@@ -93,7 +97,7 @@ export function useUrlState() {
     if (decoded.activeSurface) {
       setActiveSurface(decoded.activeSurface)
     }
-  }, [setActiveSurface, setError, setIllustratorDocument, setParams, setEffectParam, setVectorDocument])
+  }, [setActiveSurface, setError, setIllustratorDocument, setParams, setEffectParam, setImperfectionParams, setVectorDocument])
 
   // What the link was last written from; selection changes alone don't rewrite it.
   const writtenFrom = useRef<unknown[] | null>(null)
@@ -204,6 +208,16 @@ function encodeParams(
     if (dp.sizeVariation !== dd.sizeVariation) searchParams.set('e.sizeVariation', String(dp.sizeVariation))
   }
 
+  if (effectParams.imperfection.enabled) {
+    searchParams.set('e.hand', '1')
+    const ip = effectParams.imperfection
+    const id = DEFAULT_IMPERFECTION_PARAMS
+    if (ip.wobble !== id.wobble) searchParams.set('e.wobble', String(ip.wobble))
+    if (ip.grain !== id.grain) searchParams.set('e.grain', String(ip.grain))
+    if (ip.soften !== id.soften) searchParams.set('e.soften', String(ip.soften))
+    if (ip.seed !== id.seed) searchParams.set('e.handSeed', String(ip.seed))
+  }
+
   if (activeSurface !== 'generated' || vectorDocument || illustrator) {
     searchParams.set('surface', activeSurface)
   }
@@ -220,6 +234,7 @@ function encodeParams(
 interface DecodedUrlState {
   params: Partial<LogoParams> | null
   effectParams: Partial<DissolutionParams> | null
+  imperfection: Partial<ImperfectionParams> | null
   activeSurface: ActiveSurface | null
   vectorDocument: VectorDocument | null
   illustrator: IllustratorDocument | null
@@ -233,6 +248,7 @@ function decodeParams(
     return {
       params: null,
       effectParams: null,
+      imperfection: null,
       activeSurface: null,
       vectorDocument: null,
       illustrator: null,
@@ -246,6 +262,7 @@ function decodeParams(
     return {
       params: null,
       effectParams: null,
+      imperfection: null,
       activeSurface: null,
       vectorDocument: null,
       illustrator: null,
@@ -272,6 +289,7 @@ function decodeParamsInner(
     return {
       params: null,
       effectParams: null,
+      imperfection: null,
       activeSurface: null,
       vectorDocument: null,
       illustrator: null,
@@ -395,6 +413,19 @@ function decodeParamsInner(
     if (Number.isFinite(sizeVariation)) effectUpdates.sizeVariation = clampNumber(sizeVariation, 0, 1)
   }
 
+  const imperfectionUpdates: Partial<ImperfectionParams> = {}
+  if (searchParams.get('e.hand') === '1') {
+    imperfectionUpdates.enabled = true
+    const wobble = Number(searchParams.get('e.wobble'))
+    if (searchParams.has('e.wobble') && Number.isFinite(wobble)) imperfectionUpdates.wobble = clampNumber(wobble, 0, 1)
+    const grain = Number(searchParams.get('e.grain'))
+    if (searchParams.has('e.grain') && Number.isFinite(grain)) imperfectionUpdates.grain = clampNumber(grain, 0, 1)
+    const soften = Number(searchParams.get('e.soften'))
+    if (searchParams.has('e.soften') && Number.isFinite(soften)) imperfectionUpdates.soften = clampNumber(soften, 0, 1)
+    const seed = Number(searchParams.get('e.handSeed'))
+    if (searchParams.has('e.handSeed') && Number.isInteger(seed)) imperfectionUpdates.seed = clampNumber(seed, 0, 99999)
+  }
+
   const rawSurface = searchParams.get('surface')
   const decodedVectorDocument = decodeVectorDocument(searchParams.get('vd'))
   const decodedIllustrator = decodeIllustrator(searchParams.get('i'))
@@ -408,6 +439,7 @@ function decodeParamsInner(
   return {
     params: sanitized,
     effectParams: Object.keys(effectUpdates).length > 0 ? effectUpdates : null,
+    imperfection: imperfectionUpdates.enabled ? imperfectionUpdates : null,
     activeSurface: decodedSurface,
     vectorDocument: decodedVectorDocument,
     illustrator: decodedIllustrator,

@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { usePaperScope } from '../../renderer/usePaperScope.ts'
 import { renderLogoOnScope } from '../../renderer/PaperRenderer.ts'
-import { renderIllustratorOnScope, setInkPathData } from '../../renderer/IllustratorRenderer.ts'
+import { renderIllustratorOnScope, setInkFilter, setInkPathData } from '../../renderer/IllustratorRenderer.ts'
 import { CarveTool } from '../../renderer/tools/CarveTool.ts'
 import { DirectEditController, type Modifiers } from '../../renderer/directEdit/DirectEditController.ts'
 import { registerEditorKeys } from '../../renderer/directEdit/keyboard.ts'
@@ -18,13 +18,14 @@ import { PenTool } from '../../renderer/tools/PenTool.ts'
 import { GraffitiTool } from '../../renderer/tools/GraffitiTool.ts'
 import { ShapeBuilderTool } from '../../renderer/tools/ShapeBuilderTool.ts'
 import { DissolutionProcessor } from '../../engine/effects/dissolution.ts'
+import { imperfectPathData, isImperfectionActive } from '../../engine/effects/imperfection.ts'
 import { useAnimation } from '../../hooks/useAnimation.ts'
 import { AnimationControls } from './AnimationControls.tsx'
 import { CanvasHud } from './CanvasHud.tsx'
 import { canvasPixelRatio, fitView, STILL, visibleUnits, type ViewMotion } from '../../renderer/viewFit.ts'
 import type { AnimationKeyframe } from '../../engine/animation/types.ts'
 import type { DrawnPath } from '../../store/logoStore.ts'
-import { useActiveMark } from '../../hooks/useActiveMark.ts'
+import { useFinishedMark } from '../../hooks/useActiveMark.ts'
 
 type Tool = PencilTool | PenTool | GraffitiTool | ShapeBuilderTool | CarveTool
 
@@ -61,8 +62,11 @@ export function LogoCanvas() {
   const addPenShape = useLogoStore((s) => s.addPenShape)
   const setActiveTool = useLogoStore((s) => s.setActiveTool)
   const setViewport = useLogoStore((s) => s.setViewport)
-  const activeMark = useActiveMark()
+  // What the canvas shows: handmade when imperfection is on. Editing works on the clean geometry.
+  const activeMark = useFinishedMark()
   const inVectorMaker = activeSurface === 'illustrator'
+  const imperfection = effectParams.imperfection
+  const imperfectionOn = isImperfectionActive(imperfection)
 
   const dissolution = useMemo(() => {
     if (!activeMark || !effectParams.dissolution.enabled) return null
@@ -117,6 +121,14 @@ export function LogoCanvas() {
       media?.removeEventListener('change', onPixelRatio)
     }
   }, [applyView, setViewport])
+
+  // Live frames of the ink (drags, carves) get the same handmade look as the committed mark.
+  useEffect(() => {
+    const scope = scopeRef.current
+    if (!scope) return
+    setInkFilter(scope, imperfectionOn ? (pathData) => imperfectPathData(pathData, imperfection) : null)
+    return () => setInkFilter(scope, null)
+  }, [imperfection, imperfectionOn, scopeRef])
 
   // Switching tabs stops (or resumes) the animation's motion.
   useEffect(() => {
@@ -181,6 +193,7 @@ export function LogoCanvas() {
       showConstruction: ui.showConstruction,
       fillColor: params.fillColor,
       dissolution,
+      mark: imperfectionOn ? activeMark : null,
       drawnShapes: ui.drawnShapes,
       editMode: ui.editMode,
     })
@@ -226,6 +239,7 @@ export function LogoCanvas() {
     ui.viewport,
     params.fillColor,
     dissolution,
+    imperfectionOn,
     scopeRef,
     selectShape,
     updateShapeOverride,
