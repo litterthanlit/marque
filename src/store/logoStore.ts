@@ -14,10 +14,10 @@ import type {
   ActiveSurface,
   IllustratorDocument,
   IllustratorLayer,
-  IllustratorMode,
-  PointSelection,
 } from '../engine/illustrator/types.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../engine/illustrator/types.ts'
+import { bakedEditablePath } from '../engine/illustrator/layerPath.ts'
+import { deleteAnchor, editablePathToPathData, toggleSmooth } from '../engine/path/editPath.ts'
 import { getLayerPathItem } from '../engine/illustrator/compose.ts'
 import type { VectorCommand } from '../engine/vector/commands.ts'
 import {
@@ -197,7 +197,6 @@ interface LogoStore {
   convertCurrentMark: () => void
   resetIllustrator: () => void
   setIllustratorDocument: (doc: IllustratorDocument | null) => void
-  setIllustratorMode: (mode: IllustratorMode) => void
   selectIllustratorLayer: (id: string | null, additive?: boolean) => void
   updateIllustratorLayer: (id: string, update: Partial<IllustratorLayer>) => void
   updateIllustratorLayerTransform: (
@@ -218,14 +217,8 @@ interface LogoStore {
   setViewport: (viewport: { width: number; height: number }) => void
   addCarveCut: (spec: CutSpec) => void
   booleanIllustratorLayers: (op: 'unite' | 'subtract' | 'intersect') => void
-  setPointSelection: (selection: PointSelection | null) => void
-  updateIllustratorPoint: (
-    layerId: string,
-    segmentIndex: number,
-    handle: 'anchor' | 'in' | 'out',
-    point: { x: number; y: number },
-  ) => void
-  toggleSelectedPointCurve: () => void
+  /** Sharp/smooth or delete one point of a free shape: one undo step. */
+  editAnchor: (layerId: string, index: number, op: 'toggle-smooth' | 'delete') => void
 }
 
 export const useLogoStore = create<LogoStore>()(
@@ -763,22 +756,6 @@ export const useLogoStore = create<LogoStore>()(
           }
         }),
 
-      setIllustratorMode: (mode) =>
-        set((state) => ({
-          illustrator: state.illustrator
-            ? {
-                ...state.illustrator,
-                mode,
-                pointSelection: mode === 'object' ? null : state.illustrator.pointSelection,
-              }
-            : state.illustrator,
-          ui: {
-            ...state.ui,
-            activeTool: mode === 'points' ? null : state.ui.activeTool,
-            editMode: mode === 'object',
-          },
-        })),
-
       selectIllustratorLayer: (id, additive = false) =>
         set((state) => {
           if (state.vectorDocument) {
@@ -1107,46 +1084,7 @@ export const useLogoStore = create<LogoStore>()(
           }),
         ),
 
-      commitLayerEdits: (commit) =>
-        set((state) => {
-          const update = mutateVectorViaIllustrator(state, commit.label, (doc) => {
-            let changed = false
-            const layers = doc.layers.map((layer) => {
-              const edit = commit.edits.find((candidate) => candidate.layerId === layer.id)
-              if (!edit) return layer
-              if (edit.carve) {
-                const carve = roundCarveSpec(edit.carve)
-                const pathData = carveOutline(carve).pathData
-                if (layer.carve && JSON.stringify(layer.carve) === JSON.stringify(carve) && isIdentity(layer.transform)) {
-                  return layer
-                }
-                changed = true
-                return { ...layer, carve, pathData, transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM } }
-              }
-              if (edit.pathData !== undefined && edit.pathData !== layer.pathData) {
-                changed = true
-                const next: IllustratorLayer = {
-                  ...layer,
-                  pathData: edit.pathData,
-                  transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
-                }
-                delete next.carve
-                return next
-              }
-              return layer
-            })
-            if (!changed) return null
-            const selectedLayerIds = commit.select ?? doc.selectedLayerIds
-            const pointSelection =
-              commit.anchor === undefined
-                ? doc.pointSelection
-                : commit.anchor
-                  ? { layerId: commit.anchor.layerId, segmentIndex: commit.anchor.segmentIndex, handle: 'anchor' as const }
-                  : null
-            return { ...doc, layers, selectedLayerIds, pointSelection }
-          })
-          return update ?? {}
-        }),
+      commitLayerEdits: (commit) => set((state) => layerEditsUpdate(state, commit)),
 
       setViewport: (viewport) =>
         set((state) =>
@@ -1270,110 +1208,28 @@ export const useLogoStore = create<LogoStore>()(
           }
         }),
 
-      setPointSelection: (selection) =>
+      editAnchor: (layerId, index, op) =>
         set((state) => {
-          if (state.vectorDocument) {
-            return selectionUpdate(state, {
-              targets: selection
-                ? [
-                    selection.handle === 'anchor' || selection.handle === null
-                      ? {
-                          type: 'anchor',
-                          objectId: selection.layerId,
-                          segmentIndex: selection.segmentIndex,
-                        }
-                      : {
-                          type: 'handle',
-                          objectId: selection.layerId,
-                          segmentIndex: selection.segmentIndex,
-                          handle: selection.handle,
-                        },
-                  ]
-                : [],
+          const layer = state.illustrator?.layers.find((candidate) => candidate.id === layerId)
+          if (!layer || layer.carve) return {}
+          const path = bakedEditablePath(layer)
+          if (!path || !path.segs[index]) return {}
+          if (op === 'delete') {
+            const next = deleteAnchor(path, index)
+            if (!next) return {}
+            return layerEditsUpdate(state, {
+              label: 'Delete point',
+              edits: [{ layerId, pathData: editablePathToPathData(next) }],
+              select: [layerId],
+              anchor: null,
             })
           }
-          return {
-            illustrator: state.illustrator
-              ? { ...state.illustrator, pointSelection: selection }
-              : state.illustrator,
-          }
-        }),
-
-      updateIllustratorPoint: (layerId, segmentIndex, handle, point) =>
-        set((state) => {
-          const vectorUpdate = mutateVectorViaIllustrator(state, 'Edit point', (doc) => ({
-            ...doc,
-            layers: doc.layers.map((layer) =>
-              layer.id === layerId
-                ? {
-                    ...layer,
-                    pathData: updateLayerPointData(
-                      layer,
-                      segmentIndex,
-                      handle,
-                      point,
-                    ),
-                  }
-                : layer,
-            ),
-            pointSelection: { layerId, segmentIndex, handle },
-          }))
-          if (vectorUpdate) return vectorUpdate
-          if (!state.illustrator) return state
-          return {
-            illustrator: {
-              ...state.illustrator,
-              layers: state.illustrator.layers.map((layer) =>
-                layer.id === layerId
-                  ? {
-                      ...layer,
-                      pathData: updateLayerPointData(
-                        layer,
-                        segmentIndex,
-                        handle,
-                        point,
-                      ),
-                    }
-                  : layer,
-              ),
-              pointSelection: { layerId, segmentIndex, handle },
-            },
-          }
-        }),
-
-      toggleSelectedPointCurve: () =>
-        set((state) => {
-          const vectorUpdate = mutateVectorViaIllustrator(state, 'Toggle point curve', (doc) => {
-            const selection = doc.pointSelection
-            if (!selection) return null
-            return {
-              ...doc,
-              layers: doc.layers.map((layer) =>
-                layer.id === selection.layerId
-                  ? {
-                      ...layer,
-                      pathData: togglePointCurveData(layer, selection.segmentIndex),
-                    }
-                  : layer,
-              ),
-            }
+          return layerEditsUpdate(state, {
+            label: 'Sharp / smooth',
+            edits: [{ layerId, pathData: editablePathToPathData(toggleSmooth(path, index)) }],
+            select: [layerId],
+            anchor: { layerId, segmentIndex: index },
           })
-          if (vectorUpdate) return vectorUpdate
-          const selection = state.illustrator?.pointSelection
-          if (!state.illustrator || !selection) return state
-          return {
-            illustrator: {
-              ...state.illustrator,
-              layers: state.illustrator.layers.map((layer) =>
-                layer.id === selection.layerId
-                  ? {
-                      ...layer,
-                      pathData: togglePointCurveData(layer, selection.segmentIndex),
-                    }
-                  : layer,
-              ),
-            },
-          }
         }),
     }),
     {
@@ -1443,6 +1299,46 @@ function mutateVectorViaIllustrator(
     label,
     nextLegacyDocument,
   )
+}
+
+function layerEditsUpdate(state: LogoStore, commit: LayerEditCommit): Partial<LogoStore> {
+  const update = mutateVectorViaIllustrator(state, commit.label, (doc) => {
+    let changed = false
+    const layers = doc.layers.map((layer) => {
+      const edit = commit.edits.find((candidate) => candidate.layerId === layer.id)
+      if (!edit) return layer
+      if (edit.carve) {
+        const carve = roundCarveSpec(edit.carve)
+        const pathData = carveOutline(carve).pathData
+        if (layer.carve && JSON.stringify(layer.carve) === JSON.stringify(carve) && isIdentity(layer.transform)) {
+          return layer
+        }
+        changed = true
+        return { ...layer, carve, pathData, transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM } }
+      }
+      if (edit.pathData !== undefined && edit.pathData !== layer.pathData) {
+        changed = true
+        const next: IllustratorLayer = {
+          ...layer,
+          pathData: edit.pathData,
+          transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+        }
+        delete next.carve
+        return next
+      }
+      return layer
+    })
+    if (!changed) return null
+    const selectedLayerIds = commit.select ?? doc.selectedLayerIds
+    const pointSelection =
+      commit.anchor === undefined
+        ? doc.pointSelection
+        : commit.anchor
+          ? { layerId: commit.anchor.layerId, segmentIndex: commit.anchor.segmentIndex, handle: 'anchor' as const }
+          : null
+    return { ...doc, layers, selectedLayerIds, pointSelection }
+  })
+  return update ?? {}
 }
 
 /** Vector Maker's own history is capped; each step stores two documents. */
@@ -1695,66 +1591,3 @@ function performIllustratorBoolean(
   }
 }
 
-function withSegment(
-  layer: IllustratorLayer,
-  segmentIndex: number,
-  update: (segment: paper.Segment) => void,
-): string {
-  const scope = getBooleanScope()
-  scope.project.clear()
-  const item = getLayerPathItem(scope, layer, false)
-  if (!item) return layer.pathData
-
-  let index = 0
-  let updated = false
-  item.getItems({ class: scope.Path }).forEach((path) => {
-    if (updated || !(path instanceof scope.Path)) return
-    for (const segment of path.segments) {
-      if (index === segmentIndex) {
-        update(segment)
-        updated = true
-        break
-      }
-      index += 1
-    }
-  })
-
-  const pathData = item.pathData || layer.pathData
-  item.remove()
-  scope.project.clear()
-  return pathData
-}
-
-function updateLayerPointData(
-  layer: IllustratorLayer,
-  segmentIndex: number,
-  handle: 'anchor' | 'in' | 'out',
-  point: { x: number; y: number },
-): string {
-  return withSegment(layer, segmentIndex, (segment) => {
-    const next = new paper.Point(point.x, point.y)
-    if (handle === 'anchor') {
-      segment.point = next
-      return
-    }
-    if (handle === 'in') {
-      segment.handleIn = next.subtract(segment.point)
-      return
-    }
-    segment.handleOut = next.subtract(segment.point)
-  })
-}
-
-function togglePointCurveData(layer: IllustratorLayer, segmentIndex: number): string {
-  return withSegment(layer, segmentIndex, (segment) => {
-    const hasHandles = segment.handleIn.length > 0 || segment.handleOut.length > 0
-    if (hasHandles) {
-      segment.handleIn = new paper.Point(0, 0)
-      segment.handleOut = new paper.Point(0, 0)
-      return
-    }
-
-    segment.handleIn = new paper.Point(-18, 0)
-    segment.handleOut = new paper.Point(18, 0)
-  })
-}

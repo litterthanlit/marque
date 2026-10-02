@@ -32,36 +32,6 @@ const PERSPECTIVE_PRESETS = [
   { label: 'Tilt', x: -15, y: 20 },
 ] as const
 
-type Tool = 'select' | 'pencil' | 'pen' | 'graffiti' | 'shapebuilder'
-
-const TOOLS: Array<{ id: Tool; label: string; icon: string; fill?: boolean }> = [
-  {
-    id: 'select',
-    label: 'Select',
-    icon: 'M4 4l7 17 2.5-6.5L20 12z',
-    fill: true,
-  },
-  {
-    id: 'shapebuilder',
-    label: 'Shape Builder',
-    icon: 'M12 2l3.09 6.26L22 9.27l-5 4.87L18.18 22 12 18.27 5.82 22 7 14.14l-5-4.87 6.91-1.01z',
-  },
-  {
-    id: 'pencil',
-    label: 'Pencil',
-    icon: 'M3 21l1.5-4.5L17.7 3.3a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4L7.5 19.5z',
-  },
-  {
-    id: 'pen',
-    label: 'Pen',
-    icon: 'M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10 10-4.5 10-10S17.5 2 12 2zm0 4a2 2 0 1 1 0 4 2 2 0 0 1 0-4z',
-  },
-  {
-    id: 'graffiti',
-    label: 'Spray',
-    icon: 'M12 2v6m4-4l-2 2m-4-2l2 2M7 12a5 5 0 0 0 10 0M9 22h6m-3-5v5',
-  },
-]
 
 export function ParameterPanel() {
   const activeSurface = useLogoStore((s) => s.activeSurface)
@@ -451,10 +421,7 @@ function IllustratorTab() {
   const params = useLogoStore((s) => s.params)
   const result = useLogoStore((s) => s.result)
   const illustrator = useLogoStore((s) => s.illustrator)
-  const activeTool = useLogoStore((s) => s.ui.activeTool)
-  const setActiveTool = useLogoStore((s) => s.setActiveTool)
   const convertCurrentMark = useLogoStore((s) => s.convertCurrentMark)
-  const setIllustratorMode = useLogoStore((s) => s.setIllustratorMode)
   const selectIllustratorLayer = useLogoStore((s) => s.selectIllustratorLayer)
   const updateIllustratorLayer = useLogoStore((s) => s.updateIllustratorLayer)
   const updateIllustratorLayerTransform = useLogoStore((s) => s.updateIllustratorLayerTransform)
@@ -464,7 +431,7 @@ function IllustratorTab() {
   const toggleIllustratorLayerVisibility = useLogoStore((s) => s.toggleIllustratorLayerVisibility)
   const setIllustratorLayerOperation = useLogoStore((s) => s.setIllustratorLayerOperation)
   const booleanIllustratorLayers = useLogoStore((s) => s.booleanIllustratorLayers)
-  const toggleSelectedPointCurve = useLogoStore((s) => s.toggleSelectedPointCurve)
+  const editAnchor = useLogoStore((s) => s.editAnchor)
   const addSlab = useLogoStore((s) => s.addSlab)
   const startOver = useLogoStore((s) => s.startOver)
 
@@ -484,6 +451,10 @@ function IllustratorTab() {
     : -1
   const hasLayerSelection = selectedLayers.length > 0
   const hasBooleanSelection = selectedLayers.length >= 2
+  const selectedPoint =
+    selectedLayer && !selectedLayer.carve && illustrator?.pointSelection?.layerId === selectedLayer.id
+      ? illustrator.pointSelection
+      : null
 
   return (
     <div className="p-3 flex flex-col gap-3">
@@ -551,68 +522,7 @@ function IllustratorTab() {
 
       {illustrator && (
         <>
-          <div>
-            <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Mode</div>
-            <div className="flex gap-1 p-0.5 bg-interactive-active rounded-lg">
-              {(['object', 'points'] as const).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => setIllustratorMode(mode)}
-                  className={cn(
-                    'flex-1 h-7 rounded-md px-1 text-xs capitalize transition-all',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
-                    illustrator.mode === mode
-                      ? 'bg-interactive text-fg font-medium shadow-sm'
-                      : 'text-sidebar-muted hover:text-fg',
-                  )}
-                >
-                  {mode}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <CarveTools onPick={() => setIllustratorMode('object')} />
-
-          <div>
-            <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Draw</div>
-            <div className="flex gap-1">
-              {TOOLS.map((tool) => (
-                <button
-                  key={tool.id}
-                  type="button"
-                  onClick={() => {
-                    setIllustratorMode('object')
-                    setActiveTool(activeTool === tool.id ? null : tool.id)
-                  }}
-                  title={tool.label}
-                  aria-label={tool.label}
-                  aria-pressed={activeTool === tool.id}
-                  className={cn(
-                    'flex-1 h-9 flex items-center justify-center rounded-lg transition-all',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
-                    activeTool === tool.id
-                      ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
-                      : 'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
-                  )}
-                >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill={tool.fill ? 'currentColor' : 'none'}
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinejoin="round"
-                    strokeLinecap="round"
-                  >
-                    <path d={tool.icon} />
-                  </svg>
-                </button>
-              ))}
-            </div>
-          </div>
+          <EditorTools />
 
           <div>
             <div className="flex items-center justify-between gap-2 mb-2">
@@ -856,23 +766,29 @@ function IllustratorTab() {
             </div>
           )}
 
-          {illustrator.mode === 'points' && (
+          {selectedPoint && (
             <div className="rounded-lg border border-border bg-interactive-active/40 p-2.5">
-              <button
-                type="button"
-                onClick={toggleSelectedPointCurve}
-                disabled={!illustrator.pointSelection}
-                className={cn(
-                  'w-full h-8 rounded-lg text-xs transition-all',
-                  'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
-                  'disabled:opacity-40 disabled:cursor-default',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
-                )}
-              >
-                Corner / Smooth
-              </button>
-              <p className="mt-2 text-xs text-sidebar-muted">
-                Select one layer, then drag anchors or handles on the canvas.
+              <div className="mb-2 text-[10px] uppercase tracking-widest text-sidebar-muted">
+                Point {selectedPoint.segmentIndex + 1}
+              </div>
+              <div className="grid grid-cols-2 gap-1">
+                <button
+                  type="button"
+                  onClick={() => editAnchor(selectedPoint.layerId, selectedPoint.segmentIndex, 'toggle-smooth')}
+                  className="h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
+                >
+                  Sharp / Smooth
+                </button>
+                <button
+                  type="button"
+                  onClick={() => editAnchor(selectedPoint.layerId, selectedPoint.segmentIndex, 'delete')}
+                  className="h-8 rounded-lg text-xs bg-interactive-active text-red-400 hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
+                >
+                  Delete point
+                </button>
+              </div>
+              <p className="mt-2 text-[11px] leading-snug text-sidebar-muted">
+                Double-click a point to switch it between sharp and smooth.
               </p>
             </div>
           )}
@@ -892,33 +808,31 @@ function IllustratorTab() {
 
 /* ─── Carving ─── */
 
-const CARVE_TOOLS = [
+const EDITOR_TOOLS = [
+  { id: 'pen', label: 'Pen', key: 'Click to place points, then close the shape.' },
   { id: 'punch', label: 'Punch', key: 'Stamp a hole. Click, or drag to size it.' },
   { id: 'channel', label: 'Channel', key: 'Drag to gouge a groove between two points.' },
   { id: 'slice', label: 'Slice', key: 'Drag a line to cut clean through, edge to edge.' },
 ] as const
 
-function CarveTools({ onPick }: { onPick: () => void }) {
+function EditorTools() {
   const activeTool = useLogoStore((s) => s.ui.activeTool)
   const setActiveTool = useLogoStore((s) => s.setActiveTool)
   const carve = useLogoStore((s) => s.ui.carve)
   const setCarveSettings = useLogoStore((s) => s.setCarveSettings)
-  const active = CARVE_TOOLS.find((tool) => tool.id === activeTool)
+  const active = EDITOR_TOOLS.find((tool) => tool.id === activeTool)
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="text-[10px] uppercase tracking-widest text-sidebar-muted">Carve</div>
-      <div className="grid grid-cols-3 gap-1" role="group" aria-label="Carve tools">
-        {CARVE_TOOLS.map((tool) => (
+      <div className="text-[10px] uppercase tracking-widest text-sidebar-muted">Tools</div>
+      <div className="grid grid-cols-4 gap-1" role="group" aria-label="Tools">
+        {EDITOR_TOOLS.map((tool) => (
           <button
             key={tool.id}
             type="button"
             aria-pressed={activeTool === tool.id}
             title={tool.key}
-            onClick={() => {
-              onPick()
-              setActiveTool(activeTool === tool.id ? null : tool.id)
-            }}
+            onClick={() => setActiveTool(activeTool === tool.id ? null : tool.id)}
             className={cn(
               'h-8 rounded-lg text-xs transition-all',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
@@ -955,7 +869,7 @@ function CarveTools({ onPick }: { onPick: () => void }) {
                 </button>
               ))}
             </div>
-          ) : (
+          ) : active.id === 'pen' ? null : (
             <>
               <SliderControl
                 label="Width"

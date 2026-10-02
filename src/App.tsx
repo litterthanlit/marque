@@ -4,6 +4,7 @@ import { Onboarding } from './components/onboarding/Onboarding.tsx'
 import { useGeneration } from './hooks/useGeneration.ts'
 import { useUrlState } from './hooks/useUrlState.ts'
 import { useLogoStore } from './store/logoStore.ts'
+import { dispatchEditorKey, isEditorInteracting } from './renderer/directEdit/keyboard.ts'
 
 function App() {
   useGeneration()
@@ -21,10 +22,22 @@ function App() {
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
 
+      // Canvas editors first: Delete removes a selected point before its layer,
+      // Escape steps back one level, arrows nudge.
+      if (dispatchEditorKey(e)) {
+        e.preventDefault()
+        return
+      }
+
       if (e.metaKey || e.ctrlKey) {
         // Same routing as the toolbar buttons: Vector Maker has its own command history.
         const inVectorMaker = useLogoStore.getState().activeSurface === 'illustrator'
         const key = e.key.toLowerCase()
+        // Undo waits for the drag to finish: the gesture is not a step yet.
+        if (key === 'z' && isEditorInteracting()) {
+          e.preventDefault()
+          return
+        }
         if (key === 'z' && !e.shiftKey) {
           e.preventDefault()
           if (inVectorMaker) useLogoStore.getState().undoVectorCommand()

@@ -106,6 +106,17 @@ export function createIllustratorDocument(
   }
 }
 
+/** A layer's path with its transform applied, in layer space. */
+export function layerTransformedPathData(layer: IllustratorLayer): string {
+  const scope = getScope()
+  scope.project.clear()
+  const item = getLayerPathItem(scope, layer, true)
+  const pathData = item?.pathData ?? ''
+  item?.remove()
+  scope.project.clear()
+  return pathData
+}
+
 export function composeIllustratorMark(doc: IllustratorDocument | null): MarkData | null {
   if (!doc) return null
 
