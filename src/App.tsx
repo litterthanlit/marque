@@ -55,8 +55,9 @@ function App() {
         }
       }
 
-      // Delete/Backspace = delete selected shape in edit mode
-      if ((e.key === 'Delete' || e.key === 'Backspace') && !e.metaKey && !e.ctrlKey) {
+      // Delete/Backspace = delete selected shape in edit mode (not while a slider has focus)
+      const onSlider = Boolean((e.target as HTMLElement).closest?.('[role="slider"]'))
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !e.metaKey && !e.ctrlKey && !onSlider) {
         const { ui, activeSurface, illustrator } = useLogoStore.getState()
         if (activeSurface === 'illustrator' && illustrator?.selectedLayerIds.length) {
           e.preventDefault()

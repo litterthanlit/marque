@@ -53,7 +53,7 @@ import {
 import { boxGeometryFor, carveOutline, grooveSpine, type SideRef } from '../../engine/carve/outline.ts'
 import { bentEdgeCount, isGroove, type CarveSpec } from '../../engine/carve/spec.ts'
 import { bakedEditablePath } from '../../engine/illustrator/layerPath.ts'
-import { createComposeSession } from '../../engine/illustrator/composeSession.ts'
+import { createComposeSession, type ComposeSession } from '../../engine/illustrator/composeSession.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
 import type { LayerEditCommit } from '../../store/logoStore.ts'
 import { getInkItem, setInkPathData, setSurvivalVisible } from '../IllustratorRenderer.ts'
@@ -853,8 +853,7 @@ export class DirectEditController {
       preview: (d) => {
         const replacements = new Map<string, string | null>()
         for (const id of starts.keys()) replacements.set(id, pathFor(id, d))
-        const ink = compose.compose(replacements)
-        setInkPathData(this.scope, ink)
+        this.showInk(compose, replacements)
         for (const [id, position] of itemStarts) {
           const item = this.items.get(id)
           if (item) item.position = position.add(new this.scope.Point(d.x, d.y))
@@ -885,6 +884,17 @@ export class DirectEditController {
         }
       },
     }
+  }
+
+  /** Show one live frame of the ink. A boolean hiccup mid-drag keeps the last good frame on screen. */
+  private showInk(compose: ComposeSession, replacements: Map<string, string | null>) {
+    let ink: string
+    try {
+      ink = compose.compose(replacements)
+    } catch {
+      return
+    }
+    setInkPathData(this.scope, ink)
   }
 
   private restore(itemStarts: Map<string, paper.Point>) {
@@ -956,7 +966,7 @@ export class DirectEditController {
           snap = snapped.snap
         }
         this.showSnap(snap)
-        setInkPathData(this.scope, compose.compose(new Map([[layerId, carveOutline(current).pathData]])))
+        this.showInk(compose, new Map([[layerId, carveOutline(current).pathData]]))
         hud.set({ chip: handleReadout(current, handle) })
         this.drawOverlay()
       },
@@ -1100,7 +1110,7 @@ export class DirectEditController {
         current = bendCarve(start, grab, target)
         const settled = grab.side.type === 'corner' ? 'round' : 'straight'
         this.showSnap(snap, isSideBent(current, grab.side) ? null : settled)
-        setInkPathData(this.scope, compose.compose(new Map([[layerId, carveOutline(current).pathData]])))
+        this.showInk(compose, new Map([[layerId, carveOutline(current).pathData]]))
         hud.set({ chip: bendReadout(current, grab.side) })
         this.drawOverlay()
       },
@@ -1148,7 +1158,7 @@ export class DirectEditController {
         straight = maxChordDeviation(freeCurve(bent, curveIndex)) < 2 * this.unitsPerPx()
         current = straight ? (wasStraight ? start : straightenCurve(start, curveIndex)) : bent
         this.showSnap(straight ? null : snap, straight ? 'straight' : null)
-        setInkPathData(this.scope, compose.compose(new Map([[layer.id, editablePathToPathData(current)]])))
+        this.showInk(compose, new Map([[layer.id, editablePathToPathData(current)]]))
         hud.set({
           chip: straight ? 'straight' : `depth ${r0(maxChordDeviation(freeCurve(current, curveIndex)))}`,
         })
@@ -1225,7 +1235,7 @@ export class DirectEditController {
             ? moveAnchor(start, anchorIndex, add(seg.p, d))
             : moveHandle(start, anchorIndex, which, add(startPoint, d), { breakSmooth: mods.alt })
         this.showSnap(snap)
-        setInkPathData(this.scope, compose.compose(new Map([[layerId, editablePathToPathData(current)]])))
+        this.showInk(compose, new Map([[layerId, editablePathToPathData(current)]]))
         this.drawOverlay()
       },
       commit: () => {

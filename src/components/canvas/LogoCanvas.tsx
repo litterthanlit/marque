@@ -247,7 +247,12 @@ export function LogoCanvas() {
         session: createComposeSession(withPreviewCut(doc, spec), [CARVE_PREVIEW_ID]),
       }
     }
-    const ink = carveSessionRef.current.session.compose(new Map([[CARVE_PREVIEW_ID, cutPathData(spec)]]))
+    let ink: string
+    try {
+      ink = carveSessionRef.current.session.compose(new Map([[CARVE_PREVIEW_ID, cutPathData(spec)]]))
+    } catch {
+      return // a boolean hiccup mid-drag: keep the last good frame
+    }
     setInkPathData(scope, ink)
   }, [scopeRef])
 
@@ -582,7 +587,7 @@ export function LogoCanvas() {
             className="size-full rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)]"
             style={canvasStyle}
             tabIndex={inVectorMaker ? 0 : undefined}
-            aria-label={inVectorMaker ? 'Vector Maker canvas. Drag shapes to move them; arrow keys nudge the selection.' : undefined}
+            aria-label={inVectorMaker ? 'Vector Maker canvas. Drag a shape to move it, its handles to resize it, or an edge to bend it. Arrow keys nudge the selection; Delete removes it.' : undefined}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}

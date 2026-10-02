@@ -27,3 +27,7 @@ dist-ssr
 tsconfig.tsbuildinfo
 .superpowers/
 .claude/
+
+# Playwright
+test-results/
+playwright-report/
