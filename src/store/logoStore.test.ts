@@ -159,3 +159,22 @@ describe('slabs and the auto-converted generated mark', () => {
     expect(layers()[0].name).toBe('Generated Polygon 01')
   })
 })
+
+describe('the pen', () => {
+  beforeEach(() => reset())
+
+  it('adds a closed, filled shape on top as one step, selects it and puts the pen down', () => {
+    const store = useLogoStore.getState()
+    store.addSlab('square')
+    store.setActiveTool('pen')
+    const before = undoDepth()
+    useLogoStore.getState().addPenShape('M0,0L100,0L100,100Z')
+    const added = layers().at(-1)!
+    expect(added.operation).toBe('add')
+    expect(added.name).toBe('Shape 2')
+    expect(added.carve).toBeUndefined()
+    expect(useLogoStore.getState().illustrator?.selectedLayerIds).toEqual([added.id])
+    expect(useLogoStore.getState().ui.activeTool).toBeNull()
+    expect(undoDepth()).toBe(before + 1)
+  })
+})

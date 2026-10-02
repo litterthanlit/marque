@@ -268,6 +268,8 @@ export class DirectEditController {
   private toolIndex: { doc: IllustratorDocument; index: SnapIndex } | null = null
   private toolStart: SnapResult | null = null
   private toolMods: Modifiers = { shift: false, alt: false, noSnap: false }
+  /** Off while the pen draws: the selection's handles would only get in the way. */
+  private handlesLive = true
   private readonly unregisterKeys: () => void
   private destroyed = false
 
@@ -294,6 +296,14 @@ export class DirectEditController {
 
   /** The canvas changed size on screen: redraw handles at their constant on-screen size. */
   refresh(): void {
+    this.drawOverlay()
+  }
+
+  /** Show (and let presses reach) the selection's handles and points, or not. */
+  setHandlesLive(live: boolean): void {
+    if (this.handlesLive === live) return
+    this.handlesLive = live
+    this.hover = EMPTY_ZONE
     this.drawOverlay()
   }
 
@@ -575,12 +585,17 @@ export class DirectEditController {
   /**
    * Snap a point a tool is placing (layer space). On hover it only shows
    * where a press would land; a press remembers its snap, so the label
-   * stays while the rest is dragged out. `from` is the other end of a
-   * channel or slice.
+   * stays while the rest is dragged out. Rays come from `rays` (the other
+   * end of a channel, the pen's previous point); `extra` adds targets the
+   * document doesn't have yet (the pen's own points).
    */
-  snapToolPoint(p: Vec, from: Vec | null, role: 'hover' | 'start' | 'end'): Vec {
+  snapToolPoint(p: Vec, role: 'hover' | 'start' | 'end', options: { rays?: Vec[]; extra?: SnapTarget[] } = {}): Vec {
     const result = this.toolSnap(role, (index) =>
-      snapMoving(index, [p], { tolerance: this.snapTolerance(), edges: true, rays: from ? [from] : undefined }),
+      snapMoving(
+        options.extra?.length ? { ...index, targets: [...index.targets, ...options.extra] } : index,
+        [p],
+        { tolerance: this.snapTolerance(), edges: true, rays: options.rays },
+      ),
     )
     return add(p, result.d)
   }
@@ -1042,14 +1057,14 @@ export class DirectEditController {
 
   /** While a tool is active: is the pointer over a handle of the selected cut? */
   handleAt(p: Vec, touch: boolean): boolean {
-    if (!this.host.isEnabled()) return false
+    if (!this.host.isEnabled() || !this.handlesLive) return false
     const ctx = this.context(touch)
     return Boolean(ctx && findZone({ ...ctx, edges: false }, p).kind === 'handle')
   }
 
   /** Hover while a tool is active: only handles react. Returns the cursor to show, if any. */
   toolHover(p: Vec, touch: boolean): string | null {
-    if (!this.host.isEnabled()) return null
+    if (!this.host.isEnabled() || !this.handlesLive) return null
     const ctx = this.context(touch)
     if (!ctx) return null
     const zone = findZone({ ...ctx, edges: false }, p)
@@ -1259,7 +1274,7 @@ export class DirectEditController {
 
     if (editing) {
       editing.drawOverlay(layer)
-    } else {
+    } else if (this.handlesLive) {
       const recipe = this.selectedRecipe(doc, selected)
       if (recipe?.carve) {
         this.drawRecipe(layer, recipe.carve, this.hover.kind === 'handle' ? this.hover.handle.id : null, false)

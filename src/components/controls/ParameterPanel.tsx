@@ -812,7 +812,7 @@ function IllustratorTab() {
 /* ─── Carving ─── */
 
 const EDITOR_TOOLS = [
-  { id: 'pen', label: 'Pen', key: 'Click to place points, then close the shape.' },
+  { id: 'pen', label: 'Pen', key: 'Click to place points, drag an edge to bend it. Close by clicking the first point, pressing Enter or double-clicking.' },
   { id: 'punch', label: 'Punch', key: 'Stamp a hole. Click, or drag to size it.' },
   { id: 'channel', label: 'Channel', key: 'Drag to gouge a groove between two points.' },
   { id: 'slice', label: 'Slice', key: 'Drag a line to cut clean through, edge to edge.' },

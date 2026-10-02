@@ -58,6 +58,7 @@ export function LogoCanvas() {
   const addIllustratorPathLayer = useLogoStore((s) => s.addIllustratorPathLayer)
   const togglePathSelection = useLogoStore((s) => s.togglePathSelection)
   const addCarveCut = useLogoStore((s) => s.addCarveCut)
+  const addPenShape = useLogoStore((s) => s.addPenShape)
   const setActiveTool = useLogoStore((s) => s.setActiveTool)
   const setViewport = useLogoStore((s) => s.setViewport)
   const activeMark = useActiveMark()
@@ -169,6 +170,8 @@ export function LogoCanvas() {
         mark: activeMark,
       })
       controllerRef.current?.sync(itemMap)
+      // A render clears the canvas: the pen's drawing in progress goes back on top.
+      if (toolRef.current instanceof PenTool) toolRef.current.redraw()
       return
     }
 
@@ -288,7 +291,7 @@ export function LogoCanvas() {
             addCarveCut(spec)
           },
           onPreview: previewCut,
-          snapPoint: (p, from, role) => controllerRef.current?.snapToolPoint(p, from, role) ?? p,
+          snapPoint: (p, from, role) => controllerRef.current?.snapToolPoint(p, role, { rays: from ? [from] : [] }) ?? p,
           snapRadius: (center, radius) => controllerRef.current?.snapToolRadius(center, radius) ?? radius,
           onGestureEnd: () => controllerRef.current?.endToolSnap(),
         }, {
@@ -301,7 +304,12 @@ export function LogoCanvas() {
         toolRef.current = new PencilTool(scope, callbacks, { strokeColor: color, strokeWidth: 2 })
         break
       case 'pen':
-        toolRef.current = new PenTool(scope, callbacks, { strokeColor: color, strokeWidth: 2 })
+        if (activeSurface !== 'illustrator') break
+        toolRef.current = new PenTool(scope, {
+          onShape: (pathData) => addPenShape(pathData),
+          snapPoint: (p, role, rays, extra) => controllerRef.current?.snapToolPoint(p, role, { rays, extra }) ?? p,
+          onGestureEnd: () => controllerRef.current?.endToolSnap(),
+        }, { fillColor: color })
         break
       case 'graffiti':
         toolRef.current = new GraffitiTool(scope, callbacks, { fillColor: color })
@@ -313,13 +321,30 @@ export function LogoCanvas() {
 
     if (activeSurface === 'illustrator') {
       canvas.style.cursor = toolRef.current ? 'crosshair' : 'default'
+      controllerRef.current?.setHandlesLive(!(toolRef.current instanceof PenTool))
     }
 
     // Tool keys take precedence over the editor's while a tool is active.
     const unregister = registerEditorKeys((event) => {
       const tool = toolRef.current
       if (!tool) return false
-      if (tool instanceof PenTool || tool instanceof ShapeBuilderTool) {
+      if (tool instanceof PenTool) {
+        const mod = event.metaKey || event.ctrlKey
+        if (event.key === 'Enter') return tool.finalize() || tool.isDrawing
+        if (event.key === 'Escape') {
+          if (tool.isDrawing) tool.cancel()
+          else setActiveTool(null)
+          return true
+        }
+        if ((event.key === 'Backspace' || event.key === 'Delete') && !mod) return tool.removeLastPoint()
+        // While drawing, undo steps back through the pen's own points (and redo waits).
+        if (mod && event.key.toLowerCase() === 'z' && tool.isDrawing) {
+          if (!event.shiftKey) tool.undo()
+          return true
+        }
+        return false
+      }
+      if (tool instanceof ShapeBuilderTool) {
         if (event.key === 'Enter') {
           tool.finalize()
           return true
@@ -345,6 +370,7 @@ export function LogoCanvas() {
         toolRef.current.destroy()
         toolRef.current = null
       }
+      controllerRef.current?.setHandlesLive(true)
     }
   }, [
     activeSurface,
@@ -356,6 +382,7 @@ export function LogoCanvas() {
     addDrawnPath,
     addIllustratorPathLayer,
     addCarveCut,
+    addPenShape,
     setActiveTool,
     previewCut,
   ])
@@ -435,7 +462,8 @@ export function LogoCanvas() {
       const tool = toolRef.current
       if (tool && pressOwnerRef.current !== 'editor') {
         if (e.buttons === 0 && controller) {
-          e.currentTarget.style.cursor = controller.toolHover(p, touch) ?? 'crosshair'
+          const penCursor = tool instanceof PenTool ? tool.cursorAt(point) : null
+          e.currentTarget.style.cursor = penCursor ?? controller.toolHover(p, touch) ?? 'crosshair'
         }
         controller?.toolPointer(p, modifiersOf(e))
         if (tool instanceof ShapeBuilderTool && e.buttons === 0) tool.onMouseMove(point)
@@ -496,6 +524,7 @@ export function LogoCanvas() {
   /** Hover outlines, snap guides and labels go when the pointer leaves (a captured drag keeps them). */
   const handlePointerLeave = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (activeSurface !== 'illustrator' || e.currentTarget.hasPointerCapture(e.pointerId)) return
+    if (toolRef.current instanceof PenTool) toolRef.current.pointerLeave()
     controllerRef.current?.pointerLeave()
   }, [activeSurface])
 

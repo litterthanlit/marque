@@ -219,6 +219,8 @@ interface LogoStore {
   commitLayerEdits: (commit: LayerEditCommit) => void
   setViewport: (viewport: { width: number; height: number }) => void
   addCarveCut: (spec: CutSpec) => void
+  /** A closed shape drawn with the pen (layer space): added on top, selected, back to direct editing. */
+  addPenShape: (pathData: string) => void
   booleanIllustratorLayers: (op: 'unite' | 'subtract' | 'intersect') => void
   /** Sharp/smooth or delete one point of a free shape: one undo step. */
   editAnchor: (layerId: string, index: number, op: 'toggle-smooth' | 'delete') => void
@@ -1111,6 +1113,27 @@ export const useLogoStore = create<LogoStore>()(
           })
           // The carve tool stays active so cuts can be made one after another.
           return vectorUpdate ?? state
+        }),
+
+      addPenShape: (pathData) =>
+        set((state) => {
+          const vectorUpdate = mutateVectorViaIllustrator(state, 'Draw shape', (doc) => {
+            const taken = new Set(doc.layers.map((layer) => layer.name))
+            let n = doc.layers.length + 1
+            while (taken.has(`Shape ${n}`)) n++
+            const layer: IllustratorLayer = {
+              id: crypto.randomUUID(),
+              name: `Shape ${n}`,
+              operation: 'add',
+              visible: true,
+              locked: false,
+              pathData,
+              fillRule: 'nonzero',
+              transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+            }
+            return { ...doc, mode: 'object', layers: [...doc.layers, layer], selectedLayerIds: [layer.id], pointSelection: null }
+          })
+          return vectorUpdate ? { ...vectorUpdate, ui: { ...state.ui, activeTool: null } } : state
         }),
 
       addIllustratorPathLayer: (path) =>
