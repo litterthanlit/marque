@@ -62,6 +62,17 @@ describe('slab resize handles', () => {
     expect(next.width).toBeCloseTo(4, 6)
   })
 
+  it('the rounding dot follows the pointer and keeps clear of a circle’s middle', () => {
+    const square = slabSpec('square')
+    const dot = carveHandles(square).find((h) => h.id === 'radius')!
+    const next = dragCarveHandle(square, 'radius', dot.at, add(dot.at, { x: 10, y: 10 })) as SlabSpec
+    const moved = carveHandles(next).find((h) => h.id === 'radius')!
+    expect(moved.at.x).toBeCloseTo(dot.at.x + 10, 6)
+    expect(moved.at.y).toBeCloseTo(dot.at.y + 10, 6)
+    const circleDot = carveHandles(slabSpec('circle')).find((h) => h.id === 'radius')!
+    expect(Math.hypot(circleDot.at.x, circleDot.at.y)).toBeGreaterThan(100)
+  })
+
   it('clamps the corner radius to half the shorter side', () => {
     const next = dragCarveHandle(rotated, 'radius', world(rotated, { x: -100, y: -100 }), world(rotated, { x: 500, y: 500 })) as SlabSpec
     expect(next.radius).toBeCloseTo(190, 6)

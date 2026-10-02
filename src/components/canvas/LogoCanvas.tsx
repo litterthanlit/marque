@@ -134,6 +134,7 @@ export function LogoCanvas() {
         const state = useLogoStore.getState()
         return Boolean(state.illustrator) && !state.effectParams.dissolution.enabled
       },
+      isSnapping: () => useLogoStore.getState().ui.carve.snapping,
       setSelection: (ids, anchor) => useLogoStore.getState().setSelection(ids, anchor),
       commitLayerEdits: (commit) => useLogoStore.getState().commitLayerEdits(commit),
       editAnchor: (layerId, index, op) => useLogoStore.getState().editAnchor(layerId, index, op),
@@ -287,6 +288,9 @@ export function LogoCanvas() {
             addCarveCut(spec)
           },
           onPreview: previewCut,
+          snapPoint: (p, from, role) => controllerRef.current?.snapToolPoint(p, from, role) ?? p,
+          snapRadius: (center, radius) => controllerRef.current?.snapToolRadius(center, radius) ?? radius,
+          onGestureEnd: () => controllerRef.current?.endToolSnap(),
         }, {
           kind: ui.activeTool,
           punchShape: ui.carve.punchShape,
@@ -379,6 +383,7 @@ export function LogoCanvas() {
       const touch = e.pointerType === 'touch'
       if (toolRef.current && !controller?.handleAt(p, touch)) {
         pressOwnerRef.current = 'tool'
+        controller?.toolPointer(p, modifiersOf(e))
         toolRef.current.onMouseDown(point)
         return
       }
@@ -432,6 +437,7 @@ export function LogoCanvas() {
         if (e.buttons === 0 && controller) {
           e.currentTarget.style.cursor = controller.toolHover(p, touch) ?? 'crosshair'
         }
+        controller?.toolPointer(p, modifiersOf(e))
         if (tool instanceof ShapeBuilderTool && e.buttons === 0) tool.onMouseMove(point)
         else tool.onMouseDrag(point)
         return
@@ -485,6 +491,12 @@ export function LogoCanvas() {
     pressOwnerRef.current = null
     if (toolRef.current instanceof CarveTool) toolRef.current.cancel()
     controllerRef.current?.cancel()
+  }, [activeSurface])
+
+  /** Hover outlines, snap guides and labels go when the pointer leaves (a captured drag keeps them). */
+  const handlePointerLeave = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activeSurface !== 'illustrator' || e.currentTarget.hasPointerCapture(e.pointerId)) return
+    controllerRef.current?.pointerLeave()
   }, [activeSurface])
 
   // A window blur mid-drag would otherwise leave a gesture hanging.
@@ -547,6 +559,7 @@ export function LogoCanvas() {
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerCancel}
             onLostPointerCapture={handlePointerCancel}
+            onPointerLeave={handlePointerLeave}
             onDoubleClick={handleDoubleClick}
           />
           {inVectorMaker && <CanvasHud />}

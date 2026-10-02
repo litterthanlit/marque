@@ -131,6 +131,8 @@ export interface CarveSettings {
   cutWidth: number
   survivalSize: SurvivalSize
   showWeakSpots: boolean
+  /** Snap drags to points, edges, alignment and 15° angles (Cmd/Ctrl turns it off while held). */
+  snapping: boolean
 }
 
 export const DEFAULT_CARVE_SETTINGS: CarveSettings = {
@@ -138,6 +140,7 @@ export const DEFAULT_CARVE_SETTINGS: CarveSettings = {
   cutWidth: 44,
   survivalSize: 32,
   showWeakSpots: true,
+  snapping: true,
 }
 
 interface LogoStore {

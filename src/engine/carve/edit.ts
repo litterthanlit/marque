@@ -71,9 +71,17 @@ export interface HandleLayout {
   rotateOffset: number
   /** Below this size, edge-midpoint handles are hidden to avoid crowding. */
   minEdgeHandleSize: number
+  /** How far inside its corner the rounding dot sits when the corner is sharp. */
+  radiusInset: number
 }
 
-export const DEFAULT_HANDLE_LAYOUT: HandleLayout = { pad: 12, rotateOffset: 22, minEdgeHandleSize: 30 }
+export const DEFAULT_HANDLE_LAYOUT: HandleLayout = { pad: 12, rotateOffset: 22, minEdgeHandleSize: 30, radiusInset: 10 }
+
+/**
+ * The rounding dot travels half as far as the radius grows, so it stays near
+ * its corner: even a full circle keeps its middle free for moving.
+ */
+const RADIUS_DOT_RATE = 0.5
 
 const MIN_SIZE = 4
 const MIN_GROOVE_WIDTH = 2
@@ -148,7 +156,7 @@ export function carveHandles(spec: CarveSpec, layout: HandleLayout = DEFAULT_HAN
     const hw = Math.max(spec.width, 0.5) / 2
     const hh = Math.max(spec.height, 0.5) / 2
     const re = clamp(spec.radius, 0, Math.min(hw, hh))
-    const inset = Math.max(re, 10)
+    const inset = layout.radiusInset + re * RADIUS_DOT_RATE
     handles.push({
       id: 'radius',
       kind: 'radius',
@@ -204,8 +212,9 @@ function dragSlab(start: SlabSpec, id: HandleId, startPointer: Vec, pointer: Vec
   const hh = start.height / 2
 
   if (id === 'radius') {
+    // The dot moves along the inward diagonal at RADIUS_DOT_RATE of the radius.
     const re = clamp(start.radius, 0, Math.min(hw, hh))
-    return { ...start, radius: clamp(re + (d.x + d.y) / 2, 0, Math.min(hw, hh)) }
+    return { ...start, radius: clamp(re + (d.x + d.y) / 2 / RADIUS_DOT_RATE, 0, Math.min(hw, hh)) }
   }
 
   const fx = id.includes('e') ? 1 : id.includes('w') ? -1 : 0

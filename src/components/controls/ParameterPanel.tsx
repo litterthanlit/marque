@@ -849,6 +849,34 @@ function EditorTools() {
         ))}
       </div>
 
+      {/* Pink like the guides it draws: the switch reads as part of the same system. */}
+      <button
+        type="button"
+        role="switch"
+        aria-checked={carve.snapping}
+        onClick={() => setCarveSettings({ snapping: !carve.snapping })}
+        className="flex h-8 items-center justify-between rounded-lg bg-interactive-active px-2.5 text-xs text-sidebar-muted transition-all hover:text-fg hover:bg-interactive-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
+      >
+        <span>Snapping</span>
+        <span className="flex items-center gap-2">
+          <span className="text-[10px] text-sidebar-muted">{carve.snapping ? 'Hold ⌘ / Ctrl to skip' : 'Off'}</span>
+          <span
+            aria-hidden="true"
+            className={cn(
+              'relative h-4 w-7 rounded-full transition-colors duration-150',
+              carve.snapping ? 'bg-pink-500' : 'bg-neutral-700',
+            )}
+          >
+            <span
+              className={cn(
+                'absolute top-0.5 left-0.5 size-3 rounded-full bg-white shadow-sm transition-transform duration-150 motion-reduce:transition-none',
+                carve.snapping ? 'translate-x-3' : 'translate-x-0',
+              )}
+            />
+          </span>
+        </span>
+      </button>
+
       {active && (
         <div className="flex flex-col gap-2 rounded-lg border border-border bg-interactive-active/40 p-2.5">
           <p className="text-[11px] leading-snug text-sidebar-muted">{active.key}</p>

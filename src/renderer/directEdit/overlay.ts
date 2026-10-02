@@ -1,6 +1,7 @@
 import type { Cubic, Vec } from '../../engine/path/bezier.ts'
 import type { EditablePath } from '../../engine/path/editPath.ts'
 import type { CarveHandle } from '../../engine/carve/edit.ts'
+import type { SnapGuide } from '../../engine/snap/snapping.ts'
 
 export const SELECTION_COLOR = '#3b82f6'
 export const GUIDE_COLOR = '#ec4899'
@@ -106,6 +107,39 @@ export function drawGhostPoint(scope: paper.PaperScope, layer: paper.Layer, poin
   square.dashArray = [2 * u, 1.5 * u]
   square.locked = true
   layer.addChild(square)
+}
+
+/** Snap guides: pink alignment lines, and a cross where the geometry landed. */
+export function drawSnapGuides(scope: paper.PaperScope, layer: paper.Layer, guides: SnapGuide[], center: Vec) {
+  const pink = new scope.Color(GUIDE_COLOR)
+  const at = (v: Vec) => new scope.Point(v.x + center.x, v.y + center.y)
+  for (const guide of guides) {
+    if (guide.kind === 'line') {
+      const line = new scope.Path.Line({ from: at(guide.a), to: at(guide.b), insert: false })
+      line.strokeColor = pink
+      line.strokeWidth = u
+      line.dashArray = [3 * u, 3 * u]
+      line.locked = true
+      layer.addChild(line)
+      continue
+    }
+    const p = at(guide.p)
+    const r = 4 * u
+    for (const [dx, dy] of [
+      [1, 1],
+      [1, -1],
+    ]) {
+      const arm = new scope.Path.Line({
+        from: p.add(new scope.Point(-r * dx, -r * dy)),
+        to: p.add(new scope.Point(r * dx, r * dy)),
+        insert: false,
+      })
+      arm.strokeColor = pink
+      arm.strokeWidth = 1.5 * u
+      arm.locked = true
+      layer.addChild(arm)
+    }
+  }
 }
 
 /** Anchors of a free shape; the selected one is filled and shows its handles. */

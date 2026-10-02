@@ -6,6 +6,7 @@ import {
   cubicPoint,
   distance,
   maxChordDeviation,
+  rotate,
   sub,
   type Cubic,
   type Vec,
@@ -31,8 +32,24 @@ import {
   translateCarve,
   type CarveGrab,
   type CarveHandle,
+  type HandleId,
   type HandleLayout,
 } from '../../engine/carve/edit.ts'
+import {
+  carveKeyPoints,
+  documentSizes,
+  documentSnapTargets,
+  freeBoxPoints,
+  NO_SNAP,
+  snapCircleTangent,
+  snapMoving,
+  snapValue,
+  type EdgeHit,
+  type SnapGuide,
+  type SnapIndex,
+  type SnapResult,
+  type SnapTarget,
+} from '../../engine/snap/snapping.ts'
 import { boxGeometryFor, carveOutline, grooveSpine, type SideRef } from '../../engine/carve/outline.ts'
 import { bentEdgeCount, isGroove, type CarveSpec } from '../../engine/carve/spec.ts'
 import { bakedEditablePath } from '../../engine/illustrator/layerPath.ts'
@@ -50,6 +67,7 @@ import {
   drawCarveHandles,
   drawCurves,
   drawGhostPoint,
+  drawSnapGuides,
   outlineItem,
   outlinePathData,
   resetOverlay,
@@ -72,6 +90,8 @@ export interface DirectEditHost {
   /** The committed ink (layer space), to restore after a cancelled gesture. */
   getInkPathData(): string
   isEnabled(): boolean
+  /** The panel's Snapping switch. */
+  isSnapping(): boolean
   setSelection(ids: string[], anchor?: { layerId: string; segmentIndex: number } | null): void
   commitLayerEdits(commit: LayerEditCommit): void
   editAnchor(layerId: string, index: number, op: AnchorOp): void
@@ -111,6 +131,10 @@ interface MovePlan {
   cancel(): void
   editedIds: Set<string>
   drawOverlay(layer: paper.Layer): void
+  /** Points of the moved shapes (not the cuts they carry) that snap: corners, middles, centres. */
+  keyPoints: Vec[]
+  /** The one round punch being moved, if that's all it is: it can snap to touch an edge. */
+  roundPunch: { center: Vec; radius: number } | null
 }
 
 /** The same recipe with every bend removed: drawn dashed behind a bent shape. */
@@ -180,6 +204,42 @@ function bendLabel(spec: CarveSpec, side: SideRef): string {
   return side.type === 'corner' ? 'Shape corner' : 'Bend edge'
 }
 
+const BOX_HANDLE_FRACTIONS: Partial<Record<HandleId, Vec>> = {
+  nw: { x: -1, y: -1 },
+  n: { x: 0, y: -1 },
+  ne: { x: 1, y: -1 },
+  e: { x: 1, y: 0 },
+  se: { x: 1, y: 1 },
+  s: { x: 0, y: 1 },
+  sw: { x: -1, y: 1 },
+  w: { x: -1, y: 0 },
+}
+
+/** The point of a recipe that a handle drags: a box corner or side middle, or a groove end. */
+function handleGeometry(spec: CarveSpec, id: HandleId): Vec | null {
+  if (isGroove(spec)) return id === 'from' ? spec.from : id === 'to' ? spec.to : null
+  const f = BOX_HANDLE_FRACTIONS[id]
+  if (!f) return null
+  const hw = spec.kind === 'punch' ? spec.radius : spec.width / 2
+  const hh = spec.kind === 'punch' ? spec.radius : spec.height / 2
+  return add(spec.center, rotate({ x: f.x * hw, y: f.y * hh }, spec.rotation))
+}
+
+/** Which axes a handle's geometry can move along, in layer space; null when it moves at an angle. */
+function handleAxes(spec: CarveSpec, id: HandleId): { x: boolean; y: boolean } | null {
+  const f = BOX_HANDLE_FRACTIONS[id]
+  if (isGroove(spec) || !f || (f.x !== 0 && f.y !== 0)) return { x: true, y: true }
+  const dir = rotate(f, spec.rotation)
+  if (Math.abs(dir.x) > 0.9999) return { x: true, y: false }
+  if (Math.abs(dir.y) > 0.9999) return { x: false, y: true }
+  return null
+}
+
+/** A free shape's own anchors as snap targets, except the one being dragged. */
+function otherAnchors(path: EditablePath, except: number): SnapTarget[] {
+  return path.segs.filter((_, i) => i !== except).map((seg) => ({ p: seg.p, kind: 'point' as const }))
+}
+
 const DOUBLE_CLICK_MS = 300
 const DOUBLE_CLICK_PX = 6
 const NUDGE_COMMIT_MS = 450
@@ -202,6 +262,12 @@ export class DirectEditController {
   private readonly freePaths = new WeakMap<IllustratorLayer, EditablePath | null>()
   private nudge: { plan: MovePlan; d: Vec; timer: number } | null = null
   private pendingPoint: PendingPoint | null = null
+  /** Pink guides of the snap in effect, drawn on top of everything. */
+  private snapGuides: SnapGuide[] = []
+  /** While a tool places something: its snap index (for one document), where it started, the modifiers held. */
+  private toolIndex: { doc: IllustratorDocument; index: SnapIndex } | null = null
+  private toolStart: SnapResult | null = null
+  private toolMods: Modifiers = { shift: false, alt: false, noSnap: false }
   private readonly unregisterKeys: () => void
   private destroyed = false
 
@@ -323,6 +389,7 @@ export class DirectEditController {
 
   private endGesture() {
     setEditorInteracting(false)
+    this.snapGuides = []
     hud.clear()
     setSurvivalVisible(this.scope, true)
     this.drawOverlay()
@@ -366,6 +433,7 @@ export class DirectEditController {
       pad: DEFAULT_HANDLE_LAYOUT.pad * u,
       rotateOffset: DEFAULT_HANDLE_LAYOUT.rotateOffset * u,
       minEdgeHandleSize: DEFAULT_HANDLE_LAYOUT.minEdgeHandleSize * u,
+      radiusInset: DEFAULT_HANDLE_LAYOUT.radiusInset * u,
     }
   }
 
@@ -452,6 +520,124 @@ export class DirectEditController {
     const sx = rect.width / this.scope.view.viewSize.width
     const sy = rect.height / this.scope.view.viewSize.height
     hud.set({ x: view.x * sx, y: view.y * sy })
+  }
+
+  /* ─── Snapping ─── */
+
+  private snapsOn(mods: Modifiers): boolean {
+    return this.host.isSnapping() && !mods.noSnap
+  }
+
+  /** 8 screen pixels (12 for touch), in layer units. */
+  private snapTolerance(touch = false): number {
+    return (touch ? 12 : 8) * this.unitsPerPx()
+  }
+
+  /**
+   * What a drag can snap to: every visible shape except the edited ones, plus
+   * the artboard centre. The edges of the rest of the ink are composed only
+   * if something asks for them.
+   */
+  private makeSnapIndex(doc: IllustratorDocument, exclude: Set<string>, extra: SnapTarget[] = []): SnapIndex {
+    const targets = [...documentSnapTargets(doc, exclude, (layer) => this.freePathOf(layer)), ...extra]
+    let edges: paper.CompoundPath | null | undefined
+    const nearestEdge = (p: Vec): EdgeHit | null => {
+      if (edges === undefined) {
+        const pathData = exclude.size
+          ? createComposeSession(doc, exclude).compose(new Map([...exclude].map((id) => [id, null])))
+          : this.host.getInkPathData()
+        this.scope.activate()
+        edges = pathData ? new this.scope.CompoundPath({ pathData, insert: false }) : null
+      }
+      if (!edges) return null
+      const loc = edges.getNearestLocation(new this.scope.Point(p.x, p.y))
+      if (!loc) return null
+      const tangent = loc.tangent
+      return { point: { x: loc.point.x, y: loc.point.y }, distance: loc.distance, tangent: { x: tangent.x, y: tangent.y } }
+    }
+    return { targets, nearestEdge }
+  }
+
+  /** Show a snap: its guides on the canvas, its label by the pointer. */
+  private showSnap(result: SnapResult | null, fallbackLabel: string | null = null) {
+    this.snapGuides = result?.guides ?? []
+    hud.set({ label: result?.label ?? fallbackLabel })
+  }
+
+  /* ─── Tools: snapping what they place ─── */
+
+  /** The pointer moved while a tool is active: remember the modifiers and keep the label by it. */
+  toolPointer(p: Vec, mods: Modifiers): void {
+    this.toolMods = mods
+    this.placeHud(p)
+  }
+
+  /**
+   * Snap a point a tool is placing (layer space). On hover it only shows
+   * where a press would land; a press remembers its snap, so the label
+   * stays while the rest is dragged out. `from` is the other end of a
+   * channel or slice.
+   */
+  snapToolPoint(p: Vec, from: Vec | null, role: 'hover' | 'start' | 'end'): Vec {
+    const result = this.toolSnap(role, (index) =>
+      snapMoving(index, [p], { tolerance: this.snapTolerance(), edges: true, rays: from ? [from] : undefined }),
+    )
+    return add(p, result.d)
+  }
+
+  /** Snap the radius of a punch being drawn: the same size as another, or just touching an edge. */
+  snapToolRadius(center: Vec, radius: number): number {
+    let snapped = radius
+    this.toolSnap('end', (index, doc) => {
+      const tolerance = this.snapTolerance()
+      const same = snapValue(radius, documentSizes(doc, new Set()).punchRadii, tolerance)
+      if (same !== null) {
+        snapped = same
+        return { d: { x: 0, y: 0 }, label: 'same size', guides: [] }
+      }
+      const touch = snapCircleTangent(index, center, radius, tolerance, 'radius')
+      if (touch) {
+        snapped = touch.radius
+        return { d: { x: 0, y: 0 }, label: 'tangent', guides: [{ kind: 'mark', p: touch.touch }] }
+      }
+      return NO_SNAP
+    })
+    return snapped
+  }
+
+  /** The tool's gesture ended, or the pointer left: drop its guides and label. */
+  endToolSnap(): void {
+    this.toolStart = null
+    if (!this.snapGuides.length && !hud.get().label) return
+    this.snapGuides = []
+    hud.clear()
+    this.drawOverlay()
+  }
+
+  private toolSnap(role: 'hover' | 'start' | 'end', run: (index: SnapIndex, doc: IllustratorDocument) => SnapResult): SnapResult {
+    const doc = this.host.getDoc()
+    if (!doc || !this.host.isEnabled() || !this.snapsOn(this.toolMods)) {
+      if (role === 'start') this.toolStart = null
+      this.showSnap(null)
+      this.drawOverlay()
+      return NO_SNAP
+    }
+    if (this.toolIndex?.doc !== doc) this.toolIndex = { doc, index: this.makeSnapIndex(doc, new Set()) }
+    const result = run(this.toolIndex.index, doc)
+    if (role === 'start') this.toolStart = result
+    const start = role === 'end' ? this.toolStart : null
+    this.snapGuides = [...(start?.guides ?? []), ...result.guides]
+    hud.set({ label: result.label ?? start?.label ?? null })
+    this.drawOverlay()
+    return result
+  }
+
+  /** The pointer left the canvas: nothing is hovered any more. */
+  pointerLeave(): void {
+    if (this.press || this.session) return
+    this.hover = EMPTY_ZONE
+    this.endToolSnap()
+    this.drawOverlay()
   }
 
   /* ─── Clicks ─── */
@@ -591,18 +777,9 @@ export class DirectEditController {
       case 'edge':
         return zone.carve ? this.carveBendSession(press, zone.layerId, zone.carve) : this.freeBendSession(press, zone)
       case 'anchor':
-        return this.pointSession(press, zone.layerId, (start, d) => moveAnchor(start, zone.index, add(start.segs[zone.index].p, d)), zone.index)
+        return this.pointSession(press, zone.layerId, zone.index, 'anchor')
       case 'bezier':
-        return this.pointSession(
-          press,
-          zone.layerId,
-          (start, d, m) => {
-            const seg = start.segs[zone.index]
-            const handle = (zone.which === 'in' ? seg.hIn : seg.hOut) ?? { x: 0, y: 0 }
-            return moveHandle(start, zone.index, zone.which, add(add(seg.p, handle), d), { breakSmooth: m.alt })
-          },
-          zone.index,
-        )
+        return this.pointSession(press, zone.layerId, zone.index, zone.which)
       default:
         return null
     }
@@ -645,8 +822,18 @@ export class DirectEditController {
       return start.carve ? carveOutline(translateCarve(start.carve, d)).pathData : editablePathToPathData(translatePath(start.path!, d))
     }
     const carriedSet = new Set(carried)
+    const keyPoints: Vec[] = []
+    for (const id of ids) {
+      const start = starts.get(id)
+      if (start?.carve) keyPoints.push(...carveKeyPoints(start.carve).map((target) => target.p))
+      else if (start?.path) keyPoints.push(...freeBoxPoints(start.path))
+    }
+    const only = ids.length === 1 && !carried.length ? starts.get(ids[0])?.carve : undefined
+    const roundPunch = only && only.kind === 'punch' && only.shape === 'circle' ? { center: only.center, radius: only.radius } : null
 
     return {
+      keyPoints,
+      roundPunch,
       editedIds: new Set(starts.keys()),
       preview: (d) => {
         const replacements = new Map<string, string | null>()
@@ -699,11 +886,28 @@ export class DirectEditController {
     // Alt moves the shape alone, leaving its holes where they are.
     const plan = this.movePlan(this.movingIds(doc, pressedId), !mods.alt)
     if (!plan) return null
+    let index: SnapIndex | null = null
     let d: Vec = { x: 0, y: 0 }
     return {
       editedIds: plan.editedIds,
-      update: (p) => {
+      update: (p, m) => {
         d = sub(p, press.point)
+        // Shift keeps the move straight: horizontal or vertical, whichever is longer.
+        const axes = m.shift ? (Math.abs(d.x) >= Math.abs(d.y) ? { x: true, y: false } : { x: false, y: true }) : undefined
+        if (axes) d = { x: axes.x ? d.x : 0, y: axes.y ? d.y : 0 }
+        let snap: SnapResult = NO_SNAP
+        if (this.snapsOn(m)) {
+          index ??= this.makeSnapIndex(doc, plan.editedIds)
+          const tolerance = this.snapTolerance(press.touch)
+          snap = snapMoving(index, plan.keyPoints.map((k) => add(k, d)), { tolerance, axes })
+          if (!snap.label && !axes && plan.roundPunch) {
+            const moved = add(plan.roundPunch.center, d)
+            const touch = snapCircleTangent(index, moved, plan.roundPunch.radius, tolerance, 'move')
+            if (touch) snap = { d: sub(touch.center, moved), label: 'tangent', guides: [{ kind: 'mark', p: touch.touch }] }
+          }
+          d = add(d, snap.d)
+        }
+        this.showSnap(snap)
         plan.preview(d)
         hud.set({ chip: `${Math.round(d.x)}, ${Math.round(d.y)}` })
       },
@@ -721,11 +925,22 @@ export class DirectEditController {
     const compose = createComposeSession(doc, [layerId])
     const center = this.center()
     const startLocal = sub(press.point, center)
+    const exclude = new Set([layerId])
+    let index: SnapIndex | null = null
     let current = start
     return {
-      editedIds: new Set([layerId]),
+      editedIds: exclude,
       update: (p, mods) => {
-        current = dragCarveHandle(start, handle.id, startLocal, sub(p, center), mods)
+        const pointer = sub(p, center)
+        current = dragCarveHandle(start, handle.id, startLocal, pointer, mods)
+        let snap: SnapResult = NO_SNAP
+        if (this.snapsOn(mods)) {
+          index ??= this.makeSnapIndex(doc, exclude)
+          const snapped = this.snapHandle(index, doc, exclude, start, current, handle, startLocal, pointer, mods, press.touch)
+          current = snapped.spec
+          snap = snapped.snap
+        }
+        this.showSnap(snap)
         setInkPathData(this.scope, compose.compose(new Map([[layerId, carveOutline(current).pathData]])))
         hud.set({ chip: handleReadout(current, handle) })
         this.drawOverlay()
@@ -737,6 +952,80 @@ export class DirectEditController {
       cancel: () => setInkPathData(this.scope, this.host.getInkPathData()),
       drawOverlay: (overlay) => this.drawRecipe(overlay, current, handle.id),
     }
+  }
+
+  /**
+   * Snap what a handle drags. Corners, sides and groove ends land on points,
+   * alignments and edges (the pointer is nudged by the snap, so the recipe's
+   * own rules still apply); sizes match sizes already in use; rotation
+   * settles on 15° steps.
+   */
+  private snapHandle(
+    index: SnapIndex,
+    doc: IllustratorDocument,
+    exclude: Set<string>,
+    start: CarveSpec,
+    raw: CarveSpec,
+    handle: CarveHandle,
+    startPointer: Vec,
+    pointer: Vec,
+    mods: Modifiers,
+    touch: boolean,
+  ): { spec: CarveSpec; snap: SnapResult } {
+    const tolerance = this.snapTolerance(touch)
+    const none = { spec: raw, snap: NO_SNAP }
+    const sizes = () => documentSizes(doc, exclude)
+
+    if (handle.kind === 'resize' || handle.kind === 'endpoint') {
+      const point = handleGeometry(raw, handle.id)
+      const axes = handleAxes(raw, handle.id)
+      if (!point || !axes) return none
+      const other = isGroove(raw) ? (handle.id === 'from' ? raw.to : raw.from) : null
+      const snap = snapMoving(index, [point], {
+        tolerance,
+        axes,
+        edges: handle.kind === 'endpoint',
+        rays: other && !mods.shift ? [other] : undefined,
+      })
+      if (!snap.label) return none
+      return { spec: dragCarveHandle(start, handle.id, startPointer, add(pointer, snap.d), mods), snap }
+    }
+
+    if (handle.kind === 'scale' && raw.kind === 'punch') {
+      const same = snapValue(raw.radius, sizes().punchRadii, tolerance)
+      if (same !== null) return { spec: { ...raw, radius: same }, snap: { ...NO_SNAP, label: 'same size' } }
+      if (raw.shape === 'circle') {
+        const touchEdge = snapCircleTangent(index, raw.center, raw.radius, tolerance, 'radius')
+        if (touchEdge) {
+          return {
+            spec: { ...raw, radius: touchEdge.radius },
+            snap: { d: { x: 0, y: 0 }, label: 'tangent', guides: [{ kind: 'mark', p: touchEdge.touch }] },
+          }
+        }
+      }
+      return none
+    }
+
+    if (handle.kind === 'radius' && raw.kind === 'slab') {
+      const same = snapValue(raw.radius, sizes().radii, tolerance)
+      return same === null ? none : { spec: { ...raw, radius: same }, snap: { ...NO_SNAP, label: 'same size' } }
+    }
+
+    if (handle.kind === 'width' && isGroove(raw)) {
+      const same = snapValue(raw.width, sizes().widths, tolerance)
+      return same === null ? none : { spec: { ...raw, width: same }, snap: { ...NO_SNAP, label: 'same size' } }
+    }
+
+    if (handle.kind === 'rotate' && !isGroove(raw) && !isGroove(start) && !mods.shift) {
+      // The pointer's arc distance to the nearest 15° step, measured at the handle.
+      const reach = Math.max(distance(handle.at, start.center), 1)
+      const step = Math.round(raw.rotation / 15) * 15
+      const off = (Math.abs(raw.rotation - step) * Math.PI * reach) / 180
+      if (off > tolerance) return none
+      const rotation = step === -180 ? 180 : step
+      return { spec: { ...raw, rotation }, snap: { ...NO_SNAP, label: `${rotation}°` } }
+    }
+    return none
   }
 
   /** Outline, unbent ghost (if bent) and handles of a recipe being shown or edited. */
@@ -778,13 +1067,24 @@ export class DirectEditController {
     const layer = this.layer(layerId)
     if (!doc || !layer?.carve || layer.locked) return null
     const start = layer.carve
-    const compose = createComposeSession(doc, [layerId])
+    const exclude = new Set([layerId])
+    const compose = createComposeSession(doc, exclude)
+    let index: SnapIndex | null = null
     let current = start
     return {
-      editedIds: new Set([layerId]),
-      update: (p) => {
+      editedIds: exclude,
+      update: (p, mods) => {
         // The grabbed point follows the pointer's movement, wherever on the band it was pressed.
-        current = bendCarve(start, grab, add(grab.point, sub(p, press.point)))
+        let target = add(grab.point, sub(p, press.point))
+        let snap: SnapResult = NO_SNAP
+        if (this.snapsOn(mods)) {
+          index ??= this.makeSnapIndex(doc, exclude)
+          snap = snapMoving(index, [target], { tolerance: this.snapTolerance(press.touch) })
+          target = add(target, snap.d)
+        }
+        current = bendCarve(start, grab, target)
+        const settled = grab.side.type === 'corner' ? 'round' : 'straight'
+        this.showSnap(snap, isSideBent(current, grab.side) ? null : settled)
         setInkPathData(this.scope, compose.compose(new Map([[layerId, carveOutline(current).pathData]])))
         hud.set({ chip: bendReadout(current, grab.side) })
         this.drawOverlay()
@@ -811,18 +1111,28 @@ export class DirectEditController {
     const { curveIndex } = zone.free
     const t = clamp(zone.free.t, BEND_T_MIN, BEND_T_MAX)
     const base = cubicPoint(freeCurve(start, curveIndex), t)
-    const compose = createComposeSession(doc, [layer.id])
+    const exclude = new Set([layer.id])
+    const compose = createComposeSession(doc, exclude)
     const center = this.center()
     const wasStraight = isCurveStraight(start, curveIndex)
+    let index: SnapIndex | null = null
     let current = start
     let straight = wasStraight
     return {
-      editedIds: new Set([layer.id]),
-      update: (p) => {
-        const bent = bendCurve(start, curveIndex, t, add(base, sub(p, press.point)))
+      editedIds: exclude,
+      update: (p, mods) => {
+        let target = add(base, sub(p, press.point))
+        let snap: SnapResult = NO_SNAP
+        if (this.snapsOn(mods)) {
+          index ??= this.makeSnapIndex(doc, exclude, otherAnchors(start, -1))
+          snap = snapMoving(index, [target], { tolerance: this.snapTolerance(press.touch) })
+          target = add(target, snap.d)
+        }
+        const bent = bendCurve(start, curveIndex, t, target)
         // Close to the chord counts as straight: the bend removes itself.
         straight = maxChordDeviation(freeCurve(bent, curveIndex)) < 2 * this.unitsPerPx()
         current = straight ? (wasStraight ? start : straightenCurve(start, curveIndex)) : bent
+        this.showSnap(straight ? null : snap, straight ? 'straight' : null)
         setInkPathData(this.scope, compose.compose(new Map([[layer.id, editablePathToPathData(current)]])))
         hud.set({
           chip: straight ? 'straight' : `depth ${r0(maxChordDeviation(freeCurve(current, curveIndex)))}`,
@@ -857,32 +1167,56 @@ export class DirectEditController {
     drawCurves(this.scope, overlay, curves, this.center())
   }
 
-  private pointSession(
-    press: Press,
-    layerId: string,
-    apply: (start: EditablePath, d: Vec, mods: Modifiers) => EditablePath,
-    anchorIndex: number,
-  ): Session | null {
+  /** Drag one anchor of a free shape, or one of its Bézier handles. */
+  private pointSession(press: Press, layerId: string, anchorIndex: number, which: 'anchor' | 'in' | 'out'): Session | null {
     const doc = this.host.getDoc()
     const layer = this.layer(layerId)
     if (!doc || !layer || layer.carve) return null
     const start = this.freePathOf(layer)
-    if (!start) return null
-    const compose = createComposeSession(doc, [layerId])
+    if (!start || !start.segs[anchorIndex]) return null
+    const seg = start.segs[anchorIndex]
+    const handle = which === 'anchor' ? null : ((which === 'in' ? seg.hIn : seg.hOut) ?? { x: 0, y: 0 })
+    const startPoint = handle ? add(seg.p, handle) : seg.p
+    const count = start.segs.length
+    // An anchor follows 15° rays from its neighbours; a handle, from its own anchor.
+    const neighbours =
+      which === 'anchor'
+        ? [anchorIndex - 1, anchorIndex + 1]
+            .filter((i) => start.closed || (i >= 0 && i < count))
+            .map((i) => start.segs[(i + count) % count].p)
+        : [seg.p]
+    const exclude = new Set([layerId])
+    const compose = createComposeSession(doc, exclude)
+    let index: SnapIndex | null = null
     let current = start
     const center = this.center()
     return {
-      editedIds: new Set([layerId]),
+      editedIds: exclude,
       update: (p, mods) => {
-        current = apply(start, sub(p, press.point), mods)
-        const pathData = editablePathToPathData(current)
-        setInkPathData(this.scope, compose.compose(new Map([[layerId, pathData]])))
+        let d = sub(p, press.point)
+        let snap: SnapResult = NO_SNAP
+        if (this.snapsOn(mods)) {
+          const tolerance = this.snapTolerance(press.touch)
+          if (which === 'anchor') {
+            index ??= this.makeSnapIndex(doc, exclude, otherAnchors(start, anchorIndex))
+            snap = snapMoving(index, [add(startPoint, d)], { tolerance, edges: true, rays: neighbours })
+          } else {
+            snap = snapMoving({ targets: [] }, [add(startPoint, d)], { tolerance, rays: neighbours })
+          }
+          d = add(d, snap.d)
+        }
+        current =
+          which === 'anchor'
+            ? moveAnchor(start, anchorIndex, add(seg.p, d))
+            : moveHandle(start, anchorIndex, which, add(startPoint, d), { breakSmooth: mods.alt })
+        this.showSnap(snap)
+        setInkPathData(this.scope, compose.compose(new Map([[layerId, editablePathToPathData(current)]])))
         this.drawOverlay()
       },
       commit: () => {
         if (current === start) return
         this.host.commitLayerEdits({
-          label: 'Move point',
+          label: which === 'anchor' ? 'Move point' : 'Shape curve',
           edits: [{ layerId, pathData: editablePathToPathData(current) }],
           select: [layerId],
           anchor: { layerId, segmentIndex: anchorIndex },
@@ -941,6 +1275,11 @@ export class DirectEditController {
         drawAnchors(this.scope, layer, free.path, this.center(), anchorIndex, hoverIndex)
       }
       if (this.pendingPoint) drawGhostPoint(this.scope, layer, this.pendingPoint.point, this.center())
+    }
+    if (this.snapGuides.length) {
+      this.scope.activate()
+      layer.activate()
+      drawSnapGuides(this.scope, layer, this.snapGuides, this.center())
     }
     this.scope.view.update()
   }

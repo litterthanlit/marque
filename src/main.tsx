@@ -28,6 +28,7 @@ if (import.meta.env.DEV) {
       pad: DEFAULT_HANDLE_LAYOUT.pad / unit,
       rotateOffset: DEFAULT_HANDLE_LAYOUT.rotateOffset / unit,
       minEdgeHandleSize: DEFAULT_HANDLE_LAYOUT.minEdgeHandleSize / unit,
+      radiusInset: DEFAULT_HANDLE_LAYOUT.radiusInset / unit,
     }
     return carveHandles(layer.carve, layout).map((h) => ({
       id: h.id,

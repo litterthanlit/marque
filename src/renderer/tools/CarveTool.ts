@@ -6,6 +6,12 @@ interface CarveCallbacks {
   onCut: (spec: CutSpec) => void
   /** The cut being dragged right now, or null when it ends — for live ink preview. */
   onPreview: (spec: CutSpec | null) => void
+  /** Snap a point being placed (or about to be, on hover); `from` is the other end of a channel or slice. */
+  snapPoint?: (p: Vec, from: Vec | null, role: 'hover' | 'start' | 'end') => Vec
+  /** Snap a punch's radius around its centre. */
+  snapRadius?: (center: Vec, radius: number) => number
+  /** The press ended (cut, cancelled or not): snap guides can go. */
+  onGestureEnd?: () => void
 }
 
 interface CarveOptions {
@@ -14,13 +20,17 @@ interface CarveOptions {
   cutWidth: number
 }
 
+const round2 = (v: number) => Math.round(v * 100) / 100
+const roundVec = (v: Vec): Vec => ({ x: round2(v.x), y: round2(v.y) })
+
 // A click without a drag stamps a punch of this radius.
 const DEFAULT_PUNCH_RADIUS = 36
 const PREVIEW_COLOR = '#3b82f6'
 
 /**
  * Punch, Channel and Slice. Press to start, drag to size, release to cut.
- * Hold Shift while dragging a channel or slice to lock its angle to 15° steps.
+ * Points snap as they're placed (the editor decides how); hold Shift while
+ * dragging a channel or slice to lock its angle to 15° steps.
  */
 export class CarveTool {
   private scope: paper.PaperScope
@@ -42,35 +52,42 @@ export class CarveTool {
 
   private toLocal(point: paper.Point): Vec {
     const center = this.scope.view.center
-    return { x: Math.round(point.x - center.x), y: Math.round(point.y - center.y) }
+    return { x: point.x - center.x, y: point.y - center.y }
   }
 
   private specFor(start: Vec, current: Vec): CutSpec {
     if (this.options.kind === 'punch') {
+      const radius = Math.hypot(current.x - start.x, current.y - start.y)
       return {
         kind: 'punch',
         shape: this.options.punchShape,
         center: start,
-        radius: Math.round(Math.hypot(current.x - start.x, current.y - start.y)),
+        radius: round2(this.callbacks.snapRadius?.(start, radius) ?? radius),
       }
     }
     let end = current
     if (this.shift) {
       const length = Math.hypot(current.x - start.x, current.y - start.y)
       const angle = Math.round(Math.atan2(current.y - start.y, current.x - start.x) / (Math.PI / 12)) * (Math.PI / 12)
-      end = { x: Math.round(start.x + Math.cos(angle) * length), y: Math.round(start.y + Math.sin(angle) * length) }
+      end = { x: start.x + Math.cos(angle) * length, y: start.y + Math.sin(angle) * length }
+    } else if (this.callbacks.snapPoint) {
+      end = this.callbacks.snapPoint(current, start, 'end')
     }
-    return { kind: this.options.kind, from: start, to: end, width: this.options.cutWidth }
+    return { kind: this.options.kind, from: start, to: roundVec(end), width: this.options.cutWidth }
   }
 
   onMouseDown(point: paper.Point) {
-    this.start = this.toLocal(point)
+    const local = this.toLocal(point)
+    this.start = roundVec(this.callbacks.snapPoint?.(local, null, 'start') ?? local)
     this.update(this.start)
   }
 
   onMouseDrag(point: paper.Point) {
-    // The canvas routes plain pointer moves here too; only act while pressed.
-    if (!this.start) return
+    // The canvas routes plain pointer moves here too: before a press, show where it would snap.
+    if (!this.start) {
+      this.callbacks.snapPoint?.(this.toLocal(point), null, 'hover')
+      return
+    }
     this.update(this.toLocal(point))
   }
 
@@ -80,6 +97,7 @@ export class CarveTool {
     if (spec.kind === 'punch' && !isMeaningfulCut(spec)) spec = { ...spec, radius: DEFAULT_PUNCH_RADIUS }
     this.reset()
     this.callbacks.onPreview(null)
+    this.callbacks.onGestureEnd?.()
     if (isMeaningfulCut(spec)) this.callbacks.onCut(spec)
   }
 
@@ -116,7 +134,10 @@ export class CarveTool {
   }
 
   cancel() {
-    if (this.start) this.callbacks.onPreview(null)
+    if (this.start) {
+      this.callbacks.onPreview(null)
+      this.callbacks.onGestureEnd?.()
+    }
     this.reset()
     this.scope.view.update()
   }
