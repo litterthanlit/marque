@@ -22,13 +22,18 @@ function App() {
       if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
 
       if (e.metaKey || e.ctrlKey) {
-        if (e.key === 'z' && !e.shiftKey) {
+        // Same routing as the toolbar buttons: Vector Maker has its own command history.
+        const inVectorMaker = useLogoStore.getState().activeSurface === 'illustrator'
+        const key = e.key.toLowerCase()
+        if (key === 'z' && !e.shiftKey) {
           e.preventDefault()
-          useLogoStore.temporal.getState().undo()
+          if (inVectorMaker) useLogoStore.getState().undoVectorCommand()
+          else useLogoStore.temporal.getState().undo()
         }
-        if (e.key === 'z' && e.shiftKey) {
+        if (key === 'z' && e.shiftKey) {
           e.preventDefault()
-          useLogoStore.temporal.getState().redo()
+          if (inVectorMaker) useLogoStore.getState().redoVectorCommand()
+          else useLogoStore.temporal.getState().redo()
         }
         if (e.key === 'e') {
           e.preventDefault()

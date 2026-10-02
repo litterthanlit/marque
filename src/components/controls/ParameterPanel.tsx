@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { SliderControl } from './SliderControl.tsx'
 import { SeedInput } from './SeedInput.tsx'
@@ -11,6 +11,10 @@ import { cn } from '../../lib/utils.ts'
 import { useLocalStoragePref } from '../../hooks/useLocalStoragePref.ts'
 import { isIllustratorSourceStale } from '../../engine/illustrator/compose.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../../engine/illustrator/types.ts'
+import type { MarkData } from '../../engine/illustrator/types.ts'
+import { PUNCH_SHAPES, SLAB_KINDS } from '../../engine/carve/geometry.ts'
+import { checkSurvival, SURVIVAL_SIZES } from '../../engine/carve/survival.ts'
+import { useActiveMark } from '../../hooks/useActiveMark.ts'
 
 type Tab = 'generate' | 'illustrator'
 
@@ -461,6 +465,7 @@ function IllustratorTab() {
   const setIllustratorLayerOperation = useLogoStore((s) => s.setIllustratorLayerOperation)
   const booleanIllustratorLayers = useLogoStore((s) => s.booleanIllustratorLayers)
   const toggleSelectedPointCurve = useLogoStore((s) => s.toggleSelectedPointCurve)
+  const startFromSlab = useLogoStore((s) => s.startFromSlab)
 
   const stale = useMemo(
     () => isIllustratorSourceStale(illustrator, params),
@@ -510,9 +515,29 @@ function IllustratorTab() {
         </button>
       </div>
 
+      <div>
+        <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Start from a slab</div>
+        <div className="grid grid-cols-4 gap-1">
+          {SLAB_KINDS.map((slab) => (
+            <button
+              key={slab.id}
+              type="button"
+              onClick={() => startFromSlab(slab.id)}
+              className={cn(
+                'h-8 rounded-lg text-xs transition-all',
+                'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
+              )}
+            >
+              {slab.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {!illustrator && (
         <p className="text-xs text-sidebar-muted">
-          Convert the generated mark to start editing paths and layers.
+          Convert the generated mark, or start from a solid slab and carve material away.
         </p>
       )}
 
@@ -546,8 +571,10 @@ function IllustratorTab() {
             </div>
           </div>
 
+          <CarveTools onPick={() => setIllustratorMode('object')} />
+
           <div>
-            <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Tool</div>
+            <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Draw</div>
             <div className="flex gap-1">
               {TOOLS.map((tool) => (
                 <button
@@ -558,6 +585,8 @@ function IllustratorTab() {
                     setActiveTool(activeTool === tool.id ? null : tool.id)
                   }}
                   title={tool.label}
+                  aria-label={tool.label}
+                  aria-pressed={activeTool === tool.id}
                   className={cn(
                     'flex-1 h-9 flex items-center justify-center rounded-lg transition-all',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
@@ -590,6 +619,9 @@ function IllustratorTab() {
                 {illustrator.layers.length} total
               </div>
             </div>
+            <p className="mb-2 text-[11px] leading-snug text-sidebar-muted">
+              Applied in order from 01. A cut removes only what is below it; point at a hole on the canvas to find its cut.
+            </p>
             <div className="max-h-48 overflow-y-auto rounded-lg border border-border bg-interactive-active/40">
               {illustrator.layers.length === 0 ? (
                 <div className="px-3 py-2 text-xs text-sidebar-muted">No layers yet.</div>
@@ -658,14 +690,15 @@ function IllustratorTab() {
                           layer.operation === 'add' ? 'subtract' : 'add',
                         )}
                         className={cn(
-                          'h-7 w-7 shrink-0 rounded-md text-[10px] transition-colors',
+                          'h-7 w-8 shrink-0 rounded-md text-[10px] transition-colors',
                           layer.operation === 'add'
                             ? 'text-emerald-300 hover:bg-interactive-hover'
                             : 'text-rose-300 hover:bg-interactive-hover',
                         )}
-                        aria-label={`Toggle ${layer.name} operation`}
+                        aria-label={layer.operation === 'add' ? `${layer.name} adds material. Make it a cut` : `${layer.name} cuts material. Make it add`}
+                        title={layer.operation === 'add' ? 'Adds material' : 'Cuts material'}
                       >
-                        {layer.operation === 'add' ? '+' : '-'}
+                        {layer.operation === 'add' ? 'Add' : 'Cut'}
                       </button>
                     </div>
                   )
@@ -725,7 +758,7 @@ function IllustratorTab() {
                       : 'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
                   )}
                 >
-                  Subtract
+                  Cut
                 </button>
               </div>
               <SliderControl
@@ -832,9 +865,191 @@ function IllustratorTab() {
               Select a layer on the canvas or in the list to edit it.
             </p>
           )}
+
+          <SurvivalCheck />
         </>
       )}
     </div>
+  )
+}
+
+/* ─── Carving ─── */
+
+const CARVE_TOOLS = [
+  { id: 'punch', label: 'Punch', key: 'Stamp a hole. Click, or drag to size it.' },
+  { id: 'channel', label: 'Channel', key: 'Drag to gouge a groove between two points.' },
+  { id: 'slice', label: 'Slice', key: 'Drag a line to cut clean through, edge to edge.' },
+] as const
+
+function CarveTools({ onPick }: { onPick: () => void }) {
+  const activeTool = useLogoStore((s) => s.ui.activeTool)
+  const setActiveTool = useLogoStore((s) => s.setActiveTool)
+  const carve = useLogoStore((s) => s.ui.carve)
+  const setCarveSettings = useLogoStore((s) => s.setCarveSettings)
+  const active = CARVE_TOOLS.find((tool) => tool.id === activeTool)
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="text-[10px] uppercase tracking-widest text-sidebar-muted">Carve</div>
+      <div className="grid grid-cols-3 gap-1" role="group" aria-label="Carve tools">
+        {CARVE_TOOLS.map((tool) => (
+          <button
+            key={tool.id}
+            type="button"
+            aria-pressed={activeTool === tool.id}
+            title={tool.key}
+            onClick={() => {
+              onPick()
+              setActiveTool(activeTool === tool.id ? null : tool.id)
+            }}
+            className={cn(
+              'h-8 rounded-lg text-xs transition-all',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
+              activeTool === tool.id
+                ? 'bg-interactive text-fg font-medium ring-1 ring-interactive-ring'
+                : 'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
+            )}
+          >
+            {tool.label}
+          </button>
+        ))}
+      </div>
+
+      {active && (
+        <div className="flex flex-col gap-2 rounded-lg border border-border bg-interactive-active/40 p-2.5">
+          <p className="text-[11px] leading-snug text-sidebar-muted">{active.key}</p>
+          {active.id === 'punch' ? (
+            <div className="flex gap-1 p-0.5 bg-interactive-active rounded-lg" role="group" aria-label="Punch shape">
+              {PUNCH_SHAPES.map((shape) => (
+                <button
+                  key={shape.id}
+                  type="button"
+                  aria-pressed={carve.punchShape === shape.id}
+                  onClick={() => setCarveSettings({ punchShape: shape.id })}
+                  className={cn(
+                    'flex-1 h-7 rounded-md text-xs transition-all',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
+                    carve.punchShape === shape.id
+                      ? 'bg-interactive text-fg font-medium shadow-sm'
+                      : 'text-sidebar-muted hover:text-fg',
+                  )}
+                >
+                  {shape.label}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <>
+              <SliderControl
+                label="Width"
+                value={carve.cutWidth}
+                min={4}
+                max={160}
+                step={1}
+                onChange={(v) => setCarveSettings({ cutWidth: v })}
+              />
+              <p className="text-[11px] text-sidebar-muted">Hold Shift to lock the angle to 15° steps.</p>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SurvivalCheck() {
+  const carve = useLogoStore((s) => s.ui.carve)
+  const setCarveSettings = useLogoStore((s) => s.setCarveSettings)
+  const fillColor = useLogoStore((s) => s.params.fillColor)
+  const mark = useActiveMark()
+  const survival = useMemo(() => checkSurvival(mark, carve.survivalSize), [mark, carve.survivalSize])
+  const percent = survival ? Math.max(1, Math.round(survival.weakRatio * 100)) : 0
+  const weak = Boolean(survival && survival.weakRatio > 0)
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border pt-3">
+      <div className="text-[10px] uppercase tracking-widest text-sidebar-muted">Survival check</div>
+      <div className="flex items-end gap-3" aria-label="Mark at actual size">
+        {SURVIVAL_SIZES.map((size) => (
+          <figure key={size} className="m-0 flex flex-col items-center gap-1">
+            <SizePreview mark={mark} size={size} color={fillColor} />
+            <figcaption className="text-[10px] font-mono-tabular text-sidebar-muted">{size}px</figcaption>
+          </figure>
+        ))}
+      </div>
+      <div>
+        <div className="text-xs text-sidebar-text mb-1.5">Smallest size it must hold up at</div>
+        <div className="flex gap-1 p-0.5 bg-interactive-active rounded-lg" role="group" aria-label="Smallest size in pixels">
+          {SURVIVAL_SIZES.map((size) => (
+            <button
+              key={size}
+              type="button"
+              aria-pressed={carve.survivalSize === size}
+              onClick={() => setCarveSettings({ survivalSize: size })}
+              className={cn(
+                'flex-1 h-7 rounded-md text-xs font-mono-tabular transition-all',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
+                carve.survivalSize === size
+                  ? 'bg-interactive text-fg font-medium shadow-sm'
+                  : 'text-sidebar-muted hover:text-fg',
+              )}
+            >
+              {size}px
+            </button>
+          ))}
+        </div>
+      </div>
+      <ToggleRow
+        label={carve.showWeakSpots ? 'Weak spots shown on canvas' : 'Show weak spots on canvas'}
+        checked={carve.showWeakSpots}
+        onChange={(checked) => setCarveSettings({ showWeakSpots: checked })}
+      />
+      <p className="flex items-start gap-2 text-xs text-sidebar-text" aria-live="polite">
+        <span
+          aria-hidden="true"
+          className={cn('mt-1 size-2 shrink-0 rounded-full', weak ? 'bg-rose-500' : 'bg-emerald-400')}
+        />
+        {!survival
+          ? 'Nothing to check yet.'
+          : weak
+            ? `About ${percent}% of the ink is too thin to show at ${carve.survivalSize}px. Widen the walls marked in pink.`
+            : `Every wall holds up at ${carve.survivalSize}px.`}
+      </p>
+    </div>
+  )
+}
+
+function SizePreview({ mark, size, color }: { mark: MarkData | null; size: number; color: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ratio = window.devicePixelRatio || 1
+    canvas.width = Math.round(size * ratio)
+    canvas.height = Math.round(size * ratio)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    if (!mark?.compoundPathData) return
+    const { x, y, width, height } = mark.viewBox
+    const longest = Math.max(width, height)
+    if (longest <= 0) return
+    // Fill the tile edge to edge, the way an app icon or favicon would.
+    const scale = (size * ratio) / longest
+    ctx.setTransform(scale, 0, 0, scale, -(x + width / 2 - longest / 2) * scale, -(y + height / 2 - longest / 2) * scale)
+    ctx.fillStyle = color
+    ctx.fill(new Path2D(mark.compoundPathData), mark.fillRule)
+  }, [mark, size, color])
+
+  return (
+    <canvas
+      ref={canvasRef}
+      role="img"
+      aria-label={`Mark at ${size} pixels`}
+      className="rounded-[3px] bg-white"
+      style={{ width: size, height: size }}
+    />
   )
 }
 

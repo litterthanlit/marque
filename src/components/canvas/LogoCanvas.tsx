@@ -3,9 +3,15 @@ import { usePaperScope } from '../../renderer/usePaperScope.ts'
 import { renderLogoOnScope } from '../../renderer/PaperRenderer.ts'
 import {
   layerCanvasPointToLocal,
+  refreshIllustratorInk,
   renderIllustratorOnScope,
   type IllustratorControlData,
 } from '../../renderer/IllustratorRenderer.ts'
+import { CarveTool } from '../../renderer/tools/CarveTool.ts'
+import { checkSurvival } from '../../engine/carve/survival.ts'
+import { cutLayerName, cutPathData, type CutSpec } from '../../engine/carve/geometry.ts'
+import type { IllustratorDocument } from '../../engine/illustrator/types.ts'
+import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../../engine/illustrator/types.ts'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { InteractionLayer } from '../../renderer/InteractionLayer.ts'
 import { PencilTool } from '../../renderer/tools/PencilTool.ts'
@@ -23,7 +29,7 @@ export function LogoCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const scopeRef = usePaperScope(canvasRef)
   const interactionRef = useRef<InteractionLayer | null>(null)
-  const toolRef = useRef<PencilTool | PenTool | GraffitiTool | ShapeBuilderTool | null>(null)
+  const toolRef = useRef<PencilTool | PenTool | GraffitiTool | ShapeBuilderTool | CarveTool | null>(null)
   const pointDragRef = useRef<IllustratorControlData | null>(null)
   const result = useLogoStore((s) => s.result)
   const ui = useLogoStore((s) => s.ui)
@@ -40,12 +46,18 @@ export function LogoCanvas() {
   const setPointSelection = useLogoStore((s) => s.setPointSelection)
   const updateIllustratorPoint = useLogoStore((s) => s.updateIllustratorPoint)
   const togglePathSelection = useLogoStore((s) => s.togglePathSelection)
+  const addCarveCut = useLogoStore((s) => s.addCarveCut)
   const activeMark = useActiveMark()
 
   const dissolution = useMemo(() => {
     if (!activeMark || !effectParams.dissolution.enabled) return null
     return DissolutionProcessor.process({ mark: activeMark }, effectParams.dissolution)
   }, [activeMark, effectParams.dissolution])
+
+  const survival = useMemo(() => {
+    if (activeSurface !== 'illustrator' || !ui.carve.showWeakSpots || dissolution) return null
+    return checkSurvival(activeMark, ui.carve.survivalSize)
+  }, [activeSurface, activeMark, dissolution, ui.carve.showWeakSpots, ui.carve.survivalSize])
 
   // Render logo + drawn paths + interaction layer
   useEffect(() => {
@@ -56,6 +68,7 @@ export function LogoCanvas() {
       const itemMap = renderIllustratorOnScope(scope, illustrator, {
         fillColor: params.fillColor,
         dissolution,
+        survival,
       })
 
       if (illustrator.mode === 'object' && !dissolution) {
@@ -69,6 +82,18 @@ export function LogoCanvas() {
               updateIllustratorLayerTransform(id, {
                 dx: (layer?.transform.dx ?? 0) + dx,
                 dy: (layer?.transform.dy ?? 0) + dy,
+              })
+            },
+            onDragPreview: (id, dx, dy) => {
+              const doc = useLogoStore.getState().illustrator
+              if (!doc) return
+              refreshIllustratorInk(scope, {
+                ...doc,
+                layers: doc.layers.map((layer) =>
+                  layer.id === id
+                    ? { ...layer, transform: { ...layer.transform, dx: layer.transform.dx + dx, dy: layer.transform.dy + dy } }
+                    : layer,
+                ),
               })
             },
           })
@@ -119,6 +144,7 @@ export function LogoCanvas() {
   }, [
     activeSurface,
     illustrator,
+    survival,
     result,
     ui.showGrid,
     ui.showConstruction,
@@ -161,6 +187,22 @@ export function LogoCanvas() {
     const color = params.fillColor
 
     switch (ui.activeTool) {
+      case 'punch':
+      case 'channel':
+      case 'slice':
+        if (activeSurface !== 'illustrator') break
+        toolRef.current = new CarveTool(scope, {
+          onCut: (spec) => addCarveCut(spec),
+          onPreview: (spec) => {
+            const doc = useLogoStore.getState().illustrator
+            if (doc) refreshIllustratorInk(scope, spec ? withPreviewCut(doc, spec) : doc)
+          },
+        }, {
+          kind: ui.activeTool,
+          punchShape: ui.carve.punchShape,
+          cutWidth: ui.carve.cutWidth,
+        })
+        break
       case 'pencil':
         toolRef.current = new PencilTool(scope, callbacks, { strokeColor: color, strokeWidth: 2 })
         break
@@ -184,10 +226,13 @@ export function LogoCanvas() {
   }, [
     activeSurface,
     ui.activeTool,
+    ui.carve.punchShape,
+    ui.carve.cutWidth,
     params.fillColor,
     scopeRef,
     addDrawnPath,
     addIllustratorPathLayer,
+    addCarveCut,
   ])
 
   // Mouse events — route to active tool or interaction layer
@@ -357,6 +402,10 @@ export function LogoCanvas() {
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
       if (!toolRef.current) return
+      if (toolRef.current instanceof CarveTool && e.key === 'Escape') {
+        toolRef.current.cancel()
+        return
+      }
       if (toolRef.current instanceof PenTool || toolRef.current instanceof ShapeBuilderTool) {
         if (e.key === 'Enter') {
           e.preventDefault()
@@ -390,6 +439,7 @@ export function LogoCanvas() {
 
   const hasPerspective = ui.perspectiveX !== 0 || ui.perspectiveY !== 0
   const isDrawingTool = ui.activeTool === 'pencil' || ui.activeTool === 'pen' || ui.activeTool === 'graffiti' || ui.activeTool === 'shapebuilder'
+    || ui.activeTool === 'punch' || ui.activeTool === 'channel' || ui.activeTool === 'slice'
 
   const canvasStyle: React.CSSProperties = hasPerspective
     ? {
@@ -423,6 +473,26 @@ export function LogoCanvas() {
       </div>
     </div>
   )
+}
+
+/** The document as it would be with `spec` applied — for previewing a cut mid-drag. */
+function withPreviewCut(doc: IllustratorDocument, spec: CutSpec): IllustratorDocument {
+  return {
+    ...doc,
+    layers: [
+      ...doc.layers,
+      {
+        id: '__carve_preview',
+        name: cutLayerName(spec),
+        operation: 'subtract',
+        visible: true,
+        locked: false,
+        pathData: cutPathData(spec),
+        fillRule: 'evenodd',
+        transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+      },
+    ],
+  }
 }
 
 /** Render stored drawn paths as Paper.js items */

@@ -33,6 +33,9 @@ import {
   vectorDocumentToIllustratorDocument,
 } from '../engine/vector/legacyIllustratorAdapter.ts'
 import { paramsEqual } from './historyMiddleware.ts'
+import type { CutSpec, PunchShape, SlabKind } from '../engine/carve/geometry.ts'
+import { cutLayerName, cutPathData, slabPathData } from '../engine/carve/geometry.ts'
+import type { SurvivalSize } from '../engine/carve/survival.ts'
 import {
   getAllModeParamDefaults,
   getModeGeneratorId,
@@ -83,8 +86,34 @@ interface UIState {
   selectedShapeId: string | null
   shapeOverrides: Record<string, ShapeOverride>
   drawnPaths: DrawnPath[]
-  activeTool: 'select' | 'pencil' | 'pen' | 'graffiti' | 'shapebuilder' | null
+  activeTool: EditorTool | null
   selectedPathIds: string[]
+  carve: CarveSettings
+}
+
+export type EditorTool =
+  | 'select'
+  | 'pencil'
+  | 'pen'
+  | 'graffiti'
+  | 'shapebuilder'
+  | 'punch'
+  | 'channel'
+  | 'slice'
+
+export interface CarveSettings {
+  punchShape: PunchShape
+  /** Width of new channels and slices, in layer units. */
+  cutWidth: number
+  survivalSize: SurvivalSize
+  showWeakSpots: boolean
+}
+
+export const DEFAULT_CARVE_SETTINGS: CarveSettings = {
+  punchShape: 'circle',
+  cutWidth: 44,
+  survivalSize: 32,
+  showWeakSpots: true,
 }
 
 interface LogoStore {
@@ -130,7 +159,7 @@ interface LogoStore {
   addDrawnPath: (path: Omit<DrawnPath, 'id'>) => void
   removeDrawnPath: (id: string) => void
   clearDrawnPaths: () => void
-  setActiveTool: (tool: 'select' | 'pencil' | 'pen' | 'graffiti' | 'shapebuilder' | null) => void
+  setActiveTool: (tool: EditorTool | null) => void
   togglePathSelection: (id: string) => void
   clearPathSelection: () => void
   booleanOp: (op: 'unite' | 'subtract' | 'intersect') => void
@@ -157,6 +186,9 @@ interface LogoStore {
   toggleIllustratorLayerVisibility: (id: string) => void
   setIllustratorLayerOperation: (id: string, operation: 'add' | 'subtract') => void
   addIllustratorPathLayer: (path: Omit<DrawnPath, 'id'>) => void
+  setCarveSettings: (update: Partial<CarveSettings>) => void
+  startFromSlab: (kind: SlabKind) => void
+  addCarveCut: (spec: CutSpec) => void
   booleanIllustratorLayers: (op: 'unite' | 'subtract' | 'intersect') => void
   setPointSelection: (selection: PointSelection | null) => void
   updateIllustratorPoint: (
@@ -192,6 +224,7 @@ export const useLogoStore = create<LogoStore>()(
         drawnPaths: [],
         activeTool: null,
         selectedPathIds: [],
+        carve: { ...DEFAULT_CARVE_SETTINGS },
       },
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
@@ -961,6 +994,85 @@ export const useLogoStore = create<LogoStore>()(
               : state.illustrator,
           })
         ),
+
+      setCarveSettings: (update) =>
+        set((state) => ({
+          ui: { ...state.ui, carve: { ...state.ui.carve, ...update } },
+        })),
+
+      startFromSlab: (kind) =>
+        set((state) => {
+          const slab: IllustratorLayer = {
+            id: crypto.randomUUID(),
+            name: 'Slab',
+            operation: 'add',
+            visible: true,
+            locked: false,
+            pathData: slabPathData(kind),
+            fillRule: 'evenodd',
+            transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+          }
+          const legacy: IllustratorDocument = {
+            id: crypto.randomUUID(),
+            source: { seed: 0, modeId: 'slab', generatorId: 'slab', generatorVersion: 'v1' },
+            layers: [slab],
+            selectedLayerIds: [],
+            pointSelection: null,
+            mode: 'object',
+          }
+          const ui = {
+            ...state.ui,
+            activeTool: 'punch' as const,
+            editMode: true,
+            selectedShapeId: null,
+            selectedPathIds: [],
+          }
+          const fresh = illustratorDocumentToVectorDocument(legacy, null, state.params.fillColor)
+          fresh.name = 'Slab'
+          if (state.vectorDocument) {
+            // Keep the old document one undo away instead of discarding it.
+            return {
+              ...commitVectorDocumentUpdate(state, state.vectorDocument, fresh, 'Start from slab', legacy),
+              activeSurface: 'illustrator',
+              ui,
+            }
+          }
+          return {
+            activeSurface: 'illustrator',
+            vectorDocument: fresh,
+            illustrator: vectorDocumentToIllustratorDocument(fresh, legacy),
+            vectorUndoStack: [],
+            vectorRedoStack: [],
+            ui,
+          }
+        }),
+
+      addCarveCut: (spec) =>
+        set((state) => {
+          const pathData = cutPathData(spec)
+          if (!pathData) return state
+          const vectorUpdate = mutateVectorViaIllustrator(state, `Add ${cutLayerName(spec)}`, (doc) => {
+            const layer: IllustratorLayer = {
+              id: crypto.randomUUID(),
+              name: cutLayerName(spec),
+              operation: 'subtract',
+              visible: true,
+              locked: false,
+              pathData,
+              fillRule: 'evenodd',
+              transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+            }
+            return {
+              ...doc,
+              mode: 'object',
+              layers: [...doc.layers, layer],
+              selectedLayerIds: [layer.id],
+              pointSelection: null,
+            }
+          })
+          // The carve tool stays active so cuts can be made one after another.
+          return vectorUpdate ?? state
+        }),
 
       addIllustratorPathLayer: (path) =>
         set((state) => {

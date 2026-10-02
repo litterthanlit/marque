@@ -2,6 +2,7 @@ import type { GenerationResult, LogoParams } from '../types.ts'
 import { getGenerator } from '../generators/registry.ts'
 import { createDefaultAppearance, createDefaultArtboard, IDENTITY_MATRIX } from './document.ts'
 import { pathDataToVectorPaths } from './pathSerialization.ts'
+import { generatedShapesInApplyOrder } from '../illustrator/compose.ts'
 import type { PathObject, VectorDocument, VectorObject } from './types.ts'
 
 function paramsHash(params: LogoParams): string {
@@ -44,8 +45,9 @@ export function createVectorDocumentFromGeneration(
     convertedAt,
   }
 
-  const objects: VectorObject[] = result.shapes.flatMap((shape, index) => {
+  const objects: VectorObject[] = generatedShapesInApplyOrder(result.shapes).flatMap((shape) => {
     if (!shape.pathData) return []
+    const index = result.shapes.indexOf(shape)
 
     const paths = pathDataToVectorPaths(shape.pathData)
     return paths.map((path, pathIndex): PathObject => ({

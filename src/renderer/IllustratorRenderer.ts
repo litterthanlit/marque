@@ -1,12 +1,19 @@
 import type { DissolutionResult } from '../engine/effects/types.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../engine/illustrator/types.ts'
-import { getLayerPathItem } from '../engine/illustrator/compose.ts'
+import { composeIllustratorMark, getLayerPathItem } from '../engine/illustrator/compose.ts'
+import type { SurvivalResult } from '../engine/carve/survival.ts'
 import { renderDissolution } from './FinalView.ts'
 
 interface IllustratorRenderOptions {
   fillColor: string
   dissolution?: DissolutionResult | null
+  survival?: SurvivalResult | null
 }
+
+const INK_ITEM_NAME = '__illustrator_ink'
+// Hit areas must have a fill to be hit-tested, but should not be seen:
+// what you see is the composed ink, exactly as it exports.
+const HIT_AREA_ALPHA = 0.001
 
 export interface IllustratorRenderCache {
   items: Map<string, paper.Item>
@@ -60,6 +67,9 @@ export function renderIllustratorOnScope(
   options: IllustratorRenderOptions,
   cache?: IllustratorRenderCache,
 ): Map<string, paper.Item> {
+  // Compose first: it runs in its own headless scope and leaves that one active.
+  const mark = options.dissolution ? null : composeIllustratorMark(doc)
+
   scope.activate()
   scope.project.clear()
   cache?.items.clear()
@@ -73,18 +83,30 @@ export function renderIllustratorOnScope(
     return itemMap
   }
 
+  if (mark?.compoundPathData) {
+    const ink = new scope.CompoundPath(mark.compoundPathData)
+    ink.name = INK_ITEM_NAME
+    ink.fillRule = 'evenodd'
+    ink.fillColor = new scope.Color(options.fillColor)
+    applyCanvasTranslation(ink, center)
+  }
+
+  if (options.survival && options.survival.weakRatio > 0) {
+    const { overlay, bounds } = options.survival
+    const raster = new scope.Raster(overlay)
+    raster.bounds = new scope.Rectangle(bounds.x + center.x, bounds.y + center.y, bounds.width, bounds.height)
+    raster.opacity = 0.9
+  }
+
   for (const layer of doc.layers) {
     if (!layer.visible) continue
     const item = getLayerPathItem(scope, layer, true)
     if (!item) continue
     applyCanvasTranslation(item, center)
     item.name = layer.id
-    item.fillColor =
-      layer.operation === 'add'
-        ? new scope.Color(options.fillColor)
-        : new scope.Color('#ffffff')
+    item.fillColor = new scope.Color(0, 0, 0, HIT_AREA_ALPHA)
     item.strokeColor = null
-    item.data = { illustratorLayerId: layer.id }
+    item.data = { illustratorLayerId: layer.id, operation: layer.operation }
     itemMap.set(layer.id, item)
     cache?.items.set(layer.id, item)
   }
@@ -112,6 +134,20 @@ export function renderIllustratorOnScope(
 
   scope.view.update()
   return itemMap
+}
+
+/**
+ * Recompose and redraw only the ink — used while dragging so the mark updates
+ * live without committing an undo step on every mouse move.
+ */
+export function refreshIllustratorInk(scope: paper.PaperScope, doc: IllustratorDocument): void {
+  const mark = composeIllustratorMark(doc)
+  scope.activate()
+  const ink = scope.project.getItem({ name: INK_ITEM_NAME }) as paper.CompoundPath | null
+  if (!ink) return
+  ink.pathData = mark?.compoundPathData ?? ''
+  applyCanvasTranslation(ink, getCenter(scope))
+  scope.view.update()
 }
 
 function renderPointControls(
