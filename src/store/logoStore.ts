@@ -217,7 +217,7 @@ export const useLogoStore = create<LogoStore>()(
         drawingMode: false,
         activeDrawShape: 'circle',
         drawnShapes: [],
-        theme: (window.localStorage.getItem('dalat.theme') as ThemeMode) || 'dark',
+        theme: readStoredTheme(),
         editMode: false,
         selectedShapeId: null,
         shapeOverrides: {},
@@ -1360,6 +1360,16 @@ function mutateVectorViaIllustrator(
     label,
     nextLegacyDocument,
   )
+}
+
+// Storage can be missing (tests, server rendering) or throw (blocked site data).
+function readStoredTheme(): ThemeMode {
+  try {
+    if (typeof window === 'undefined') return 'dark'
+    return (window.localStorage.getItem('dalat.theme') as ThemeMode) || 'dark'
+  } catch {
+    return 'dark'
+  }
 }
 
 function mergeLogoParams(
