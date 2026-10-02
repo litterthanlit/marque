@@ -34,7 +34,10 @@ import {
 } from '../engine/vector/legacyIllustratorAdapter.ts'
 import { paramsEqual } from './historyMiddleware.ts'
 import type { CutSpec, PunchShape, SlabKind } from '../engine/carve/geometry.ts'
-import { cutLayerName, cutPathData, slabPathData } from '../engine/carve/geometry.ts'
+import { carveOutline } from '../engine/carve/outline.ts'
+import { carveFromCut, carveLayerName, roundCarveSpec, slabSpec, type CarveSpec } from '../engine/carve/spec.ts'
+import { translateCarve } from '../engine/carve/edit.ts'
+import { sanitizeVectorDocument } from '../engine/vector/document.ts'
 import type { SurvivalSize } from '../engine/carve/survival.ts'
 import {
   getAllModeParamDefaults,
@@ -600,13 +603,16 @@ export const useLogoStore = create<LogoStore>()(
           }
         }),
 
-      setVectorDocument: (doc) =>
-        set((state) => ({
-          vectorDocument: doc,
-          illustrator: doc ? vectorDocumentToIllustratorDocument(doc, state.illustrator) : null,
-          vectorUndoStack: [],
-          vectorRedoStack: [],
-        })),
+      setVectorDocument: (incoming) =>
+        set((state) => {
+          const doc = incoming ? sanitizeVectorDocument(incoming) : null
+          return {
+            vectorDocument: doc,
+            illustrator: doc ? vectorDocumentToIllustratorDocument(doc, state.illustrator) : null,
+            vectorUndoStack: [],
+            vectorRedoStack: [],
+          }
+        }),
 
       applyVectorCommand: (command) =>
         set((state) => {
@@ -846,18 +852,7 @@ export const useLogoStore = create<LogoStore>()(
             const index = doc.layers.findIndex((candidate) => candidate.id === id)
             const layer = doc.layers[index]
             if (!layer) return null
-            const nextLayer: IllustratorLayer = {
-              ...structuredClone(layer),
-              id: crypto.randomUUID(),
-              name: `${layer.name} copy`,
-              sourceShapeId: undefined,
-              locked: false,
-              transform: {
-                ...layer.transform,
-                dx: layer.transform.dx + 12,
-                dy: layer.transform.dy + 12,
-              },
-            }
+            const nextLayer = duplicateLayer(layer)
             const layers = [...doc.layers]
             layers.splice(index + 1, 0, nextLayer)
             return {
@@ -872,18 +867,7 @@ export const useLogoStore = create<LogoStore>()(
           const index = state.illustrator.layers.findIndex((candidate) => candidate.id === id)
           const layer = state.illustrator.layers[index]
           if (!layer) return state
-          const nextLayer: IllustratorLayer = {
-            ...structuredClone(layer),
-            id: crypto.randomUUID(),
-            name: `${layer.name} copy`,
-            sourceShapeId: undefined,
-            locked: false,
-            transform: {
-              ...layer.transform,
-              dx: layer.transform.dx + 12,
-              dy: layer.transform.dy + 12,
-            },
-          }
+          const nextLayer = duplicateLayer(layer)
           const layers = [...state.illustrator.layers]
           layers.splice(index + 1, 0, nextLayer)
           return {
@@ -1002,16 +986,7 @@ export const useLogoStore = create<LogoStore>()(
 
       startFromSlab: (kind) =>
         set((state) => {
-          const slab: IllustratorLayer = {
-            id: crypto.randomUUID(),
-            name: 'Slab',
-            operation: 'add',
-            visible: true,
-            locked: false,
-            pathData: slabPathData(kind),
-            fillRule: 'evenodd',
-            transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
-          }
+          const slab = recipeLayer(slabSpec(kind), 'add')
           const legacy: IllustratorDocument = {
             id: crypto.randomUUID(),
             source: { seed: 0, modeId: 'slab', generatorId: 'slab', generatorVersion: 'v1' },
@@ -1049,19 +1024,9 @@ export const useLogoStore = create<LogoStore>()(
 
       addCarveCut: (spec) =>
         set((state) => {
-          const pathData = cutPathData(spec)
-          if (!pathData) return state
-          const vectorUpdate = mutateVectorViaIllustrator(state, `Add ${cutLayerName(spec)}`, (doc) => {
-            const layer: IllustratorLayer = {
-              id: crypto.randomUUID(),
-              name: cutLayerName(spec),
-              operation: 'subtract',
-              visible: true,
-              locked: false,
-              pathData,
-              fillRule: 'evenodd',
-              transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
-            }
+          const layer = recipeLayer(carveFromCut(spec), 'subtract')
+          if (!layer.pathData) return state
+          const vectorUpdate = mutateVectorViaIllustrator(state, `Add ${layer.name}`, (doc) => {
             return {
               ...doc,
               mode: 'object',
@@ -1360,6 +1325,47 @@ function mutateVectorViaIllustrator(
     label,
     nextLegacyDocument,
   )
+}
+
+/** A layer generated from a recipe: the path always comes from the (rounded) recipe. */
+function recipeLayer(spec: CarveSpec, operation: 'add' | 'subtract'): IllustratorLayer {
+  const carve = roundCarveSpec(spec)
+  return {
+    id: crypto.randomUUID(),
+    name: carveLayerName(carve),
+    operation,
+    visible: true,
+    locked: false,
+    pathData: carveOutline(carve).pathData,
+    fillRule: 'evenodd',
+    transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+    carve,
+  }
+}
+
+const DUPLICATE_OFFSET = 12
+
+/** A copy offset down-right. Recipe layers move their recipe, not a transform. */
+function duplicateLayer(layer: IllustratorLayer): IllustratorLayer {
+  const copy: IllustratorLayer = {
+    ...structuredClone(layer),
+    id: crypto.randomUUID(),
+    name: `${layer.name} copy`,
+    sourceShapeId: undefined,
+    locked: false,
+  }
+  if (layer.carve) {
+    const carve = roundCarveSpec(translateCarve(layer.carve, { x: DUPLICATE_OFFSET, y: DUPLICATE_OFFSET }))
+    return { ...copy, carve, pathData: carveOutline(carve).pathData }
+  }
+  return {
+    ...copy,
+    transform: {
+      ...layer.transform,
+      dx: layer.transform.dx + DUPLICATE_OFFSET,
+      dy: layer.transform.dy + DUPLICATE_OFFSET,
+    },
+  }
 }
 
 // Storage can be missing (tests, server rendering) or throw (blocked site data).

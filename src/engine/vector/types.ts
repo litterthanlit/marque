@@ -1,3 +1,5 @@
+import type { CarveSpec } from '../carve/spec.ts'
+
 export type VectorDocumentKind = 'brand-vector' | 'font'
 export type VectorWorkspaceMode = 'logo' | 'wordmark'
 
@@ -86,6 +88,8 @@ export interface PathObject extends VectorBaseObject {
   type: 'path'
   path: VectorPath
   fillRule: 'nonzero' | 'evenodd'
+  /** Recipe for slabs and cuts. Older builds ignore it and keep the path. */
+  carve?: CarveSpec
 }
 
 export interface ShapeObject extends VectorBaseObject {

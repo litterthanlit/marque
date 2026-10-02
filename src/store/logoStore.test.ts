@@ -10,3 +10,25 @@ describe('logo store', () => {
     expect(state.ui.theme).toBe('dark')
   })
 })
+
+describe('recipes in the store', () => {
+  it('slabs, cuts and duplicates carry recipes, never transforms', () => {
+    const store = useLogoStore.getState()
+    store.startFromSlab('rounded')
+    let doc = useLogoStore.getState().illustrator!
+    expect(doc.layers).toHaveLength(1)
+    expect(doc.layers[0].carve?.kind).toBe('slab')
+
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 20, y: 30 }, radius: 40 })
+    doc = useLogoStore.getState().illustrator!
+    const punch = doc.layers[1]
+    expect(punch.operation).toBe('subtract')
+    expect(punch.carve).toMatchObject({ kind: 'punch', center: { x: 20, y: 30 }, radius: 40 })
+
+    useLogoStore.getState().duplicateIllustratorLayer(punch.id)
+    doc = useLogoStore.getState().illustrator!
+    const copy = doc.layers[2]
+    expect(copy.transform).toEqual({ dx: 0, dy: 0, scale: 1, rotation: 0 })
+    expect(copy.carve).toMatchObject({ kind: 'punch', center: { x: 32, y: 42 } })
+  })
+})

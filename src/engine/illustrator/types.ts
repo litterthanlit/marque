@@ -1,3 +1,5 @@
+import type { CarveSpec } from '../carve/spec.ts'
+
 export type ActiveSurface = 'generated' | 'illustrator'
 export type IllustratorMode = 'object' | 'points'
 
@@ -25,6 +27,8 @@ export interface IllustratorLayer {
   pathData: string
   fillRule: 'nonzero' | 'evenodd'
   transform: IllustratorTransform
+  /** Recipe for slabs and cuts; the path above is always generated from it. */
+  carve?: CarveSpec
 }
 
 export interface PointSelection {

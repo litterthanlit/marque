@@ -13,6 +13,7 @@ import { isIllustratorSourceStale } from '../../engine/illustrator/compose.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../../engine/illustrator/types.ts'
 import type { MarkData } from '../../engine/illustrator/types.ts'
 import { PUNCH_SHAPES, SLAB_KINDS } from '../../engine/carve/geometry.ts'
+import { describeCarve } from '../../engine/carve/spec.ts'
 import { checkSurvival, SURVIVAL_SIZES } from '../../engine/carve/survival.ts'
 import { useActiveMark } from '../../hooks/useActiveMark.ts'
 
@@ -761,48 +762,63 @@ function IllustratorTab() {
                   Cut
                 </button>
               </div>
-              <SliderControl
-                label="Move X"
-                value={selectedLayer.transform.dx}
-                min={-180}
-                max={180}
-                step={1}
-                onChange={(v) => updateIllustratorLayerTransform(selectedLayer.id, { dx: v })}
-              />
-              <SliderControl
-                label="Move Y"
-                value={selectedLayer.transform.dy}
-                min={-180}
-                max={180}
-                step={1}
-                onChange={(v) => updateIllustratorLayerTransform(selectedLayer.id, { dy: v })}
-              />
-              <SliderControl
-                label="Scale"
-                value={selectedLayer.transform.scale}
-                min={0.25}
-                max={3}
-                step={0.01}
-                onChange={(v) => updateIllustratorLayerTransform(selectedLayer.id, { scale: v })}
-              />
-              <SliderControl
-                label="Rotate"
-                value={selectedLayer.transform.rotation}
-                min={-180}
-                max={180}
-                step={1}
-                onChange={(v) => updateIllustratorLayerTransform(selectedLayer.id, { rotation: v })}
-              />
-              <div className="grid grid-cols-3 gap-1">
-                <button
-                  type="button"
-                  onClick={() => updateIllustratorLayer(selectedLayer.id, {
-                    transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
-                  })}
-                  className="h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
-                >
-                  Reset
-                </button>
+              {selectedLayer.carve ? (
+                <div className="rounded-lg border border-border bg-interactive-active/40 px-3 py-2">
+                  <p className="text-xs text-sidebar-text" aria-live="polite">
+                    {describeCarve(selectedLayer.carve)}
+                  </p>
+                  <p className="mt-1 text-[11px] leading-snug text-sidebar-muted">
+                    Drag it on the canvas to move it.
+                  </p>
+                </div>
+              ) : (
+                <>
+                <SliderControl
+                  label="Move X"
+                  value={selectedLayer.transform.dx}
+                  min={-180}
+                  max={180}
+                  step={1}
+                  onChange={(v) => updateIllustratorLayerTransform(selectedLayer.id, { dx: v })}
+                />
+                <SliderControl
+                  label="Move Y"
+                  value={selectedLayer.transform.dy}
+                  min={-180}
+                  max={180}
+                  step={1}
+                  onChange={(v) => updateIllustratorLayerTransform(selectedLayer.id, { dy: v })}
+                />
+                <SliderControl
+                  label="Scale"
+                  value={selectedLayer.transform.scale}
+                  min={0.25}
+                  max={3}
+                  step={0.01}
+                  onChange={(v) => updateIllustratorLayerTransform(selectedLayer.id, { scale: v })}
+                />
+                <SliderControl
+                  label="Rotate"
+                  value={selectedLayer.transform.rotation}
+                  min={-180}
+                  max={180}
+                  step={1}
+                  onChange={(v) => updateIllustratorLayerTransform(selectedLayer.id, { rotation: v })}
+                />
+                </>
+              )}
+              <div className={cn('grid gap-1', selectedLayer.carve ? 'grid-cols-2' : 'grid-cols-3')}>
+                {!selectedLayer.carve && (
+                  <button
+                    type="button"
+                    onClick={() => updateIllustratorLayer(selectedLayer.id, {
+                      transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+                    })}
+                    className="h-8 rounded-lg text-xs bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
+                  >
+                    Reset
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => duplicateIllustratorLayer(selectedLayer.id)}
