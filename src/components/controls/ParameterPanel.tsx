@@ -454,7 +454,6 @@ function IllustratorTab() {
   const activeTool = useLogoStore((s) => s.ui.activeTool)
   const setActiveTool = useLogoStore((s) => s.setActiveTool)
   const convertCurrentMark = useLogoStore((s) => s.convertCurrentMark)
-  const resetIllustrator = useLogoStore((s) => s.resetIllustrator)
   const setIllustratorMode = useLogoStore((s) => s.setIllustratorMode)
   const selectIllustratorLayer = useLogoStore((s) => s.selectIllustratorLayer)
   const updateIllustratorLayer = useLogoStore((s) => s.updateIllustratorLayer)
@@ -466,7 +465,8 @@ function IllustratorTab() {
   const setIllustratorLayerOperation = useLogoStore((s) => s.setIllustratorLayerOperation)
   const booleanIllustratorLayers = useLogoStore((s) => s.booleanIllustratorLayers)
   const toggleSelectedPointCurve = useLogoStore((s) => s.toggleSelectedPointCurve)
-  const startFromSlab = useLogoStore((s) => s.startFromSlab)
+  const addSlab = useLogoStore((s) => s.addSlab)
+  const startOver = useLogoStore((s) => s.startOver)
 
   const stale = useMemo(
     () => isIllustratorSourceStale(illustrator, params),
@@ -503,8 +503,9 @@ function IllustratorTab() {
         </button>
         <button
           type="button"
-          onClick={resetIllustrator}
-          disabled={!illustrator}
+          onClick={startOver}
+          disabled={!illustrator || illustrator.layers.length === 0}
+          title="Clear the mark. Undo brings it back."
           className={cn(
             'h-8 px-3 rounded-lg text-xs transition-all',
             'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',
@@ -512,18 +513,18 @@ function IllustratorTab() {
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
           )}
         >
-          Reset
+          Start over
         </button>
       </div>
 
       <div>
-        <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Start from a slab</div>
+        <div className="text-[10px] uppercase tracking-widest text-sidebar-muted mb-2">Add a slab</div>
         <div className="grid grid-cols-4 gap-1">
           {SLAB_KINDS.map((slab) => (
             <button
               key={slab.id}
               type="button"
-              onClick={() => startFromSlab(slab.id)}
+              onClick={() => addSlab(slab.id)}
               className={cn(
                 'h-8 rounded-lg text-xs transition-all',
                 'bg-interactive-active text-sidebar-muted hover:text-fg hover:bg-interactive-hover',

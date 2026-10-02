@@ -115,9 +115,15 @@ function pointSelectionToVectorSelection(
   }
 }
 
+// Objects are immutable once in a document, so their layer view can be
+// reused: a selection change then costs nothing per path.
+const layerCache = new WeakMap<VectorObject, IllustratorLayer>()
+
 function vectorObjectToLayer(object: VectorObject): IllustratorLayer | null {
   if (object.type !== 'path') return null
-  return {
+  const cached = layerCache.get(object)
+  if (cached) return cached
+  const layer: IllustratorLayer = {
     id: object.id,
     name: object.name,
     sourceShapeId: object.source?.sourceShapeId,
@@ -129,6 +135,8 @@ function vectorObjectToLayer(object: VectorObject): IllustratorLayer | null {
     transform: illustratorTransformFromMatrix(object.transform),
     ...(object.carve ? { carve: object.carve } : {}),
   }
+  layerCache.set(object, layer)
+  return layer
 }
 
 export function vectorDocumentToIllustratorDocument(

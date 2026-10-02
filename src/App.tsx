@@ -56,8 +56,9 @@ function App() {
         }
       }
 
-      // R = randomize seed
-      if (e.key === 'r' && !e.metaKey && !e.ctrlKey) {
+      // R = randomize seed (Generate only: in Vector Maker it would silently
+      // regenerate the hidden generated mark)
+      if (e.key === 'r' && !e.metaKey && !e.ctrlKey && useLogoStore.getState().activeSurface === 'generated') {
         useLogoStore.getState().randomizeSeed()
       }
     }

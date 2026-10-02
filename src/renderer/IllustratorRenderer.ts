@@ -1,5 +1,5 @@
 import type { DissolutionResult } from '../engine/effects/types.ts'
-import type { IllustratorDocument, IllustratorLayer } from '../engine/illustrator/types.ts'
+import type { IllustratorDocument, IllustratorLayer, MarkData } from '../engine/illustrator/types.ts'
 import { composeIllustratorMark, getLayerPathItem } from '../engine/illustrator/compose.ts'
 import type { SurvivalResult } from '../engine/carve/survival.ts'
 import { renderDissolution } from './FinalView.ts'
@@ -8,6 +8,8 @@ interface IllustratorRenderOptions {
   fillColor: string
   dissolution?: DissolutionResult | null
   survival?: SurvivalResult | null
+  /** The composed mark, shared with previews and export. Composed here only if missing. */
+  mark?: MarkData | null
 }
 
 const INK_ITEM_NAME = '__illustrator_ink'
@@ -67,8 +69,8 @@ export function renderIllustratorOnScope(
   options: IllustratorRenderOptions,
   cache?: IllustratorRenderCache,
 ): Map<string, paper.Item> {
-  // Compose first: it runs in its own headless scope and leaves that one active.
-  const mark = options.dissolution ? null : composeIllustratorMark(doc)
+  // Compose (if needed) first: it runs in its own headless scope and leaves that one active.
+  const mark = options.dissolution ? null : options.mark !== undefined ? options.mark : composeIllustratorMark(doc)
 
   scope.activate()
   scope.project.clear()

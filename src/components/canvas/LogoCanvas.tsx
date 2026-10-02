@@ -47,7 +47,25 @@ export function LogoCanvas() {
   const updateIllustratorPoint = useLogoStore((s) => s.updateIllustratorPoint)
   const togglePathSelection = useLogoStore((s) => s.togglePathSelection)
   const addCarveCut = useLogoStore((s) => s.addCarveCut)
+  const setViewport = useLogoStore((s) => s.setViewport)
   const activeMark = useActiveMark()
+
+  // Tell the store how much canvas there is (1 layer unit = 1 CSS pixel), so
+  // new slabs are placed where they fit.
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const report = () => {
+      const rect = canvas.getBoundingClientRect()
+      if (rect.width > 0 && rect.height > 0) {
+        setViewport({ width: Math.round(rect.width), height: Math.round(rect.height) })
+      }
+    }
+    report()
+    const observer = new ResizeObserver(report)
+    observer.observe(canvas)
+    return () => observer.disconnect()
+  }, [setViewport])
 
   const dissolution = useMemo(() => {
     if (!activeMark || !effectParams.dissolution.enabled) return null
@@ -69,6 +87,7 @@ export function LogoCanvas() {
         fillColor: params.fillColor,
         dissolution,
         survival,
+        mark: activeMark,
       })
 
       if (illustrator.mode === 'object' && !dissolution) {
@@ -144,6 +163,7 @@ export function LogoCanvas() {
   }, [
     activeSurface,
     illustrator,
+    activeMark,
     survival,
     result,
     ui.showGrid,
