@@ -29,11 +29,13 @@ export interface HitContext {
   anchorIndex: number | null
   /** Recipe handles of the single selected recipe layer, layer space. */
   handles: { layerId: string; list: CarveHandle[] } | null
-  /** Layer units per screen pixel. */
+  /** Layer units per CSS pixel. */
   unitsPerPx: number
   touch: boolean
   /** Edge bending enabled. */
   edges: boolean
+  /** Any free layer's single path with its transform baked in (cached by the caller). */
+  freePathOf(layer: IllustratorLayer): EditablePath | null
 }
 
 function px(ctx: HitContext, value: number): number {
@@ -96,7 +98,6 @@ interface EdgeCandidate {
   layer: IllustratorLayer
   d: number
   point: Vec
-  curveIndex: number
   selected: boolean
   order: number
 }
@@ -118,12 +119,16 @@ function findEdge(ctx: HitContext, p: Vec, onInk: boolean): Zone | null {
     const d = loc.distance
     const selected = ctx.selectedIds.length === 1 && ctx.selectedIds[0] === layer.id
     const inside = item.contains(p as unknown as paper.Point)
+    // The material side of a shape is its inside; of a cut, its outside.
+    const onMaterialSide = layer.operation === 'add' ? inside : !inside
     const thickness = layerThickness(layer, item)
 
     let ok: boolean
     if (selected) {
-      ok = inside ? d <= Math.min(px(ctx, 2), 0.2 * thickness) : d <= px(ctx, 6)
-    } else if (onInk || !ctx.ink) {
+      // A selected shape bends from either side: generously from the empty
+      // side, and from a thin band just inside its material.
+      ok = onMaterialSide ? d <= Math.min(px(ctx, 2), 0.2 * thickness) : d <= px(ctx, 6)
+    } else if (onInk || onMaterialSide || !ctx.ink) {
       // Pressing ink always grabs material; other shapes bend only from the empty side.
       ok = false
     } else {
@@ -137,7 +142,7 @@ function findEdge(ctx: HitContext, p: Vec, onInk: boolean): Zone | null {
       d < best.d - 1e-6 ||
       (Math.abs(d - best.d) <= 1e-6 && ((selected && !best.selected) || (selected === best.selected && order > best.order)))
     if (better) {
-      best = { layer, d, point: { x: loc.point.x, y: loc.point.y }, curveIndex: loc.curve.index, selected, order }
+      best = { layer, d, point: { x: loc.point.x, y: loc.point.y }, selected, order }
     }
   }
 
@@ -146,21 +151,37 @@ function findEdge(ctx: HitContext, p: Vec, onInk: boolean): Zone | null {
 
   if (best.layer.carve) {
     const grab = locateCarveGrab(best.layer.carve, layerPoint)
-    if (!grab) return null
+    // The round ends of a channel have their own handles; pressing them moves the cut.
+    if (!grab || grab.side.type === 'cap') return null
     return { kind: 'edge', layerId: best.layer.id, free: null, carve: grab, point: layerPoint }
   }
 
-  const free = ctx.freePath && ctx.freePath.layerId === best.layer.id ? ctx.freePath.path : null
-  if (!free) {
-    // Unselected free shapes are baked by the controller when a drag starts.
-    return { kind: 'edge', layerId: best.layer.id, free: { curveIndex: best.curveIndex, t: 0.5 }, carve: null, point: layerPoint }
+  const free = ctx.freePathOf(best.layer)
+  if (!free) return null
+  const hit = nearestCurve(free, layerPoint)
+  if (!hit) return null
+  return { kind: 'edge', layerId: best.layer.id, free: { curveIndex: hit.curveIndex, t: hit.t }, carve: null, point: hit.point }
+}
+
+/**
+ * The curve of a free path nearest to `p`, with the position along it.
+ * Straight sides are measured as evenly-spaced cubics, so `t` is a fraction
+ * of their length (what bending and inserting points expect).
+ */
+export function nearestCurve(path: EditablePath, p: Vec): { curveIndex: number; t: number; point: Vec; distance: number } | null {
+  const count = path.closed ? path.segs.length : path.segs.length - 1
+  let best: { curveIndex: number; t: number; point: Vec; distance: number } | null = null
+  for (let i = 0; i < count; i++) {
+    const hit = projectOnCubic(freeCurve(path, i), p)
+    if (!best || hit.distance < best.distance) best = { curveIndex: i, t: hit.t, point: hit.point, distance: hit.distance }
   }
-  const curveIndex = Math.min(best.curveIndex, free.segs.length - 1)
-  const curve = isCurveStraight(free, curveIndex)
-    ? straightCubic(curveOf(free, curveIndex)[0], curveOf(free, curveIndex)[3])
-    : curveOf(free, curveIndex)
-  const t = projectOnCubic(curve, layerPoint).t
-  return { kind: 'edge', layerId: best.layer.id, free: { curveIndex, t }, carve: null, point: layerPoint }
+  return best
+}
+
+/** Curve `i` of a free path, with straight sides as evenly-spaced cubics. */
+export function freeCurve(path: EditablePath, i: number) {
+  const c = curveOf(path, i)
+  return isCurveStraight(path, i) ? straightCubic(c[0], c[3]) : c
 }
 
 function findBody(ctx: HitContext, p: Vec, onInk: boolean): Zone | null {

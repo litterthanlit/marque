@@ -27,7 +27,11 @@ export interface SideBend {
   o2: number
 }
 
-/** How full a rounded corner is: handle length = k·κ·r, so 1 is a true circular arc. */
+/**
+ * How full a rounded corner is: handle length = k·κ·r, so 1 is a true
+ * circular arc, lower is closer to a chamfer, and 1/κ (about 1.81, the
+ * largest a bend makes) puts both handles on the square corner.
+ */
 export interface CornerFullness {
   k1: number
   k2: number

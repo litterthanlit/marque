@@ -1,15 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { add, rotate } from '../path/bezier.ts'
+import { add, cubicPoint, rotate } from '../path/bezier.ts'
 import {
   bendCarve,
   carveHandles,
   dragCarveHandle,
   isSideBent,
   locateCarveGrab,
+  MAX_FULLNESS,
   rotateCarveAbout,
   straightenCarve,
   translateCarve,
 } from './edit.ts'
+import { carveOutline } from './outline.ts'
 import { slabSpec, type GrooveSpec, type PunchSpec, type SlabSpec } from './spec.ts'
 
 const rotated: SlabSpec = { ...slabSpec('rounded'), center: { x: 30, y: -10 }, rotation: 30 }
@@ -112,6 +114,21 @@ describe('bending and straightening', () => {
     expect(next.corners?.tr?.k1).toBeGreaterThan(1)
     expect(isSideBent(next, grab.side)).toBe(true)
     expect(isSideBent(straightenCarve(next, grab.side), grab.side)).toBe(false)
+  })
+
+  it('a corner never pokes out past its square corner, however far it is pulled', () => {
+    const spec = slabSpec('rounded')
+    const corner = { x: 100 + 90 * Math.SQRT1_2, y: -100 - 90 * Math.SQRT1_2 }
+    const grab = locateCarveGrab(spec, corner)!
+    const next = bendCarve(spec, grab, { x: corner.x + 200, y: corner.y - 200 }) as SlabSpec
+    expect(next.corners?.tr?.k1).toBeCloseTo(MAX_FULLNESS, 6)
+    for (const c of carveOutline(next).curves) {
+      for (let i = 0; i <= 20; i++) {
+        const p = cubicPoint(c, i / 20)
+        expect(p.x).toBeLessThanOrEqual(190 + 1e-6)
+        expect(p.y).toBeGreaterThanOrEqual(-190 - 1e-6)
+      }
+    }
   })
 
   it('a tiny bend snaps back to straight', () => {

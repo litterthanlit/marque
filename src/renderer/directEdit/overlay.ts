@@ -1,4 +1,4 @@
-import type { Vec } from '../../engine/path/bezier.ts'
+import type { Cubic, Vec } from '../../engine/path/bezier.ts'
 import type { EditablePath } from '../../engine/path/editPath.ts'
 import type { CarveHandle } from '../../engine/carve/edit.ts'
 
@@ -77,6 +77,35 @@ export function outlinePathData(
   const item = new scope.CompoundPath({ pathData, insert: false })
   item.translate(new scope.Point(center.x, center.y))
   addWithHalo(scope, layer, item, style)
+}
+
+/** Emphasise the curves that a drag would bend (or is bending), in layer space. */
+export function drawCurves(scope: paper.PaperScope, layer: paper.Layer, curves: Cubic[], center: Vec) {
+  const at = (v: Vec) => new scope.Point(v.x + center.x, v.y + center.y)
+  for (const c of curves) {
+    const path = new scope.Path({ insert: false })
+    const none = new scope.Point(0, 0)
+    path.add(new scope.Segment(at(c[0]), none, new scope.Point(c[1].x - c[0].x, c[1].y - c[0].y)))
+    path.add(new scope.Segment(at(c[3]), new scope.Point(c[2].x - c[3].x, c[2].y - c[3].y), none))
+    path.strokeCap = 'round'
+    addWithHalo(scope, layer, path, { width: 3 })
+  }
+}
+
+/** Where a point is about to be added: a hollow dot that firms up when it lands. */
+export function drawGhostPoint(scope: paper.PaperScope, layer: paper.Layer, point: Vec, center: Vec) {
+  const size = 7 * u
+  const square = new scope.Path.Rectangle({
+    point: [point.x + center.x - size / 2, point.y + center.y - size / 2],
+    size: [size, size],
+    insert: false,
+  })
+  square.fillColor = new scope.Color('#ffffff')
+  square.strokeColor = new scope.Color(SELECTION_COLOR)
+  square.strokeWidth = 1.25 * u
+  square.dashArray = [2 * u, 1.5 * u]
+  square.locked = true
+  layer.addChild(square)
 }
 
 /** Anchors of a free shape; the selected one is filled and shows its handles. */

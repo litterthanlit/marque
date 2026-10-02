@@ -1,20 +1,39 @@
-import { add, distance, sub, type Vec } from '../../engine/path/bezier.ts'
 import {
+  add,
+  BEND_T_MAX,
+  BEND_T_MIN,
+  clamp,
+  cubicPoint,
+  distance,
+  maxChordDeviation,
+  sub,
+  type Cubic,
+  type Vec,
+} from '../../engine/path/bezier.ts'
+import {
+  bendCurve,
   editablePathToPathData,
+  insertPoint,
+  isCurveStraight,
   moveAnchor,
   moveHandle,
+  straightenCurve,
   translatePath,
   type EditablePath,
 } from '../../engine/path/editPath.ts'
 import {
+  bendCarve,
   carveHandles,
   DEFAULT_HANDLE_LAYOUT,
   dragCarveHandle,
+  isSideBent,
+  straightenCarve,
   translateCarve,
+  type CarveGrab,
   type CarveHandle,
   type HandleLayout,
 } from '../../engine/carve/edit.ts'
-import { carveOutline } from '../../engine/carve/outline.ts'
+import { boxGeometryFor, carveOutline, grooveSpine, type SideRef } from '../../engine/carve/outline.ts'
 import { bentEdgeCount, isGroove, type CarveSpec } from '../../engine/carve/spec.ts'
 import { bakedEditablePath } from '../../engine/illustrator/layerPath.ts'
 import { createComposeSession } from '../../engine/illustrator/composeSession.ts'
@@ -24,9 +43,18 @@ import { getInkItem, setInkPathData, setSurvivalVisible } from '../IllustratorRe
 import { carriedCuts } from './carry.ts'
 import { CURSORS, resizeCursor } from './cursors.ts'
 import { hud } from './hud.ts'
-import { EMPTY_ZONE, findZone, zoneKey, type HitContext, type Zone } from './hitZones.ts'
+import { EMPTY_ZONE, findZone, freeCurve, zoneKey, type HitContext, type Zone } from './hitZones.ts'
 import { canvasOwnsArrowKeys, registerEditorKeys, setEditorInteracting } from './keyboard.ts'
-import { drawAnchors, drawCarveHandles, outlineItem, outlinePathData, resetOverlay, setOverlayScale } from './overlay.ts'
+import {
+  drawAnchors,
+  drawCarveHandles,
+  drawCurves,
+  drawGhostPoint,
+  outlineItem,
+  outlinePathData,
+  resetOverlay,
+  setOverlayScale,
+} from './overlay.ts'
 import { unitsPerCssPixel } from '../viewFit.ts'
 
 export interface Modifiers {
@@ -63,6 +91,17 @@ interface Press {
   zone: Zone
   mods: Modifiers
   touch: boolean
+}
+
+type EdgeZone = Extract<Zone, { kind: 'edge' }>
+
+/** A point about to be added where an edge was clicked, unless a double-click straightens it instead. */
+interface PendingPoint {
+  layerId: string
+  curveIndex: number
+  t: number
+  point: Vec
+  timer: number
 }
 
 /** A move of some layers (and the cuts they carry), previewable and committable. */
@@ -121,6 +160,26 @@ function handleLabel(handle: CarveHandle): string {
   }
 }
 
+/** The number that matters while bending: how deep the bend is, or how full a corner. */
+function bendReadout(spec: CarveSpec, side: SideRef): string {
+  if (side.type === 'corner' && !isGroove(spec)) {
+    const fullness = spec.corners?.[side.id]
+    return fullness ? `fullness ${r0(((fullness.k1 + fullness.k2) / 2) * 100)}%` : 'round'
+  }
+  if (!isSideBent(spec, side)) return 'straight'
+  if (isGroove(spec)) return `depth ${r0(maxChordDeviation(grooveSpine(spec)))}`
+  if (side.type === 'line') {
+    const info = boxGeometryFor(spec).sides[side.id]
+    return info ? `depth ${r0(maxChordDeviation(info.cubic))}` : ''
+  }
+  return ''
+}
+
+function bendLabel(spec: CarveSpec, side: SideRef): string {
+  if (isGroove(spec)) return spec.kind === 'channel' ? 'Bend channel' : 'Bend slice'
+  return side.type === 'corner' ? 'Shape corner' : 'Bend edge'
+}
+
 const DOUBLE_CLICK_MS = 300
 const DOUBLE_CLICK_PX = 6
 const NUDGE_COMMIT_MS = 450
@@ -140,8 +199,9 @@ export class DirectEditController {
   private press: Press | null = null
   private session: Session | null = null
   private lastDown: { time: number; point: Vec; key: string } | null = null
-  private freeCache: { layerId: string; key: string; path: EditablePath } | null = null
+  private readonly freePaths = new WeakMap<IllustratorLayer, EditablePath | null>()
   private nudge: { plan: MovePlan; d: Vec; timer: number } | null = null
+  private pendingPoint: PendingPoint | null = null
   private readonly unregisterKeys: () => void
   private destroyed = false
 
@@ -173,6 +233,7 @@ export class DirectEditController {
 
   destroy(): void {
     this.flushNudge()
+    this.dropPendingPoint()
     this.cancel()
     this.unregisterKeys()
     this.destroyed = true
@@ -186,9 +247,9 @@ export class DirectEditController {
   pointerDown(p: Vec, mods: Modifiers, touch: boolean): void {
     if (!this.host.isEnabled()) return
     this.flushNudge()
-    const ctx = this.context(touch)
+    let ctx = this.context(touch)
     if (!ctx) return
-    const zone = findZone(ctx, p)
+    let zone = findZone(ctx, p)
     const key = zoneKey(zone)
     const now = performance.now()
     const last = this.lastDown
@@ -199,6 +260,13 @@ export class DirectEditController {
       this.press = null
       this.doubleAction(zone)
       return
+    }
+    // A point waiting to be added lands now, before anything else happens.
+    if (this.pendingPoint) {
+      this.flushPendingPoint()
+      ctx = this.context(touch)
+      if (!ctx) return
+      zone = findZone(ctx, p)
     }
     this.press = { point: p, zone, mods, touch }
   }
@@ -274,16 +342,17 @@ export class DirectEditController {
     if (selectedIds.length !== 1) return null
     const layer = doc.layers.find((candidate) => candidate.id === selectedIds[0])
     if (!layer || layer.carve || !layer.visible) return null
-    return this.freePathFor(layer)
+    const path = this.freePathOf(layer)
+    return path ? { layerId: layer.id, path } : null
   }
 
-  private freePathFor(layer: IllustratorLayer): { layerId: string; path: EditablePath } | null {
-    const key = `${layer.pathData}|${JSON.stringify(layer.transform)}`
-    if (this.freeCache && this.freeCache.layerId === layer.id && this.freeCache.key === key) return this.freeCache
-    const path = bakedEditablePath(layer)
-    if (!path) return null
-    this.freeCache = { layerId: layer.id, key, path }
-    return this.freeCache
+  /** A free layer's path with its transform baked in. Layers are immutable, so this caches by identity. */
+  private freePathOf(layer: IllustratorLayer): EditablePath | null {
+    if (layer.carve) return null
+    if (!this.freePaths.has(layer)) this.freePaths.set(layer, bakedEditablePath(layer))
+    // Baking runs in a headless scope; drawing must go back to ours.
+    this.scope.activate()
+    return this.freePaths.get(layer) ?? null
   }
 
   /** Layer units per CSS pixel, for sizes and tolerances that stay constant on screen. */
@@ -330,7 +399,8 @@ export class DirectEditController {
       handles: recipe ? { layerId: recipe.id, list: carveHandles(recipe.carve!, this.handleLayout()) } : null,
       unitsPerPx: this.unitsPerPx(),
       touch,
-      edges: false,
+      edges: true,
+      freePathOf: (layer) => this.freePathOf(layer),
     }
   }
 
@@ -359,9 +429,17 @@ export class DirectEditController {
       case 'anchor':
       case 'bezier':
         return CURSORS.point
+      case 'edge':
+        // On the selected free shape a click adds a point; elsewhere edges only bend.
+        return zone.free && this.isSelectedAlone(zone.layerId) ? CURSORS.bendOrAdd : CURSORS.bend
       default:
         return CURSORS.default
     }
+  }
+
+  private isSelectedAlone(layerId: string): boolean {
+    const doc = this.host.getDoc()
+    return Boolean(doc && doc.selectedLayerIds.length === 1 && doc.selectedLayerIds[0] === layerId)
   }
 
   private setCursor(cursor: string) {
@@ -383,19 +461,25 @@ export class DirectEditController {
     if (!doc) return
     const zone = press.zone
     switch (zone.kind) {
-      case 'body': {
-        if (press.mods.shift) {
-          const has = doc.selectedLayerIds.includes(zone.layerId)
-          this.host.setSelection(
-            has ? doc.selectedLayerIds.filter((id) => id !== zone.layerId) : [...doc.selectedLayerIds, zone.layerId],
-          )
-        } else {
-          this.host.setSelection([zone.layerId], null)
-        }
+      case 'body':
+        if (press.mods.shift) this.toggleSelected(doc, zone.layerId)
+        else this.host.setSelection([zone.layerId], null)
         return
-      }
       case 'anchor':
         this.host.setSelection([zone.layerId], { layerId: zone.layerId, segmentIndex: zone.index })
+        return
+      case 'edge':
+        if (press.mods.shift) {
+          this.toggleSelected(doc, zone.layerId)
+          return
+        }
+        // Clicking the selected free shape's edge adds a point there (after a
+        // moment, so a double-click can straighten instead). Otherwise it selects.
+        if (zone.free && this.isSelectedAlone(zone.layerId)) {
+          this.schedulePendingPoint(zone)
+          return
+        }
+        this.host.setSelection([zone.layerId], null)
         return
       case 'empty':
         if (!press.mods.shift) this.host.setSelection([])
@@ -405,8 +489,94 @@ export class DirectEditController {
     }
   }
 
+  private toggleSelected(doc: IllustratorDocument, layerId: string) {
+    const has = doc.selectedLayerIds.includes(layerId)
+    this.host.setSelection(has ? doc.selectedLayerIds.filter((id) => id !== layerId) : [...doc.selectedLayerIds, layerId])
+  }
+
   private doubleAction(zone: Zone) {
-    if (zone.kind === 'anchor') this.host.editAnchor(zone.layerId, zone.index, 'toggle-smooth')
+    if (zone.kind === 'anchor') {
+      this.dropPendingPoint()
+      this.host.editAnchor(zone.layerId, zone.index, 'toggle-smooth')
+      return
+    }
+    if (zone.kind === 'edge') this.straightenEdge(zone)
+  }
+
+  /** Double-click on an edge: straighten it if it's bent; on a straight free edge, add the point now. */
+  private straightenEdge(zone: EdgeZone) {
+    const layer = this.layer(zone.layerId)
+    if (!layer || layer.locked) return
+    if (layer.carve && zone.carve) {
+      this.dropPendingPoint()
+      if (!isSideBent(layer.carve, zone.carve.side)) return
+      const straight = straightenCarve(layer.carve, zone.carve.side)
+      this.host.commitLayerEdits({
+        label: zone.carve.side.type === 'corner' ? 'Round corner' : 'Straighten edge',
+        edits: [{ layerId: layer.id, carve: straight }],
+        select: [layer.id],
+      })
+      return
+    }
+    if (!zone.free) return
+    const path = this.freePathOf(layer)
+    if (!path) return
+    if (isCurveStraight(path, zone.free.curveIndex)) {
+      // Nothing to straighten: the double-click was two clicks on the edge.
+      if (this.pendingPoint) this.flushPendingPoint()
+      return
+    }
+    this.dropPendingPoint()
+    const doc = this.host.getDoc()
+    this.host.commitLayerEdits({
+      label: 'Straighten edge',
+      edits: [{ layerId: layer.id, pathData: editablePathToPathData(straightenCurve(path, zone.free.curveIndex)) }],
+      select: [layer.id],
+      anchor: doc?.pointSelection?.layerId === layer.id ? undefined : null,
+    })
+  }
+
+  /* ─── Adding points ─── */
+
+  private schedulePendingPoint(zone: EdgeZone) {
+    if (!zone.free) return
+    this.dropPendingPoint()
+    this.pendingPoint = {
+      layerId: zone.layerId,
+      curveIndex: zone.free.curveIndex,
+      t: zone.free.t,
+      point: zone.point,
+      timer: window.setTimeout(() => this.flushPendingPoint(), DOUBLE_CLICK_MS),
+    }
+    this.drawOverlay()
+  }
+
+  private dropPendingPoint() {
+    const pending = this.pendingPoint
+    if (!pending) return
+    this.pendingPoint = null
+    window.clearTimeout(pending.timer)
+    this.drawOverlay()
+  }
+
+  private flushPendingPoint() {
+    const pending = this.pendingPoint
+    if (!pending) return
+    this.pendingPoint = null
+    window.clearTimeout(pending.timer)
+    const layer = this.layer(pending.layerId)
+    const path = layer ? this.freePathOf(layer) : null
+    if (!layer || !path || pending.curveIndex >= path.segs.length) {
+      this.drawOverlay()
+      return
+    }
+    const { path: next, index } = insertPoint(path, pending.curveIndex, pending.t)
+    this.host.commitLayerEdits({
+      label: 'Add point',
+      edits: [{ layerId: layer.id, pathData: editablePathToPathData(next) }],
+      select: [layer.id],
+      anchor: { layerId: layer.id, segmentIndex: index },
+    })
   }
 
   /* ─── Sessions ─── */
@@ -418,6 +588,8 @@ export class DirectEditController {
         return this.handleSession(press, zone.layerId, zone.handle)
       case 'body':
         return this.moveSession(press, zone.layerId, mods)
+      case 'edge':
+        return zone.carve ? this.carveBendSession(press, zone.layerId, zone.carve) : this.freeBendSession(press, zone)
       case 'anchor':
         return this.pointSession(press, zone.layerId, (start, d) => moveAnchor(start, zone.index, add(start.segs[zone.index].p, d)), zone.index)
       case 'bezier':
@@ -583,7 +755,7 @@ export class DirectEditController {
   handleAt(p: Vec, touch: boolean): boolean {
     if (!this.host.isEnabled()) return false
     const ctx = this.context(touch)
-    return Boolean(ctx && findZone(ctx, p).kind === 'handle')
+    return Boolean(ctx && findZone({ ...ctx, edges: false }, p).kind === 'handle')
   }
 
   /** Hover while a tool is active: only handles react. Returns the cursor to show, if any. */
@@ -591,13 +763,98 @@ export class DirectEditController {
     if (!this.host.isEnabled()) return null
     const ctx = this.context(touch)
     if (!ctx) return null
-    const zone = findZone(ctx, p)
+    const zone = findZone({ ...ctx, edges: false }, p)
     const hot = zone.kind === 'handle' ? zone : EMPTY_ZONE
     if (zoneKey(hot) !== zoneKey(this.hover)) {
       this.hover = hot
       this.drawOverlay()
     }
     return zone.kind === 'handle' ? this.cursorFor(zone) : null
+  }
+
+  /** Drag a recipe's edge: its side bends, its corner fills out, or its groove's spine curves. */
+  private carveBendSession(press: Press, layerId: string, grab: CarveGrab): Session | null {
+    const doc = this.host.getDoc()
+    const layer = this.layer(layerId)
+    if (!doc || !layer?.carve || layer.locked) return null
+    const start = layer.carve
+    const compose = createComposeSession(doc, [layerId])
+    let current = start
+    return {
+      editedIds: new Set([layerId]),
+      update: (p) => {
+        // The grabbed point follows the pointer's movement, wherever on the band it was pressed.
+        current = bendCarve(start, grab, add(grab.point, sub(p, press.point)))
+        setInkPathData(this.scope, compose.compose(new Map([[layerId, carveOutline(current).pathData]])))
+        hud.set({ chip: bendReadout(current, grab.side) })
+        this.drawOverlay()
+      },
+      commit: () => {
+        if (JSON.stringify(current) === JSON.stringify(start)) return
+        this.host.commitLayerEdits({ label: bendLabel(start, grab.side), edits: [{ layerId, carve: current }], select: [layerId] })
+      },
+      cancel: () => setInkPathData(this.scope, this.host.getInkPathData()),
+      drawOverlay: (overlay) => {
+        this.drawRecipe(overlay, current, null)
+        this.drawSide(overlay, current, grab.side)
+      },
+    }
+  }
+
+  /** Drag a free shape's edge: the curve passes through the pointer, smooth neighbours stay smooth. */
+  private freeBendSession(press: Press, zone: EdgeZone): Session | null {
+    const doc = this.host.getDoc()
+    const layer = this.layer(zone.layerId)
+    if (!doc || !layer || layer.carve || layer.locked || !zone.free) return null
+    const start = this.freePathOf(layer)
+    if (!start || zone.free.curveIndex >= start.segs.length) return null
+    const { curveIndex } = zone.free
+    const t = clamp(zone.free.t, BEND_T_MIN, BEND_T_MAX)
+    const base = cubicPoint(freeCurve(start, curveIndex), t)
+    const compose = createComposeSession(doc, [layer.id])
+    const center = this.center()
+    const wasStraight = isCurveStraight(start, curveIndex)
+    let current = start
+    let straight = wasStraight
+    return {
+      editedIds: new Set([layer.id]),
+      update: (p) => {
+        const bent = bendCurve(start, curveIndex, t, add(base, sub(p, press.point)))
+        // Close to the chord counts as straight: the bend removes itself.
+        straight = maxChordDeviation(freeCurve(bent, curveIndex)) < 2 * this.unitsPerPx()
+        current = straight ? (wasStraight ? start : straightenCurve(start, curveIndex)) : bent
+        setInkPathData(this.scope, compose.compose(new Map([[layer.id, editablePathToPathData(current)]])))
+        hud.set({
+          chip: straight ? 'straight' : `depth ${r0(maxChordDeviation(freeCurve(current, curveIndex)))}`,
+        })
+        this.drawOverlay()
+      },
+      commit: () => {
+        if (current === start) return
+        const point = this.host.getDoc()?.pointSelection
+        this.host.commitLayerEdits({
+          label: straight ? 'Straighten edge' : 'Bend edge',
+          edits: [{ layerId: layer.id, pathData: editablePathToPathData(current) }],
+          select: [layer.id],
+          anchor: point?.layerId === layer.id ? undefined : null,
+        })
+      },
+      cancel: () => setInkPathData(this.scope, this.host.getInkPathData()),
+      drawOverlay: (overlay) => {
+        outlinePathData(this.scope, overlay, editablePathToPathData(current), center)
+        drawCurves(this.scope, overlay, [freeCurve(current, curveIndex)], center)
+        drawAnchors(this.scope, overlay, current, center, null, null)
+      },
+    }
+  }
+
+  /** Highlight every outline curve belonging to one side of a recipe. */
+  private drawSide(overlay: paper.Layer, spec: CarveSpec, side: SideRef) {
+    const outline = carveOutline(spec)
+    const key = JSON.stringify(side)
+    const curves: Cubic[] = outline.curves.filter((_, i) => JSON.stringify(outline.curveSides[i]) === key)
+    this.scope.activate()
+    drawCurves(this.scope, overlay, curves, this.center())
   }
 
   private pointSession(
@@ -609,9 +866,8 @@ export class DirectEditController {
     const doc = this.host.getDoc()
     const layer = this.layer(layerId)
     if (!doc || !layer || layer.carve) return null
-    const free = this.freePathFor(layer)
-    if (!free) return null
-    const start = free.path
+    const start = this.freePathOf(layer)
+    if (!start) return null
     const compose = createComposeSession(doc, [layerId])
     let current = start
     const center = this.center()
@@ -645,6 +901,7 @@ export class DirectEditController {
   private drawOverlay(): void {
     if (this.destroyed) return
     const doc = this.host.getDoc()
+    this.scope.activate()
     setOverlayScale(this.unitsPerPx())
     const layer = resetOverlay(this.scope)
     if (!doc || !this.host.isEnabled()) {
@@ -674,22 +931,44 @@ export class DirectEditController {
         this.drawRecipe(layer, recipe.carve, this.hover.kind === 'handle' ? this.hover.handle.id : null, false)
       }
       const free = this.selectedFreePath(doc, selected)
+      // The curve that would bend under the pointer.
+      if (this.hover.kind === 'edge') this.drawEdgeHover(layer, this.hover)
       if (free) {
         const anchorIndex = doc.pointSelection?.layerId === free.layerId ? doc.pointSelection.segmentIndex : null
         const hoverIndex = this.hover.kind === 'anchor' ? this.hover.index : null
-        // freePathFor may have activated a headless scope; draw back into ours.
         this.scope.activate()
         layer.activate()
         drawAnchors(this.scope, layer, free.path, this.center(), anchorIndex, hoverIndex)
       }
+      if (this.pendingPoint) drawGhostPoint(this.scope, layer, this.pendingPoint.point, this.center())
     }
     this.scope.view.update()
+  }
+
+  private drawEdgeHover(overlay: paper.Layer, zone: EdgeZone) {
+    const layer = this.layer(zone.layerId)
+    if (!layer) return
+    if (layer.carve && zone.carve) {
+      this.drawSide(overlay, layer.carve, zone.carve.side)
+      return
+    }
+    const path = zone.free ? this.freePathOf(layer) : null
+    if (!path || !zone.free || zone.free.curveIndex >= path.segs.length) return
+    drawCurves(this.scope, overlay, [freeCurve(path, zone.free.curveIndex)], this.center())
   }
 
   /* ─── Keys ─── */
 
   private onKey(event: KeyboardEvent): boolean {
     if (!this.host.isEnabled()) return false
+    // A point waiting to be added: Escape drops it, any other key lets it land first.
+    if (this.pendingPoint) {
+      if (event.key === 'Escape') {
+        this.dropPendingPoint()
+        return true
+      }
+      this.flushPendingPoint()
+    }
     const doc = this.host.getDoc()
     if (!doc) return false
 

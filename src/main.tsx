@@ -12,6 +12,7 @@ import { useLogoStore } from './store/logoStore.ts'
 import { bakedEditablePath } from './engine/illustrator/layerPath.ts'
 import { carveHandles, DEFAULT_HANDLE_LAYOUT } from './engine/carve/edit.ts'
 import { DESIGN_SPAN } from './renderer/viewFit.ts'
+import { CURSORS } from './renderer/directEdit/cursors.ts'
 
 // Development-only handle for end-to-end checks; stripped from production builds.
 if (import.meta.env.DEV) {
@@ -34,7 +35,13 @@ if (import.meta.env.DEV) {
       y: rect.top + rect.height / 2 + h.at.y * unit,
     }))
   }
-  ;(window as unknown as { __marque?: unknown }).__marque = { store: useLogoStore, bakedEditablePath, handles }
+  /** Name of the editor cursor currently shown on the canvas. */
+  const cursor = () => {
+    const canvas = document.querySelector('main canvas') as HTMLCanvasElement | null
+    const current = canvas?.style.cursor ?? ''
+    return Object.entries(CURSORS).find(([, value]) => value === current)?.[0] ?? current
+  }
+  ;(window as unknown as { __marque?: unknown }).__marque = { store: useLogoStore, bakedEditablePath, handles, cursor }
 }
 
 createRoot(document.getElementById('root')!).render(

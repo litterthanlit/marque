@@ -335,6 +335,8 @@ export interface CarveGrab {
 /** Pixels: a bend this close to straight snaps back to straight. */
 export const STRAIGHT_SNAP = 2
 const ROUND_SNAP = 0.06
+/** Both handles reach the square corner: the squarest a rounded corner gets without poking out. */
+export const MAX_FULLNESS = 1 / KAPPA
 
 /** Find which side of a recipe a layer-space point is on, and where along it. */
 export function locateCarveGrab(spec: CarveSpec, point: Vec): CarveGrab | null {
@@ -453,8 +455,8 @@ export function bendCarve(start: CarveSpec, grab: CarveGrab, cursor: Vec): Carve
     const l1 = cross(rhs, col2) / det
     const l2 = cross(col1, rhs) / det
     const unit = KAPPA * info.radius
-    const k1 = clamp(l1 / unit, 0, 3)
-    const k2 = clamp(l2 / unit, 0, 3)
+    const k1 = clamp(l1 / unit, 0, MAX_FULLNESS)
+    const k2 = clamp(l2 / unit, 0, MAX_FULLNESS)
     if (Math.abs(k1 - 1) < ROUND_SNAP && Math.abs(k2 - 1) < ROUND_SNAP) return withCorner(start, grab.side.id, null)
     return withCorner(start, grab.side.id, { k1, k2 })
   }

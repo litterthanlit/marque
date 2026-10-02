@@ -679,11 +679,14 @@ function IllustratorTab() {
                     {describeCarve(selectedLayer.carve)}
                   </p>
                   <p className="mt-1 text-[11px] leading-snug text-sidebar-muted">
-                    Drag the handles on the canvas to resize, round or turn it.
+                    Drag the handles on the canvas to resize, round or turn it. Drag an edge to bend it; double-click a bent edge to straighten it.
                   </p>
                 </div>
               ) : (
                 <>
+                <p className="text-[11px] leading-snug text-sidebar-muted">
+                  Drag an edge on the canvas to bend it, or click it to add a point. Double-click a point to make it sharp or smooth.
+                </p>
                 <SliderControl
                   label="Move X"
                   value={selectedLayer.transform.dx}
