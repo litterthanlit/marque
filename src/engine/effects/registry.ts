@@ -1,8 +1,8 @@
-import type { GenerationResult } from '../types.ts'
+import type { EffectSource } from './types.ts'
 
 export interface EffectProcessor<P, R> {
   id: string
-  process(result: GenerationResult, params: P): R | null
+  process(result: EffectSource, params: P): R | null
 }
 
 const registry = new Map<string, EffectProcessor<unknown, unknown>>()

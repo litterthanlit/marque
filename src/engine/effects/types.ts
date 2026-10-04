@@ -7,6 +7,16 @@ export interface DissolutionParams {
   sizeVariation: number   // 0-1
 }
 
+export interface EffectMark {
+  compoundPathData: string
+  fillRule: 'nonzero' | 'evenodd'
+  viewBox: { x: number; y: number; width: number; height: number }
+}
+
+export interface EffectSource {
+  mark: EffectMark
+}
+
 export interface DissolutionCell {
   x: number
   y: number

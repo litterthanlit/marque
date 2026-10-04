@@ -42,6 +42,23 @@ function pathFromSVG(
   }
 }
 
+// Accepts compound path data (several subpaths, e.g. a shape with holes).
+function pathItemFromSVG(
+  scope: paper.PaperScope,
+  pathData: string,
+): paper.PathItem | null {
+  try {
+    const item = scope.PathItem.create(pathData)
+    if (item.isEmpty()) {
+      item.remove()
+      return null
+    }
+    return item
+  } catch {
+    return null
+  }
+}
+
 /**
  * Boolean composition via Paper.js. Paper objects are used internally only;
  * all returned data is structured-clone safe (plain strings/numbers/objects).
@@ -193,4 +210,67 @@ function mergeLayerPaths(inputs: BooleanInput[]): string {
   merged.remove()
   scope.project.clear()
   return pathData
+}
+
+export interface OrderedBooleanResult {
+  compoundPathData: string
+  viewBox: { x: number; y: number; width: number; height: number }
+  warnings: string[]
+}
+
+/**
+ * Order-aware composition: each input is applied in sequence, so a subtract
+ * only removes material that exists below it and a later add can fill a hole
+ * back in. This is the single source of truth for what an editable mark looks
+ * like — the canvas, previews and export all go through it.
+ */
+export function composeOrderedPaths(inputs: BooleanInput[]): OrderedBooleanResult {
+  const warnings: string[] = []
+  const scope = getScope()
+  scope.project.clear()
+
+  let result: paper.PathItem | null = null
+  for (const input of inputs) {
+    const path = pathItemFromSVG(scope, input.pathData)
+    if (!path) continue
+
+    if (!result) {
+      if (input.operation === 'add') result = path
+      else path.remove()
+      continue
+    }
+
+    try {
+      const next: paper.PathItem =
+        input.operation === 'add' ? result.unite(path) : result.subtract(path)
+      result.remove()
+      path.remove()
+      result = next
+    } catch (e) {
+      warnings.push(`Boolean ${input.operation} failed: ${e}`)
+      path.remove()
+    }
+  }
+
+  if (!result || result.isEmpty()) {
+    result?.remove()
+    scope.project.clear()
+    return { compoundPathData: '', viewBox: { x: 0, y: 0, width: 0, height: 0 }, warnings }
+  }
+
+  const compoundPathData = result.pathData
+  const bounds = result.bounds
+  result.remove()
+  scope.project.clear()
+
+  return {
+    compoundPathData,
+    viewBox: {
+      x: Math.round(bounds.x * 100) / 100,
+      y: Math.round(bounds.y * 100) / 100,
+      width: Math.round(bounds.width * 100) / 100,
+      height: Math.round(bounds.height * 100) / 100,
+    },
+    warnings,
+  }
 }

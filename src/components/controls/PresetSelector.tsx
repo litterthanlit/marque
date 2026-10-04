@@ -20,7 +20,7 @@ export function PresetSelector() {
           key={preset.id}
           type="button"
           onClick={() => applyPreset(preset.params)}
-          className="flex items-center justify-between h-8 px-2.5 rounded-md text-xs text-sidebar-text hover:bg-interactive-hover hover:text-fg group"
+          className="flex items-center justify-between h-8 px-2.5 rounded-md text-xs text-sidebar-text hover:bg-interactive-hover hover:text-fg group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
           title={preset.description}
         >
           <span>{preset.name}</span>

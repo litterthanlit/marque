@@ -7,7 +7,7 @@ export function ColorPicker() {
   return (
     <div className="flex items-center gap-2">
       <label className="text-[10px] uppercase tracking-widest text-sidebar-muted shrink-0">Color</label>
-      <div className="relative">
+      <div className="relative focus-within:ring-2 focus-within:ring-[color:var(--color-selection)] focus-within:ring-offset-2 focus-within:ring-offset-surface-raised rounded-lg">
         <input
           type="color"
           value={fillColor}
