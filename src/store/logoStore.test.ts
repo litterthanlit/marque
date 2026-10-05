@@ -22,7 +22,6 @@ describe('a fresh store', () => {
 
   it('opens in Vector Maker on an empty document, outside the browser too', () => {
     const state = useLogoStore.getInitialState()
-    expect(state.activeSurface).toBe('illustrator')
     expect(state.vectorDocument?.objects).toEqual([])
     expect(state.illustrator?.layers).toEqual([])
     expect(state.vectorUndoStack).toHaveLength(0)
@@ -108,14 +107,6 @@ describe('history', () => {
     expect(layers()).toHaveLength(0)
     useLogoStore.getState().undoVectorCommand()
     expect(layers()).toHaveLength(1)
-  })
-
-  it("Generate's history ignores Vector Maker edits", () => {
-    const before = useLogoStore.temporal.getState().pastStates.length
-    useLogoStore.getState().addSlab('square')
-    useLogoStore.getState().addCarveCut({ kind: 'slice', from: { x: -50, y: 0 }, to: { x: 50, y: 0 }, width: 20 })
-    useLogoStore.getState().setSelection([])
-    expect(useLogoStore.temporal.getState().pastStates.length).toBe(before)
   })
 })
 
@@ -252,7 +243,6 @@ describe('saved marks', () => {
     } as SavedVariation)
 
     const state = useLogoStore.getState()
-    expect(state.activeSurface).toBe('illustrator')
     expect(state.vectorDocument?.objects.length).toBeGreaterThan(1)
     expect(layers().some((layer) => layer.carve)).toBe(false)
     expect(state.error).toBeNull()
@@ -308,7 +298,6 @@ describe('the look', () => {
     store.undoVectorCommand()
     const before = useLogoStore.getState()
     const link = encodeLink(before.vectorDocument!, before.params.fillColor)
-    const generateSteps = useLogoStore.temporal.getState().pastStates.length
 
     useLogoStore.getState().toggleLook()
 
@@ -316,7 +305,6 @@ describe('the look', () => {
     expect(after.ui.look).toBe('final')
     expect(after.vectorUndoStack).toBe(before.vectorUndoStack)
     expect(after.vectorRedoStack).toBe(before.vectorRedoStack)
-    expect(useLogoStore.temporal.getState().pastStates.length).toBe(generateSteps)
     expect(after.vectorDocument).toBe(before.vectorDocument)
     expect(after.illustrator).toBe(before.illustrator)
     expect(after.params).toBe(before.params)

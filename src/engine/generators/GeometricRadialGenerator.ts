@@ -10,7 +10,6 @@ import { pickPrimitiveType, createPrimitivePath, type PrimitiveType } from '../p
 import { createBlobParams } from '../primitives/blob.ts'
 import { applyRadialSymmetry } from '../symmetry/radial.ts'
 import { composeBooleanResult } from '../boolean/operations.ts'
-import { generateRadialKeyframes } from '../animation/keyframes.ts'
 
 const CANVAS_SIZE = 500
 const MAX_SHAPES = 360
@@ -23,7 +22,6 @@ export const GeometricRadialGenerator: LogoGenerator = {
     'Concentric grid with N-fold radial symmetry and boolean composition',
   version: '1.0',
   extraParams: [],
-  getAnimationKeyframes: generateRadialKeyframes,
 
   generate(params: LogoParams, rng: SeededRandom): GenerationResult {
     const gridPoints = generateConcentricGrid(

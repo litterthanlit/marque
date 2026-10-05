@@ -47,7 +47,7 @@ export function Toolbar() {
   return (
     <>
       <header className="flex items-center justify-between h-12 gap-2 px-3 sm:px-5 border-b border-border bg-surface-raised">
-        <span className="font-display text-[18px] leading-none font-medium tracking-tight text-fg max-[379px]:hidden">dalat</span>
+        <span className="font-display text-[18px] leading-none font-medium tracking-tight text-fg max-[379px]:hidden">marque</span>
         <div className="flex min-w-0 shrink-0 items-center gap-0.5 sm:gap-1 max-[379px]:flex-1 max-[379px]:justify-between">
           <ToolbarButton onClick={undo} disabled={!canUndo} aria-label="Undo" title="Undo (Cmd+Z)">
             <UndoIcon />

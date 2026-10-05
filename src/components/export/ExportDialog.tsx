@@ -8,7 +8,7 @@ interface ExportDialogProps {
 }
 
 export function ExportDialog({ open, onClose }: ExportDialogProps) {
-  const { exportSVG, exportPNG, svgString, canExport, hasDissolution } = useExport()
+  const { exportSVG, exportPNG, svgString, canExport } = useExport()
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const [pngScale, setPngScale] = useState(2)
   const [artboardMode, setArtboardMode] = useState<'tight' | 'square'>('tight')
@@ -65,12 +65,6 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
             <SelectField label="Artboard" value={artboardMode} onChange={(v) => setArtboardMode(v as 'tight' | 'square')} options={[['tight', 'Tight'], ['square', 'Square']]} />
             <SelectField label="Padding" value={paddingMode} onChange={(v) => setPaddingMode(v as 'none' | 'compact' | 'presentation')} options={[['none', 'None'], ['compact', 'Compact'], ['presentation', 'Presentation']]} />
           </div>
-
-          {hasDissolution && (
-            <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-              Dissolution effect included in export
-            </div>
-          )}
 
           <button
             onClick={() => { exportSVG({ artboardMode, paddingMode }); onClose() }}

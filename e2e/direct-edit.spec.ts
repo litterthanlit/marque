@@ -50,7 +50,7 @@ async function closeLayers(page: Page) {
 /** Opens on the final look unless asked: the pixel checks read solid ink, which only that look draws. */
 async function openVectorMaker(page: Page, look: 'construction' | 'final' = 'final') {
   await page.goto('/')
-  await expect.poll(() => page.evaluate(() => window.__marque.store.getState().activeSurface)).toBe('illustrator')
+  await expect(page.locator('main canvas')).toBeVisible()
   await page.evaluate((wanted) => {
     const { ui, toggleLook } = window.__marque.store.getState()
     if (ui.look !== wanted) toggleLook()
@@ -439,7 +439,7 @@ test('a reload from the link keeps recipes, and their handles still work', async
   await page.waitForTimeout(600) // the link is written once edits settle
 
   await page.reload()
-  await expect.poll(() => page.evaluate(() => window.__marque.store.getState().activeSurface)).toBe('illustrator')
+  await expect(page.locator('main canvas')).toBeVisible()
   expect(await carves(page)).toEqual(before)
 
   f = await frame(page)

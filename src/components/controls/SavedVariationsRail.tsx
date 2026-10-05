@@ -16,8 +16,8 @@ export function SavedVariationsRail({ onOpened }: SavedVariationsRailProps) {
     <div className="flex flex-col gap-2">
       <button
         type="button"
-        onClick={() => vectorDocument && saveVariation(vectorDocument, params)}
-        disabled={!vectorDocument || vectorDocument.objects.length === 0}
+        onClick={() => saveVariation(vectorDocument, params)}
+        disabled={vectorDocument.objects.length === 0}
         className="h-7 px-2.5 rounded-md text-xs text-sidebar-text bg-interactive-active hover:bg-interactive-hover hover:text-fg disabled:opacity-40 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
       >
         Save current

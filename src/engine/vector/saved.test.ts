@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_DISSOLUTION_PARAMS } from '../effects/types.ts'
 import type { IllustratorDocument } from '../illustrator/types.ts'
 import { generate } from '../pipeline/GenerationPipeline.ts'
 import { DEFAULT_PARAMS, type LogoParams } from '../types.ts'
@@ -48,7 +47,9 @@ const fromGenerateScreen = {
   savedAt: '2026-09-01T10:00:00.000Z',
   params,
   activeSurface: 'generated',
-  effectParams: { dissolution: { ...DEFAULT_DISSOLUTION_PARAMS, enabled: true } },
+  effectParams: {
+    dissolution: { enabled: true, threshold: 0.5, cellSize: 12, shape: 'square', scatter: 0, sizeVariation: 0.3 },
+  },
 }
 
 describe('what a saved entry opens', () => {

@@ -64,20 +64,6 @@ body {
   color: oklch(0.2 0 0);
 }
 
-/* Light mode component adjustments */
-:root.light .light\:text-dark { color: oklch(0.15 0 0); }
-:root.light .light\:bg-white { background: white; }
-
-/* Hide number input spinners */
-input[type="number"]::-webkit-inner-spin-button,
-input[type="number"]::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-input[type="number"] {
-  -moz-appearance: textfield;
-}
-
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 6px;

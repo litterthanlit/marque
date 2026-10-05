@@ -1,6 +1,5 @@
 import type { CarveSpec } from '../carve/spec.ts'
 
-export type ActiveSurface = 'generated' | 'illustrator'
 export type IllustratorMode = 'object' | 'points'
 
 export interface IllustratorSource {

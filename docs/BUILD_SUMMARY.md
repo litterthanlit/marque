@@ -1,5 +1,7 @@
 # Dalat — Logo Illustrator
 
+> This document describes the app as it stood in April 2026, when it was a parameter-driven logo generator. The app is now called Marque and opens in Vector Maker. The current design is in [`docs/superpowers/specs/2026-10-05-start-in-vector-maker-design.md`](superpowers/specs/2026-10-05-start-in-vector-maker-design.md).
+
 > An easy-to-use, browser-based logo illustrator. Built with React, Paper.js, Zustand, and Tailwind.
 
 ---

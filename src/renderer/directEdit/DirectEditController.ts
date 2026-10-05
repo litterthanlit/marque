@@ -86,10 +86,9 @@ export type AnchorOp = 'toggle-smooth' | 'delete'
 
 /** What the controller needs from the app, kept narrow so it can be tested and reused. */
 export interface DirectEditHost {
-  getDoc(): IllustratorDocument | null
+  getDoc(): IllustratorDocument
   /** The committed ink (layer space), to restore after a cancelled gesture. */
   getInkPathData(): string
-  isEnabled(): boolean
   /** The panel's Snapping switch. */
   isSnapping(): boolean
   setSelection(ids: string[], anchor?: { layerId: string; segmentIndex: number } | null): void
@@ -321,10 +320,8 @@ export class DirectEditController {
   /* ─── Pointer ─── */
 
   pointerDown(p: Vec, mods: Modifiers, touch: boolean): void {
-    if (!this.host.isEnabled()) return
     this.flushNudge()
     let ctx = this.context(touch)
-    if (!ctx) return
     let zone = findZone(ctx, p)
     const key = zoneKey(zone)
     const now = performance.now()
@@ -341,7 +338,6 @@ export class DirectEditController {
     if (this.pendingPoint) {
       this.flushPendingPoint()
       ctx = this.context(touch)
-      if (!ctx) return
       zone = findZone(ctx, p)
     }
     this.press = { point: p, zone, mods, touch }
@@ -412,7 +408,7 @@ export class DirectEditController {
   }
 
   private layer(id: string): IllustratorLayer | undefined {
-    return this.host.getDoc()?.layers.find((candidate) => candidate.id === id)
+    return this.host.getDoc().layers.find((candidate) => candidate.id === id)
   }
 
   private selectedFreePath(doc: IllustratorDocument, selectedIds: string[]) {
@@ -454,9 +450,8 @@ export class DirectEditController {
     return layer && layer.carve && layer.visible && !layer.locked ? layer : null
   }
 
-  private context(touch: boolean): HitContext | null {
+  private context(touch: boolean): HitContext {
     const doc = this.host.getDoc()
-    if (!doc) return null
     const ids = new Set(doc.layers.map((layer) => layer.id))
     const selectedIds = doc.selectedLayerIds.filter((id) => ids.has(id))
     const freePath = this.selectedFreePath(doc, selectedIds)
@@ -483,12 +478,7 @@ export class DirectEditController {
   }
 
   private updateHover(p: Vec, touch: boolean) {
-    if (!this.host.isEnabled()) {
-      this.setCursor(CURSORS.default)
-      return
-    }
-    const ctx = this.context(touch)
-    const zone = ctx ? findZone(ctx, p) : EMPTY_ZONE
+    const zone = findZone(this.context(touch), p)
     if (zoneKey(zone) !== zoneKey(this.hover)) {
       this.hover = zone
       this.drawOverlay()
@@ -517,7 +507,7 @@ export class DirectEditController {
 
   private isSelectedAlone(layerId: string): boolean {
     const doc = this.host.getDoc()
-    return Boolean(doc && doc.selectedLayerIds.length === 1 && doc.selectedLayerIds[0] === layerId)
+    return doc.selectedLayerIds.length === 1 && doc.selectedLayerIds[0] === layerId
   }
 
   private setCursor(cursor: string) {
@@ -631,7 +621,7 @@ export class DirectEditController {
 
   private toolSnap(role: 'hover' | 'start' | 'end', run: (index: SnapIndex, doc: IllustratorDocument) => SnapResult): SnapResult {
     const doc = this.host.getDoc()
-    if (!doc || !this.host.isEnabled() || !this.snapsOn(this.toolMods)) {
+    if (!this.snapsOn(this.toolMods)) {
       if (role === 'start') this.toolStart = null
       this.showSnap(null)
       this.drawOverlay()
@@ -659,7 +649,6 @@ export class DirectEditController {
 
   private clickAction(press: Press) {
     const doc = this.host.getDoc()
-    if (!doc) return
     const zone = press.zone
     switch (zone.kind) {
       case 'body':
@@ -733,7 +722,7 @@ export class DirectEditController {
       label: 'Straighten edge',
       edits: [{ layerId: layer.id, pathData: editablePathToPathData(straightenCurve(path, zone.free.curveIndex)) }],
       select: [layer.id],
-      anchor: doc?.pointSelection?.layerId === layer.id ? undefined : null,
+      anchor: doc.pointSelection?.layerId === layer.id ? undefined : null,
     })
   }
 
@@ -811,7 +800,7 @@ export class DirectEditController {
 
   private movePlan(ids: string[], carry: boolean): MovePlan | null {
     const doc = this.host.getDoc()
-    if (!doc || !ids.length) return null
+    if (!ids.length) return null
     const addIds = ids.filter((id) => doc.layers.find((layer) => layer.id === id)?.operation === 'add')
     const carried = carry ? carriedCuts(doc, addIds, this.items) : []
     const moving = [...ids, ...carried]
@@ -907,7 +896,6 @@ export class DirectEditController {
 
   private moveSession(press: Press, pressedId: string, mods: Modifiers): Session | null {
     const doc = this.host.getDoc()
-    if (!doc) return null
     // Alt moves the shape alone, leaving its holes where they are.
     const plan = this.movePlan(this.movingIds(doc, pressedId), !mods.alt)
     if (!plan) return null
@@ -945,7 +933,7 @@ export class DirectEditController {
   private handleSession(press: Press, layerId: string, handle: CarveHandle): Session | null {
     const doc = this.host.getDoc()
     const layer = this.layer(layerId)
-    if (!doc || !layer?.carve) return null
+    if (!layer?.carve) return null
     const start = layer.carve
     const compose = createComposeSession(doc, [layerId])
     const center = this.center()
@@ -1067,17 +1055,14 @@ export class DirectEditController {
 
   /** While a tool is active: is the pointer over a handle of the selected cut? */
   handleAt(p: Vec, touch: boolean): boolean {
-    if (!this.host.isEnabled() || !this.handlesLive) return false
-    const ctx = this.context(touch)
-    return Boolean(ctx && findZone({ ...ctx, edges: false }, p).kind === 'handle')
+    if (!this.handlesLive) return false
+    return findZone({ ...this.context(touch), edges: false }, p).kind === 'handle'
   }
 
   /** Hover while a tool is active: only handles react. Returns the cursor to show, if any. */
   toolHover(p: Vec, touch: boolean): string | null {
-    if (!this.host.isEnabled() || !this.handlesLive) return null
-    const ctx = this.context(touch)
-    if (!ctx) return null
-    const zone = findZone({ ...ctx, edges: false }, p)
+    if (!this.handlesLive) return null
+    const zone = findZone({ ...this.context(touch), edges: false }, p)
     const hot = zone.kind === 'handle' ? zone : EMPTY_ZONE
     if (zoneKey(hot) !== zoneKey(this.hover)) {
       this.hover = hot
@@ -1090,7 +1075,7 @@ export class DirectEditController {
   private carveBendSession(press: Press, layerId: string, grab: CarveGrab): Session | null {
     const doc = this.host.getDoc()
     const layer = this.layer(layerId)
-    if (!doc || !layer?.carve || layer.locked) return null
+    if (!layer?.carve || layer.locked) return null
     const start = layer.carve
     const exclude = new Set([layerId])
     const compose = createComposeSession(doc, exclude)
@@ -1130,7 +1115,7 @@ export class DirectEditController {
   private freeBendSession(press: Press, zone: EdgeZone): Session | null {
     const doc = this.host.getDoc()
     const layer = this.layer(zone.layerId)
-    if (!doc || !layer || layer.carve || layer.locked || !zone.free) return null
+    if (!layer || layer.carve || layer.locked || !zone.free) return null
     const start = this.freePathOf(layer)
     if (!start || zone.free.curveIndex >= start.segs.length) return null
     const { curveIndex } = zone.free
@@ -1166,7 +1151,7 @@ export class DirectEditController {
       },
       commit: () => {
         if (current === start) return
-        const point = this.host.getDoc()?.pointSelection
+        const point = this.host.getDoc().pointSelection
         this.host.commitLayerEdits({
           label: straight ? 'Straighten edge' : 'Bend edge',
           edits: [{ layerId: layer.id, pathData: editablePathToPathData(current) }],
@@ -1196,7 +1181,7 @@ export class DirectEditController {
   private pointSession(press: Press, layerId: string, anchorIndex: number, which: 'anchor' | 'in' | 'out'): Session | null {
     const doc = this.host.getDoc()
     const layer = this.layer(layerId)
-    if (!doc || !layer || layer.carve) return null
+    if (!layer || layer.carve) return null
     const start = this.freePathOf(layer)
     if (!start || !start.segs[anchorIndex]) return null
     const seg = start.segs[anchorIndex]
@@ -1263,10 +1248,6 @@ export class DirectEditController {
     this.scope.activate()
     setOverlayScale(this.unitsPerPx())
     const layer = resetOverlay(this.scope)
-    if (!doc || !this.host.isEnabled()) {
-      this.scope.view.update()
-      return
-    }
     const editing = this.session ?? (this.nudge ? this.nudge.plan : null)
     const edited = editing?.editedIds ?? new Set<string>()
     hideLayerOutlines(this.items, edited)
@@ -1325,7 +1306,6 @@ export class DirectEditController {
   /* ─── Keys ─── */
 
   private onKey(event: KeyboardEvent): boolean {
-    if (!this.host.isEnabled()) return false
     // A point waiting to be added: Escape drops it, any other key lets it land first.
     if (this.pendingPoint) {
       if (event.key === 'Escape') {
@@ -1335,7 +1315,6 @@ export class DirectEditController {
       this.flushPendingPoint()
     }
     const doc = this.host.getDoc()
-    if (!doc) return false
 
     if (event.key === 'Escape') {
       if (this.session) {
@@ -1383,7 +1362,6 @@ export class DirectEditController {
   private nudgeBy(d: Vec) {
     if (!this.nudge) {
       const doc = this.host.getDoc()
-      if (!doc) return
       const plan = this.movePlan(
         doc.selectedLayerIds.filter((id) => {
           const layer = doc.layers.find((candidate) => candidate.id === id)

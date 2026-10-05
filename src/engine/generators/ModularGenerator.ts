@@ -10,7 +10,6 @@ import { generateModularGrid } from '../grid/ModularGrid.ts'
 import { pickPrimitiveType, createPrimitivePath, type PrimitiveType } from '../primitives/index.ts'
 import { createBlobParams } from '../primitives/blob.ts'
 import { composeBooleanResult } from '../boolean/operations.ts'
-import { generateModularKeyframes } from '../animation/keyframes.ts'
 
 const CANVAS_SIZE = 500
 const MAX_SHAPES = 256
@@ -26,7 +25,6 @@ export const ModularGenerator: LogoGenerator = {
     { key: 'rows', label: 'Rows', min: 2, max: 8, step: 1, default: 4 },
     { key: 'circleClip', label: 'Circle Clip', min: 0, max: 1, step: 1, default: 1 },
   ] satisfies ParamDefinition[],
-  getAnimationKeyframes: generateModularKeyframes,
 
   generate(params: LogoParams, rng: SeededRandom): GenerationResult {
     const modularParams = (params.modeParams.modular ?? {}) as Record<string, number>

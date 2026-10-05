@@ -33,7 +33,7 @@ export function useUrlState() {
       timer = undefined
       const state = useLogoStore.getState()
       written = linkSource(state)
-      const hash = state.vectorDocument ? encodeLink(state.vectorDocument, state.params.fillColor) : ''
+      const hash = encodeLink(state.vectorDocument, state.params.fillColor)
       if (window.location.hash !== hash) {
         window.history.replaceState(null, '', hash || window.location.pathname + window.location.search)
       }
@@ -87,7 +87,7 @@ function openLink(link: DecodedLink): void {
 }
 
 function linkSource(state: StoreState) {
-  return [state.vectorDocument?.objects, state.vectorDocument?.artboards, state.params.fillColor] as const
+  return [state.vectorDocument.objects, state.vectorDocument.artboards, state.params.fillColor] as const
 }
 
 function sameSource(a: ReturnType<typeof linkSource>, b: ReturnType<typeof linkSource>): boolean {

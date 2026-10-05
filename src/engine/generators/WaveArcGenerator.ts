@@ -6,7 +6,6 @@ import type {
   ShapeNode,
 } from '../types.ts'
 import { composeBooleanResult } from '../boolean/operations.ts'
-import { generateWaveArcKeyframes } from '../animation/keyframes.ts'
 
 const CANVAS_SIZE = 500
 const MAX_CRESCENTS = 96
@@ -186,7 +185,6 @@ export const WaveArcGenerator: LogoGenerator = {
     'Concentric crescent marks via boolean-subtracted offset ellipses',
   version: '1.0',
   extraParams: [],
-  getAnimationKeyframes: generateWaveArcKeyframes,
 
   generate(params: LogoParams, _rng: SeededRandom): GenerationResult {
     const mp = (params.modeParams['wave-arc'] ?? {}) as Record<string, number | string>

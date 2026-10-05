@@ -32,19 +32,20 @@ export function SelectionBar() {
   const booleanIllustratorLayers = useLogoStore((s) => s.booleanIllustratorLayers)
   const editAnchor = useLogoStore((s) => s.editAnchor)
 
-  const selectedLayers = useMemo(() => {
-    if (!illustrator) return []
-    return illustrator.selectedLayerIds
-      .map((id) => illustrator.layers.find((layer) => layer.id === id))
-      .filter((layer) => layer != null)
-  }, [illustrator])
+  const selectedLayers = useMemo(
+    () =>
+      illustrator.selectedLayerIds
+        .map((id) => illustrator.layers.find((layer) => layer.id === id))
+        .filter((layer) => layer != null),
+    [illustrator],
+  )
   if (selectedLayers.length === 0) return null
 
   const selectedLayer = selectedLayers.length === 1 ? selectedLayers[0] : null
   // Slabs and cuts are resized by their handles, one at a time.
   const scalable = selectedLayers.length >= 2 && selectedLayers.every((layer) => !layer.carve)
   const selectedPoint =
-    selectedLayer && !selectedLayer.carve && illustrator?.pointSelection?.layerId === selectedLayer.id
+    selectedLayer && !selectedLayer.carve && illustrator.pointSelection?.layerId === selectedLayer.id
       ? illustrator.pointSelection
       : null
 

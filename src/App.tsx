@@ -85,18 +85,12 @@ function App() {
         }
       }
 
-      // Delete/Backspace = delete selected shape in edit mode (not while a slider has focus)
+      // Delete/Backspace removes the selected layers (not while a slider has focus)
       const onSlider = Boolean((e.target as HTMLElement).closest?.('[role="slider"]'))
       if ((e.key === 'Delete' || e.key === 'Backspace') && !e.metaKey && !e.ctrlKey && !onSlider) {
-        const { ui, activeSurface, illustrator } = useLogoStore.getState()
-        if (activeSurface === 'illustrator' && illustrator?.selectedLayerIds.length) {
+        if (useLogoStore.getState().illustrator.selectedLayerIds.length) {
           e.preventDefault()
           useLogoStore.getState().deleteIllustratorLayers()
-          return
-        }
-        if (ui.editMode && ui.selectedShapeId) {
-          e.preventDefault()
-          useLogoStore.getState().deleteSelectedShape()
         }
       }
     }

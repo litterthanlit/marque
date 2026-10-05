@@ -1,7 +1,7 @@
 import { useLogoStore } from '../../store/logoStore.ts'
 
 export function EmptyHint() {
-  const empty = useLogoStore((s) => (s.illustrator?.layers.length ?? 0) === 0)
+  const empty = useLogoStore((s) => s.illustrator.layers.length === 0)
   const idle = useLogoStore((s) => s.ui.activeTool === null)
   if (!empty || !idle) return null
 

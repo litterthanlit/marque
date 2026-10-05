@@ -32,7 +32,7 @@ export function LayersDrawer() {
   }, [open])
 
   if (!open) return null
-  const layers = illustrator?.layers ?? []
+  const layers = illustrator.layers
   const top = layers.length - 1
 
   return (
@@ -84,7 +84,7 @@ export function LayersDrawer() {
           <ul className="min-h-0 overflow-y-auto rounded-lg border border-border bg-interactive-active/40">
             {[...layers].reverse().map((layer, reverseIndex) => {
               const index = top - reverseIndex
-              const selected = illustrator?.selectedLayerIds.includes(layer.id) ?? false
+              const selected = illustrator.selectedLayerIds.includes(layer.id)
               const number = String(index + 1).padStart(2, '0')
               // Slabs share a name: the position tells two rows apart.
               const name = `${number} ${layer.name}`

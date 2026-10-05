@@ -1,26 +1,15 @@
-import type { DissolutionResult } from '../engine/effects/types.ts'
 import type { IllustratorDocument, MarkData } from '../engine/illustrator/types.ts'
 import { composeIllustratorMark, getLayerPathItem } from '../engine/illustrator/compose.ts'
 import type { SurvivalResult } from '../engine/carve/survival.ts'
 import type { CanvasLook } from '../store/logoStore.ts'
-import { renderDissolution } from './FinalView.ts'
 import { unitsPerCssPixel } from './viewFit.ts'
 
 interface IllustratorRenderOptions {
   fillColor: string
   look: CanvasLook
-  dissolution?: DissolutionResult | null
   survival?: SurvivalResult | null
   /** The composed mark, shared with previews and export. Composed here only if missing. */
-  mark?: MarkData | null
-}
-
-export interface IllustratorRenderCache {
-  items: Map<string, paper.Item>
-}
-
-export function createIllustratorRenderCache(): IllustratorRenderCache {
-  return { items: new Map() }
+  mark?: MarkData
 }
 
 const INK_ITEM_NAME = '__illustrator_ink'
@@ -58,27 +47,19 @@ export function renderIllustratorOnScope(
   scope: paper.PaperScope,
   doc: IllustratorDocument,
   options: IllustratorRenderOptions,
-  cache?: IllustratorRenderCache,
 ): Map<string, paper.Item> {
   // Compose (if needed) first: it runs in its own headless scope and leaves that one active.
-  const mark = options.dissolution ? null : options.mark !== undefined ? options.mark : composeIllustratorMark(doc)
+  const mark = options.mark ?? composeIllustratorMark(doc)
 
   scope.activate()
   scope.project.clear()
-  cache?.items.clear()
 
   const center = getCenter(scope)
   const itemMap = new Map<string, paper.Item>()
 
-  if (options.dissolution) {
-    renderDissolution(scope, options.dissolution, center, options.fillColor)
-    scope.view.update()
-    return itemMap
-  }
-
   const construction = options.look === 'construction'
   // Always present, even when empty, so live previews have something to update.
-  const ink = new scope.CompoundPath(mark?.compoundPathData ?? '')
+  const ink = new scope.CompoundPath(mark.compoundPathData)
   ink.name = INK_ITEM_NAME
   ink.fillRule = 'evenodd'
   ink.fillColor = new scope.Color(construction ? CONSTRUCTION.fill : options.fillColor)
@@ -102,7 +83,6 @@ export function renderIllustratorOnScope(
     item.strokeColor = construction ? new scope.Color(CONSTRUCTION[layer.operation].color) : null
     item.data = { illustratorLayerId: layer.id, operation: layer.operation }
     itemMap.set(layer.id, item)
-    cache?.items.set(layer.id, item)
   }
 
   if (construction) {
@@ -163,13 +143,4 @@ export function getInkItem(scope: paper.PaperScope): paper.PathItem | null {
 export function setSurvivalVisible(scope: paper.PaperScope, visible: boolean): void {
   const raster = scope.project.getItem({ name: SURVIVAL_ITEM_NAME })
   if (raster) raster.visible = visible
-}
-
-/**
- * Recompose and redraw only the ink — used while dragging so the mark updates
- * live without committing an undo step on every mouse move.
- */
-export function refreshIllustratorInk(scope: paper.PaperScope, doc: IllustratorDocument): void {
-  const mark = composeIllustratorMark(doc)
-  setInkPathData(scope, mark?.compoundPathData ?? '')
 }
