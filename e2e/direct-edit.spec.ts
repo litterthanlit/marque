@@ -703,13 +703,13 @@ test('a spark dropped on an empty canvas lands in the middle, all selected, as o
   await sparkButton(page, 3).click()
 
   const dropped = await layers(page)
-  expect(dropped.map((layer) => layer.operation)).toEqual(['add', 'add', 'add', 'add', 'subtract', 'subtract'])
+  expect(dropped.map((layer) => layer.operation)).toEqual(['add', 'add', 'subtract'])
   expect(dropped.every((layer) => layer.carve === null)).toBe(true)
   expect(await selectedIds(page)).toEqual(dropped.map((layer) => layer.id))
   expect(await page.evaluate(() => window.__marque.store.getState().ui.activeTool)).toBeNull()
   expect(await undoDepth(page)).toBe(1)
   const bar = selectionBar(page)
-  await expect(bar).toContainText('6 layers')
+  await expect(bar).toContainText('3 layers')
   await expect(bar.getByRole('button', { name: 'Scale' })).toBeVisible()
 
   // The mark itself is 360 units on its longer side, about the middle of the canvas.
@@ -721,18 +721,25 @@ test('a spark dropped on an empty canvas lands in the middle, all selected, as o
   // It is drawn as a construction sheet: pale grey wherever the mark is solid.
   const f = await frame(page)
   await pointerAway(page, f)
-  const solid = await page.evaluate((d) => {
-    const probe = document.createElement('canvas').getContext('2d')!
-    const path = new Path2D(d)
-    const points: Array<{ x: number; y: number }> = []
-    for (let y = -180; y <= 180; y += 4) {
-      for (let x = -180; x <= 180; x += 4) {
-        const settled = [-6, 0, 6].every((dx) => [-6, 0, 6].every((dy) => probe.isPointInPath(path, x + dx, y + dy, 'evenodd')))
-        if (settled) points.push({ x, y })
+  // The shapes overlap, so their own hairlines cross the ink: the probes keep clear of every outline.
+  const solid = await page.evaluate(
+    ({ d, outlines }) => {
+      const probe = document.createElement('canvas').getContext('2d')!
+      const path = new Path2D(d)
+      const shapes = outlines.map((outline) => new Path2D(outline))
+      const points: Array<{ x: number; y: number }> = []
+      for (let y = -180; y <= 180; y += 4) {
+        for (let x = -180; x <= 180; x += 4) {
+          const around = [-6, 0, 6].flatMap((dx) => [-6, 0, 6].map((dy) => [x + dx, y + dy]))
+          const settled = around.every(([px, py]) => probe.isPointInPath(path, px, py, 'evenodd'))
+          const clear = shapes.every((shape) => new Set(around.map(([px, py]) => probe.isPointInPath(shape, px, py))).size === 1)
+          if (settled && clear) points.push({ x, y })
+        }
       }
-    }
-    return points
-  }, ink.compoundPathData)
+      return points
+    },
+    { d: ink.compoundPathData, outlines: dropped.map((layer) => layer.pathData) },
+  )
   expect(solid.length).toBeGreaterThan(3)
   const drawn = await pixels(page, solid.map((p) => f.at(p.x, p.y)))
   expect(drawn.filter((pixel) => !pixel.paleGrey)).toEqual([])
@@ -750,8 +757,8 @@ test('a spark goes beside a slab and under it, and leaves the slab as it was', a
   const [slab] = await layers(page)
   const depth = await undoDepth(page)
 
-  // Slot 1 of this set has no cuts, so the box around its layers is the box around its ink.
-  await sparkButton(page, 1).click()
+  // Slot 4 of this set has no cuts, so the box around its layers is the box around its ink.
+  await sparkButton(page, 4).click()
   const all = await layers(page)
   const dropped = all.slice(0, -1)
   expect(dropped.length).toBeGreaterThan(1)
@@ -840,7 +847,7 @@ test('Shuffle and R deal new sparks, and R waits for a drawing, a drag or a dial
 test('several free shapes scale together about their middle, and a slab among them takes the control away', async ({ page }) => {
   await openVectorMaker(page)
   await dealSparks(page, 1)
-  await sparkButton(page, 1).click()
+  await sparkButton(page, 4).click()
   const before = await layers(page)
   const was = await boxAround(page, before.map((layer) => layer.pathData))
 
