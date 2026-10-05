@@ -43,9 +43,14 @@ async function withPanel(page: Page, run: (panel: Locator) => Promise<unknown>) 
   await run(page.locator('aside').first())
 }
 
-async function openVectorMaker(page: Page) {
+/** Opens on the final look unless asked: the pixel checks read solid ink, which only that look draws. */
+async function openVectorMaker(page: Page, look: 'construction' | 'final' = 'final') {
   await page.goto('/')
   await expect.poll(() => page.evaluate(() => window.__marque.store.getState().activeSurface)).toBe('illustrator')
+  await page.evaluate((wanted) => {
+    const { ui, toggleLook } = window.__marque.store.getState()
+    if (ui.look !== wanted) toggleLook()
+  }, look)
 }
 
 async function startOver(page: Page) {
@@ -100,7 +105,7 @@ async function pointerAway(page: Page, f: Frame) {
   await page.mouse.move(f.box.x + f.box.width / 2, Math.max(1, f.box.y - 30))
 }
 
-/** How solid the canvas is at client points: 0 (empty) to 1 (fully inked), and whether it's dark there. */
+/** How solid the canvas is at client points: 0 (empty) to 1 (fully inked), and whether it's dark or pale grey there. */
 function pixels(page: Page, points: Point[]) {
   return page.evaluate((list) => {
     const canvas = document.querySelector('main canvas') as HTMLCanvasElement
@@ -110,7 +115,7 @@ function pixels(page: Page, points: Point[]) {
       const x = Math.floor(((p.x - rect.left) * canvas.width) / rect.width)
       const y = Math.floor(((p.y - rect.top) * canvas.height) / rect.height)
       const [r, g, b, a] = ctx.getImageData(x, y, 1, 1).data
-      return { alpha: a / 255, dark: r + g + b < 120 }
+      return { alpha: a / 255, dark: r + g + b < 120, paleGrey: r === g && g === b && r > 200 && r < 245 }
     })
   }, points)
 }
@@ -442,6 +447,27 @@ test('Copy SVG and the canvas show the same mark', async ({ page, context }) => 
   }, copied!)
   expect(mismatches.checked).toBeGreaterThan(500)
   expect(mismatches.bad).toBe(0)
+})
+
+test('the canvas opens on the construction look, and F shows the ink', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  await addSlab(page, 'Square')
+  const f = await frame(page)
+  await pickTool(page, 'Punch')
+  await drag(page, f.at(60, 60), f.at(90, 60))
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+  await pointerAway(page, f)
+
+  const inSlab = f.at(-100, -100)
+  const [fill] = await pixels(page, [inSlab])
+  expect(fill).toEqual({ alpha: 1, dark: false, paleGrey: true })
+  expect(await isEmpty(page, f.at(60, 60))).toBe(true)
+
+  await page.keyboard.press('f')
+  await expect.poll(() => isInk(page, inSlab)).toBe(true)
+  expect(await isEmpty(page, f.at(60, 60))).toBe(true)
 })
 
 test('a link that cannot be read says so until the message is dismissed', async ({ page }) => {

@@ -9,6 +9,8 @@ export function Toolbar() {
   const redo = useLogoStore((s) => s.redoVectorCommand)
   const canUndo = useLogoStore((s) => s.vectorUndoStack.length > 0)
   const canRedo = useLogoStore((s) => s.vectorRedoStack.length > 0)
+  const look = useLogoStore((s) => s.ui.look)
+  const toggleLook = useLogoStore((s) => s.toggleLook)
   const { canExport } = useExport()
   const [exportOpen, setExportOpen] = useState(false)
   const [shareState, setShareState] = useState<'idle' | 'copied' | 'failed'>('idle')
@@ -46,6 +48,15 @@ export function Toolbar() {
             <RedoIcon />
           </ToolbarButton>
           <div className="hidden sm:block w-px h-3.5 bg-border mx-1" />
+          <ToolbarButton
+            onClick={toggleLook}
+            aria-label="Show construction lines"
+            aria-pressed={look === 'construction'}
+            title="Show construction lines (F)"
+            className="aria-pressed:bg-interactive-hover aria-pressed:text-fg"
+          >
+            <ConstructionIcon />
+          </ToolbarButton>
           <ToolbarButton onClick={handleCopyShareLink} className="hidden lg:inline-flex">
             {shareState === 'copied' ? 'Copied' : shareState === 'failed' ? 'Failed' : 'Share'}
           </ToolbarButton>
@@ -99,6 +110,15 @@ function RedoIcon() {
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M13 7H6a4 4 0 0 0 0 8h3" />
       <path d="M10 4l3 3-3 3" />
+    </svg>
+  )
+}
+
+function ConstructionIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="2" y="6" width="8" height="8" rx="1" />
+      <circle cx="10" cy="6" r="4" strokeDasharray="0.1 2.4" />
     </svg>
   )
 }

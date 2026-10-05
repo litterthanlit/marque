@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { useLogoStore } from './logoStore.ts'
 import type { SlabSpec } from '../engine/carve/spec.ts'
 import { illustratorDocumentToVectorDocument } from '../engine/vector/legacyIllustratorAdapter.ts'
+import { encodeLink } from '../engine/vector/link.ts'
 import { createSavedVariation, type SavedVariation } from '../engine/vector/saved.ts'
 
 function reset(viewport = { width: 600, height: 600 }) {
@@ -251,5 +252,39 @@ describe('the pen', () => {
     expect(useLogoStore.getState().illustrator?.selectedLayerIds).toEqual([added.id])
     expect(useLogoStore.getState().ui.activeTool).toBeNull()
     expect(undoDepth()).toBe(before + 1)
+  })
+})
+
+describe('the look', () => {
+  beforeEach(() => reset())
+
+  it('opens on the construction look, and the switch goes to the final look and back', () => {
+    expect(useLogoStore.getInitialState().ui.look).toBe('construction')
+    useLogoStore.getState().toggleLook()
+    expect(useLogoStore.getState().ui.look).toBe('final')
+    useLogoStore.getState().toggleLook()
+    expect(useLogoStore.getState().ui.look).toBe('construction')
+  })
+
+  it('is a view setting: no undo step, the same document, the same link', () => {
+    const store = useLogoStore.getState()
+    store.addSlab('square')
+    store.addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 30 })
+    store.undoVectorCommand()
+    const before = useLogoStore.getState()
+    const link = encodeLink(before.vectorDocument!, before.params.fillColor)
+    const generateSteps = useLogoStore.temporal.getState().pastStates.length
+
+    useLogoStore.getState().toggleLook()
+
+    const after = useLogoStore.getState()
+    expect(after.ui.look).toBe('final')
+    expect(after.vectorUndoStack).toBe(before.vectorUndoStack)
+    expect(after.vectorRedoStack).toBe(before.vectorRedoStack)
+    expect(useLogoStore.temporal.getState().pastStates.length).toBe(generateSteps)
+    expect(after.vectorDocument).toBe(before.vectorDocument)
+    expect(after.illustrator).toBe(before.illustrator)
+    expect(after.params).toBe(before.params)
+    expect(encodeLink(after.vectorDocument!, after.params.fillColor)).toBe(link)
   })
 })

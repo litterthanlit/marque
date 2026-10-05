@@ -48,6 +48,12 @@ function App() {
         }
       }
 
+      if (e.key.toLowerCase() === 'f' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat) {
+        e.preventDefault()
+        useLogoStore.getState().toggleLook()
+        return
+      }
+
       // Delete/Backspace = delete selected shape in edit mode (not while a slider has focus)
       const onSlider = Boolean((e.target as HTMLElement).closest?.('[role="slider"]'))
       if ((e.key === 'Delete' || e.key === 'Backspace') && !e.metaKey && !e.ctrlKey && !onSlider) {

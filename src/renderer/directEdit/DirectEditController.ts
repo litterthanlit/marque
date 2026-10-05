@@ -56,7 +56,7 @@ import { bakedEditablePath } from '../../engine/illustrator/layerPath.ts'
 import { createComposeSession, type ComposeSession } from '../../engine/illustrator/composeSession.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
 import type { LayerEditCommit } from '../../store/logoStore.ts'
-import { getInkItem, setInkPathData, setSurvivalVisible } from '../IllustratorRenderer.ts'
+import { getInkItem, hideLayerOutlines, setInkPathData, setSurvivalVisible } from '../IllustratorRenderer.ts'
 import { carriedCuts } from './carry.ts'
 import { CURSORS, resizeCursor } from './cursors.ts'
 import { hud } from './hud.ts'
@@ -1269,6 +1269,7 @@ export class DirectEditController {
     }
     const editing = this.session ?? (this.nudge ? this.nudge.plan : null)
     const edited = editing?.editedIds ?? new Set<string>()
+    hideLayerOutlines(this.items, edited)
     const ids = new Set(doc.layers.map((candidate) => candidate.id))
     const selected = doc.selectedLayerIds.filter((id) => ids.has(id))
 

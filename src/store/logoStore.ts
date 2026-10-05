@@ -78,6 +78,9 @@ export interface DrawnPath {
 
 type ThemeMode = 'dark' | 'light'
 
+/** How the canvas draws the mark: as a construction sheet, or as the finished ink. */
+export type CanvasLook = 'construction' | 'final'
+
 interface UIState {
   showGrid: boolean
   showConstruction: boolean
@@ -96,6 +99,7 @@ interface UIState {
   carve: CarveSettings
   /** Size of the Vector Maker canvas in layer units, for placing new slabs. */
   viewport: { width: number; height: number }
+  look: CanvasLook
 }
 
 /** One layer change inside a single undoable commit. */
@@ -220,6 +224,7 @@ interface LogoStore {
   setSelection: (layerIds: string[], anchor?: { layerId: string; segmentIndex: number } | null) => void
   commitLayerEdits: (commit: LayerEditCommit) => void
   setViewport: (viewport: { width: number; height: number }) => void
+  toggleLook: () => void
   addCarveCut: (spec: CutSpec) => void
   /** A closed shape drawn with the pen (layer space): added on top, selected, back to direct editing. */
   addPenShape: (pathData: string) => void
@@ -254,6 +259,7 @@ export const useLogoStore = create<LogoStore>()(
         selectedPathIds: [],
         carve: { ...DEFAULT_CARVE_SETTINGS },
         viewport: { width: 600, height: 600 },
+        look: 'construction',
       },
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
@@ -1049,6 +1055,11 @@ export const useLogoStore = create<LogoStore>()(
             ? {}
             : { ui: { ...state.ui, viewport } },
         ),
+
+      toggleLook: () =>
+        set((state) => ({
+          ui: { ...state.ui, look: state.ui.look === 'construction' ? 'final' : 'construction' },
+        })),
 
       addCarveCut: (spec) =>
         set((state) => {

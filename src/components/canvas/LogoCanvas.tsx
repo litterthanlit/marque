@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { usePaperScope } from '../../renderer/usePaperScope.ts'
 import { renderLogoOnScope } from '../../renderer/PaperRenderer.ts'
-import { renderIllustratorOnScope, setInkPathData } from '../../renderer/IllustratorRenderer.ts'
+import { renderIllustratorOnScope, scaleConstructionLines, setInkPathData } from '../../renderer/IllustratorRenderer.ts'
 import { CarveTool } from '../../renderer/tools/CarveTool.ts'
 import { DirectEditController, type Modifiers } from '../../renderer/directEdit/DirectEditController.ts'
 import { registerEditorKeys } from '../../renderer/directEdit/keyboard.ts'
@@ -97,6 +97,7 @@ export function LogoCanvas() {
       cssSizeRef.current = { width, height }
       applyView()
       setViewport(visibleUnits(width, height))
+      if (scopeRef.current) scaleConstructionLines(scopeRef.current)
       controllerRef.current?.refresh()
     }
     const onPixelRatio = () => {
@@ -116,7 +117,7 @@ export function LogoCanvas() {
       observer.disconnect()
       media?.removeEventListener('change', onPixelRatio)
     }
-  }, [applyView, setViewport])
+  }, [applyView, setViewport, scopeRef])
 
   // Switching tabs stops (or resumes) the animation's motion.
   useEffect(() => {
@@ -165,6 +166,7 @@ export function LogoCanvas() {
       }
       const itemMap = renderIllustratorOnScope(scope, illustrator, {
         fillColor: params.fillColor,
+        look: ui.look,
         dissolution,
         survival,
         mark: activeMark,
@@ -224,6 +226,7 @@ export function LogoCanvas() {
     ui.selectedShapeId,
     ui.selectedPathIds,
     ui.viewport,
+    ui.look,
     params.fillColor,
     dissolution,
     scopeRef,

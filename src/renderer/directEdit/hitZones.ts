@@ -212,6 +212,15 @@ function findBody(ctx: HitContext, p: Vec, onInk: boolean): Zone | null {
     const layer = layers.find((candidate) => candidate.id === id)
     if (layer && usable(layer) && contains(ctx.items.get(id), p)) return { kind: 'body', layerId: id }
   }
+  // A cut removes nothing where no shape lies under it, but it is still there to pick up.
+  const overShape = layers.some((layer) => layer.visible && layer.operation === 'add' && contains(ctx.items.get(layer.id), p))
+  if (overShape) return null
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const cut = layers[i]
+    if (usable(cut) && cut.operation === 'subtract' && contains(ctx.items.get(cut.id), p)) {
+      return { kind: 'body', layerId: cut.id }
+    }
+  }
   return null
 }
 
