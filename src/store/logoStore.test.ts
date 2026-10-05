@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { useLogoStore } from './logoStore.ts'
 import type { SlabSpec } from '../engine/carve/spec.ts'
-import { generate } from '../engine/pipeline/GenerationPipeline.ts'
 import { illustratorDocumentToVectorDocument } from '../engine/vector/legacyIllustratorAdapter.ts'
+import { createSavedVariation, type SavedVariation } from '../engine/vector/saved.ts'
 
 function reset(viewport = { width: 600, height: 600 }) {
   const initial = useLogoStore.getInitialState()
@@ -22,14 +22,6 @@ describe('a fresh store', () => {
     expect(state.illustrator?.layers).toEqual([])
     expect(state.vectorUndoStack).toHaveLength(0)
     expect(state.ui.theme).toBe('dark')
-  })
-
-  it('stays empty when the default mark finishes generating', () => {
-    const blank = useLogoStore.getState().vectorDocument
-    useLogoStore.getState().setResult(generate(useLogoStore.getState().params))
-    expect(useLogoStore.getState().result?.shapes.length).toBeGreaterThan(0)
-    expect(useLogoStore.getState().vectorDocument).toBe(blank)
-    expect(layers()).toEqual([])
   })
 
   it('takes a pen shape, and undo empties it again', () => {
@@ -174,6 +166,72 @@ describe('a slab on a converted mark', () => {
     expect(layers().map((layer) => layer.carve?.kind ?? layer.name)).toEqual(['Generated Polygon 01', 'slab'])
     useLogoStore.getState().undoVectorCommand()
     expect(layers().map((layer) => layer.name)).toEqual(['Generated Polygon 01'])
+  })
+})
+
+describe('saved marks', () => {
+  beforeEach(() => reset())
+
+  const recipes = () => layers().map(({ id, name, operation, pathData, carve }) => ({ id, name, operation, pathData, carve }))
+  // As localStorage hands it back.
+  const saveCurrent = (): SavedVariation => {
+    const { vectorDocument, params } = useLogoStore.getState()
+    return JSON.parse(JSON.stringify(createSavedVariation(vectorDocument!, params)))
+  }
+
+  it('come back with their layers and ink after Start over, as one undo step', () => {
+    useLogoStore.getState().setParam('fillColor', '#ff3300')
+    useLogoStore.getState().addSlab('rounded')
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 20, y: 30 }, radius: 40 })
+    const drawn = recipes()
+    const entry = saveCurrent()
+
+    useLogoStore.getState().startOver()
+    useLogoStore.getState().setParam('fillColor', '#0000ff')
+    const depth = undoDepth()
+    useLogoStore.getState().openSaved(entry)
+
+    expect(recipes()).toEqual(drawn)
+    expect(drawn.map((layer) => layer.carve?.kind)).toEqual(['slab', 'punch'])
+    expect(useLogoStore.getState().params.fillColor).toBe('#ff3300')
+    expect(undoDepth()).toBe(depth + 1)
+
+    useLogoStore.getState().undoVectorCommand()
+    expect(layers()).toEqual([])
+    useLogoStore.getState().redoVectorCommand()
+    expect(recipes()).toEqual(drawn)
+  })
+
+  it('open as layers in Vector Maker when they were saved on the Generate screen', () => {
+    useLogoStore.getState().addSlab('square')
+    const { params } = useLogoStore.getState()
+    useLogoStore.getState().openSaved({
+      id: 'old',
+      name: 'geometric-radial #42',
+      savedAt: '2026-09-01T10:00:00.000Z',
+      params,
+      activeSurface: 'generated',
+      vectorDocument: null,
+      illustrator: null,
+    } as SavedVariation)
+
+    const state = useLogoStore.getState()
+    expect(state.activeSurface).toBe('illustrator')
+    expect(state.vectorDocument?.objects.length).toBeGreaterThan(1)
+    expect(layers().some((layer) => layer.carve)).toBe(false)
+    expect(state.error).toBeNull()
+  })
+
+  it('leave the open document alone and say so when they cannot be read', () => {
+    useLogoStore.getState().addSlab('square')
+    const open = useLogoStore.getState().vectorDocument
+    const depth = undoDepth()
+    useLogoStore.getState().openSaved({ ...saveCurrent(), vectorDocument: { kind: 'something-else' } } as never)
+
+    const state = useLogoStore.getState()
+    expect(state.vectorDocument).toBe(open)
+    expect(undoDepth()).toBe(depth)
+    expect(state.error).toEqual(expect.any(String))
   })
 })
 

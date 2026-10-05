@@ -45,7 +45,6 @@ async function withPanel(page: Page, run: (panel: Locator) => Promise<unknown>) 
 
 async function openVectorMaker(page: Page) {
   await page.goto('/')
-  await withPanel(page, (panel) => panel.getByRole('button', { name: 'Vector Maker', exact: true }).click())
   await expect.poll(() => page.evaluate(() => window.__marque.store.getState().activeSurface)).toBe('illustrator')
 }
 
@@ -443,4 +442,18 @@ test('Copy SVG and the canvas show the same mark', async ({ page, context }) => 
   }, copied!)
   expect(mismatches.checked).toBeGreaterThan(500)
   expect(mismatches.bad).toBe(0)
+})
+
+test('a link that cannot be read says so until the message is dismissed', async ({ page }) => {
+  await page.goto('/#vd=garbage')
+  const message = page.getByRole('alert')
+  await expect(message).toContainText('link')
+
+  // An edit does not clear it.
+  await addSlab(page, 'Square')
+  await expect(message).toBeVisible()
+
+  await message.getByRole('button', { name: 'Dismiss' }).click()
+  await expect(message).toHaveCount(0)
+  expect(await layers(page)).toHaveLength(1)
 })

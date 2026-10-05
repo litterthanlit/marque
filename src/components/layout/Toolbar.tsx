@@ -1,34 +1,17 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useState } from 'react'
 import { useLogoStore } from '../../store/logoStore.ts'
+import { useExport } from '../../hooks/useExport.ts'
 import { ExportDialog } from '../export/ExportDialog.tsx'
 import { cn } from '../../lib/utils.ts'
 
 export function Toolbar() {
-  const seed = useLogoStore((s) => s.params.seed)
-  const hasResult = useLogoStore((s) => Boolean(s.result))
-  const dissolutionEnabled = useLogoStore((s) => s.effectParams.dissolution.enabled)
-  const toggleDissolution = useLogoStore((s) => s.toggleDissolution)
-  const activeSurface = useLogoStore((s) => s.activeSurface)
-  const undoVectorCommand = useLogoStore((s) => s.undoVectorCommand)
-  const redoVectorCommand = useLogoStore((s) => s.redoVectorCommand)
-  const canUndoVector = useLogoStore((s) => s.vectorUndoStack.length > 0)
-  const canRedoVector = useLogoStore((s) => s.vectorRedoStack.length > 0)
+  const undo = useLogoStore((s) => s.undoVectorCommand)
+  const redo = useLogoStore((s) => s.redoVectorCommand)
+  const canUndo = useLogoStore((s) => s.vectorUndoStack.length > 0)
+  const canRedo = useLogoStore((s) => s.vectorRedoStack.length > 0)
+  const { canExport } = useExport()
   const [exportOpen, setExportOpen] = useState(false)
   const [shareState, setShareState] = useState<'idle' | 'copied' | 'failed'>('idle')
-
-  const { undo, redo } = useLogoStore.temporal.getState()
-  const canUndoGenerated = useSyncExternalStore(
-    (listener) => useLogoStore.temporal.subscribe(listener),
-    () => useLogoStore.temporal.getState().pastStates.length > 0,
-    () => false,
-  )
-  const canRedoGenerated = useSyncExternalStore(
-    (listener) => useLogoStore.temporal.subscribe(listener),
-    () => useLogoStore.temporal.getState().futureStates.length > 0,
-    () => false,
-  )
-  const canUndo = activeSurface === 'illustrator' ? canUndoVector : canUndoGenerated
-  const canRedo = activeSurface === 'illustrator' ? canRedoVector : canRedoGenerated
 
   useEffect(() => {
     function handleOpenExport() { setExportOpen(true) }
@@ -51,61 +34,24 @@ export function Toolbar() {
     }
   }
 
-  function handleUndo() {
-    if (activeSurface === 'illustrator') {
-      undoVectorCommand()
-    } else {
-      undo()
-    }
-  }
-
-  function handleRedo() {
-    if (activeSurface === 'illustrator') {
-      redoVectorCommand()
-    } else {
-      redo()
-    }
-  }
-
   return (
     <>
       <header className="flex items-center justify-between h-12 gap-2 px-3 sm:px-5 border-b border-border bg-surface-raised">
-        <div className="flex items-center gap-3 min-w-0">
-          <span className="font-display text-[18px] leading-none font-medium tracking-tight text-fg">dalat</span>
-          <span className="font-mono-tabular text-[11px] text-sidebar-muted">#{seed}</span>
-        </div>
+        <span className="font-display text-[18px] leading-none font-medium tracking-tight text-fg">dalat</span>
         <div className="flex min-w-0 shrink-0 items-center gap-1">
-          <ToolbarButton onClick={handleUndo} disabled={!canUndo} title="Undo (Cmd+Z)" className="hidden sm:inline-flex">
+          <ToolbarButton onClick={undo} disabled={!canUndo} title="Undo (Cmd+Z)" className="hidden sm:inline-flex">
             <UndoIcon />
           </ToolbarButton>
-          <ToolbarButton onClick={handleRedo} disabled={!canRedo} title="Redo (Cmd+Shift+Z)" className="hidden sm:inline-flex">
+          <ToolbarButton onClick={redo} disabled={!canRedo} title="Redo (Cmd+Shift+Z)" className="hidden sm:inline-flex">
             <RedoIcon />
           </ToolbarButton>
           <div className="hidden sm:block w-px h-3.5 bg-border mx-1" />
-          {dissolutionEnabled && (
-            <ToolbarButton
-              onClick={toggleDissolution}
-              title="Dissolution effect is active. Click to turn it off."
-              className="text-amber-300 bg-amber-500/10 hover:bg-amber-500/15 hover:text-amber-200"
-            >
-              <span className="lg:hidden">Fx</span>
-              <span className="hidden lg:inline">Effect On</span>
-            </ToolbarButton>
-          )}
-          {activeSurface === 'illustrator' && (
-            <span
-              title="Export and sharing are using the editable Vector Maker document."
-              className="hidden sm:inline-flex h-7 items-center rounded-md border border-sky-500/20 bg-sky-500/10 px-2 text-xs text-sky-300"
-            >
-              Vector Maker
-            </span>
-          )}
           <ToolbarButton onClick={handleCopyShareLink} className="hidden lg:inline-flex">
             {shareState === 'copied' ? 'Copied' : shareState === 'failed' ? 'Failed' : 'Share'}
           </ToolbarButton>
           <button
             onClick={() => setExportOpen(true)}
-            disabled={!hasResult}
+            disabled={!canExport}
             className={cn(
               'ml-1 h-7 px-2 sm:px-3 text-xs font-medium rounded-md transition-colors',
               'bg-fg text-surface hover:opacity-80',

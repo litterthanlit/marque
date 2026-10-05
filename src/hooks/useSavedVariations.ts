@@ -1,22 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { LogoParams } from '../engine/types.ts'
-import type { EffectParamsMap } from '../engine/effects/types.ts'
-import type { ActiveSurface, IllustratorDocument } from '../engine/illustrator/types.ts'
+import { createSavedVariation, type SavedVariation } from '../engine/vector/saved.ts'
 import type { VectorDocument } from '../engine/vector/types.ts'
 
 const STORAGE_KEY = 'dalat.saved-variations.v3'
 const MAX_VARIATIONS = 24
-
-export interface SavedVariation {
-  id: string
-  name: string
-  savedAt: string
-  params: LogoParams
-  effectParams?: EffectParamsMap
-  activeSurface?: ActiveSurface
-  vectorDocument?: VectorDocument | null
-  illustrator?: IllustratorDocument | null
-}
 
 export function useSavedVariations() {
   const [variations, setVariations] = useState<SavedVariation[]>([])
@@ -51,28 +39,9 @@ export function useSavedVariations() {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(variations))
   }, [variations])
 
-  const saveVariation = useCallback((
-    params: LogoParams,
-    activeSurface: ActiveSurface,
-    vectorDocument: VectorDocument | null,
-    illustrator: IllustratorDocument | null,
-    effectParams: EffectParamsMap,
-    name?: string,
-  ) => {
-    const safeName = name?.trim() || `${params.modeId} #${params.seed}`
-    setVariations((current) => [
-      {
-        id: crypto.randomUUID(),
-        name: safeName,
-        savedAt: new Date().toISOString(),
-        params: structuredClone(params),
-        activeSurface,
-        vectorDocument: vectorDocument ? structuredClone(vectorDocument) : null,
-        illustrator: illustrator ? structuredClone(illustrator) : null,
-        effectParams: structuredClone(effectParams),
-      },
-      ...current,
-    ].slice(0, MAX_VARIATIONS))
+  const saveVariation = useCallback((document: VectorDocument, params: LogoParams) => {
+    const entry = createSavedVariation(document, params)
+    setVariations((current) => [entry, ...current].slice(0, MAX_VARIATIONS))
   }, [])
 
   const removeVariation = useCallback((id: string) => {

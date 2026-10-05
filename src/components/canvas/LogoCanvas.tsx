@@ -598,7 +598,7 @@ export function LogoCanvas() {
           />
           {inVectorMaker && <CanvasHud />}
         </div>
-        <AnimationControls playing={playing} canAnimate={canAnimate} onToggle={togglePlaying} />
+        {!inVectorMaker && <AnimationControls playing={playing} canAnimate={canAnimate} onToggle={togglePlaying} />}
       </div>
     </div>
   )

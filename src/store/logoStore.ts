@@ -26,6 +26,7 @@ import {
   invertVectorCommand,
 } from '../engine/vector/commands.ts'
 import { createVectorDocumentFromGeneration } from '../engine/vector/fromGeneration.ts'
+import { savedDocument, type SavedVariation } from '../engine/vector/saved.ts'
 import type { VectorDocument, VectorSelection } from '../engine/vector/types.ts'
 import {
   illustratorDocumentToVectorDocument,
@@ -214,6 +215,8 @@ interface LogoStore {
   setCarveSettings: (update: Partial<CarveSettings>) => void
   addSlab: (kind: SlabKind) => void
   startOver: () => void
+  /** Put a saved mark in place of the open document: one undo step for the layers. */
+  openSaved: (entry: SavedVariation) => void
   setSelection: (layerIds: string[], anchor?: { layerId: string; segmentIndex: number } | null) => void
   commitLayerEdits: (commit: LayerEditCommit) => void
   setViewport: (viewport: { width: number; height: number }) => void
@@ -348,26 +351,7 @@ export const useLogoStore = create<LogoStore>()(
           ui: { ...state.ui, shapeOverrides: {}, selectedShapeId: null },
         })),
 
-      setResult: (result) =>
-        set((state) => {
-          const vectorDocument =
-            result && state.activeSurface === 'illustrator' && !state.vectorDocument
-              ? createVectorDocumentFromGeneration(result, state.params)
-              : state.vectorDocument
-          const shouldSyncLegacy =
-            result &&
-            state.activeSurface === 'illustrator' &&
-            vectorDocument &&
-            (!state.illustrator || !state.vectorDocument)
-
-          return {
-            result,
-            illustrator: shouldSyncLegacy
-              ? vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator)
-              : state.illustrator,
-            vectorDocument,
-          }
-        }),
+      setResult: (result) => set({ result }),
       setError: (error) => set({ error }),
 
       toggleGrid: () =>
@@ -996,26 +980,15 @@ export const useLogoStore = create<LogoStore>()(
             ? placeSlab(kind, existing.viewBox, state.ui.viewport)
             : slabSpec(kind)
           const slab = recipeLayer(spec, 'add')
-          if (state.vectorDocument || state.illustrator) {
-            // New material goes on top: older cuts can't bite into it.
-            const update = mutateVectorViaIllustrator(state, 'Add slab', (doc) => ({
-              ...doc,
-              mode: 'object',
-              layers: [...doc.layers, slab],
-              selectedLayerIds: [slab.id],
-              pointSelection: null,
-            }))
-            if (update) return { ...update, activeSurface: 'illustrator', ui }
-          }
-          const fresh = slabDocument([slab], state.params.fillColor)
-          return {
-            activeSurface: 'illustrator',
-            vectorDocument: fresh,
-            illustrator: vectorDocumentToIllustratorDocument(fresh, null),
-            vectorUndoStack: [],
-            vectorRedoStack: [],
-            ui,
-          }
+          // New material goes on top: older cuts can't bite into it.
+          const update = mutateVectorViaIllustrator(state, 'Add slab', (doc) => ({
+            ...doc,
+            mode: 'object',
+            layers: [...doc.layers, slab],
+            selectedLayerIds: [slab.id],
+            pointSelection: null,
+          }))
+          return update ? { ...update, activeSurface: 'illustrator', ui } : state
         }),
 
       startOver: () =>
@@ -1042,6 +1015,19 @@ export const useLogoStore = create<LogoStore>()(
             vectorUndoStack: [],
             vectorRedoStack: [],
             ui,
+          }
+        }),
+
+      openSaved: (entry) =>
+        set((state) => {
+          const saved = savedDocument(entry)
+          if (!saved) return { error: 'This saved mark could not be read.' }
+          if (!state.vectorDocument) return {}
+          const document = sanitizeVectorDocument(saved.document)
+          return {
+            ...commitVectorDocumentUpdate(state, state.vectorDocument, document, 'Open saved mark'),
+            params: { ...state.params, fillColor: saved.inkColor },
+            ui: { ...state.ui, activeTool: null },
           }
         }),
 

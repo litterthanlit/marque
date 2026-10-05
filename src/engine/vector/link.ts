@@ -170,7 +170,7 @@ function unpack(packed: string): unknown {
   }
 }
 
-function isIllustratorDocument(value: unknown): value is IllustratorDocument {
+export function isIllustratorDocument(value: unknown): value is IllustratorDocument {
   if (!value || typeof value !== 'object') return false
   const doc = value as Partial<IllustratorDocument>
   return (
