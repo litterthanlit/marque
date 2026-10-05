@@ -1,34 +1,26 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useState } from 'react'
 import { useLogoStore } from '../../store/logoStore.ts'
+import { useExport } from '../../hooks/useExport.ts'
 import { ExportDialog } from '../export/ExportDialog.tsx'
+import { SavedMenu } from '../editor/SavedMenu.tsx'
+import { SurvivalPopover } from '../editor/SurvivalPopover.tsx'
+import { ToolbarButton } from './ToolbarButton.tsx'
 import { cn } from '../../lib/utils.ts'
 
-export function Toolbar() {
-  const seed = useLogoStore((s) => s.params.seed)
-  const hasResult = useLogoStore((s) => Boolean(s.result))
-  const dissolutionEnabled = useLogoStore((s) => s.effectParams.dissolution.enabled)
-  const toggleDissolution = useLogoStore((s) => s.toggleDissolution)
-  const activeSurface = useLogoStore((s) => s.activeSurface)
-  const undoVectorCommand = useLogoStore((s) => s.undoVectorCommand)
-  const redoVectorCommand = useLogoStore((s) => s.redoVectorCommand)
-  const canUndoVector = useLogoStore((s) => s.vectorUndoStack.length > 0)
-  const canRedoVector = useLogoStore((s) => s.vectorRedoStack.length > 0)
-  const [exportOpen, setExportOpen] = useState(false)
-  const [shareState, setShareState] = useState<'idle' | 'copied' | 'failed'>('idle')
+type ShareState = 'idle' | 'copied' | 'failed'
 
-  const { undo, redo } = useLogoStore.temporal.getState()
-  const canUndoGenerated = useSyncExternalStore(
-    (listener) => useLogoStore.temporal.subscribe(listener),
-    () => useLogoStore.temporal.getState().pastStates.length > 0,
-    () => false,
-  )
-  const canRedoGenerated = useSyncExternalStore(
-    (listener) => useLogoStore.temporal.subscribe(listener),
-    () => useLogoStore.temporal.getState().futureStates.length > 0,
-    () => false,
-  )
-  const canUndo = activeSurface === 'illustrator' ? canUndoVector : canUndoGenerated
-  const canRedo = activeSurface === 'illustrator' ? canRedoVector : canRedoGenerated
+export function Toolbar() {
+  const undo = useLogoStore((s) => s.undoVectorCommand)
+  const redo = useLogoStore((s) => s.redoVectorCommand)
+  const canUndo = useLogoStore((s) => s.vectorUndoStack.length > 0)
+  const canRedo = useLogoStore((s) => s.vectorRedoStack.length > 0)
+  const look = useLogoStore((s) => s.ui.look)
+  const toggleLook = useLogoStore((s) => s.toggleLook)
+  const layersOpen = useLogoStore((s) => s.ui.layersOpen)
+  const setLayersOpen = useLogoStore((s) => s.setLayersOpen)
+  const { canExport } = useExport()
+  const [exportOpen, setExportOpen] = useState(false)
+  const [shareState, setShareState] = useState<ShareState>('idle')
 
   useEffect(() => {
     function handleOpenExport() { setExportOpen(true) }
@@ -51,61 +43,48 @@ export function Toolbar() {
     }
   }
 
-  function handleUndo() {
-    if (activeSurface === 'illustrator') {
-      undoVectorCommand()
-    } else {
-      undo()
-    }
-  }
-
-  function handleRedo() {
-    if (activeSurface === 'illustrator') {
-      redoVectorCommand()
-    } else {
-      redo()
-    }
-  }
-
+  // On a phone every control stays in the one row: labels give way to icons, and the wordmark goes last.
   return (
     <>
       <header className="flex items-center justify-between h-12 gap-2 px-3 sm:px-5 border-b border-border bg-surface-raised">
-        <div className="flex items-center gap-3 min-w-0">
-          <span className="font-display text-[18px] leading-none font-medium tracking-tight text-fg">dalat</span>
-          <span className="font-mono-tabular text-[11px] text-sidebar-muted">#{seed}</span>
-        </div>
-        <div className="flex min-w-0 shrink-0 items-center gap-1">
-          <ToolbarButton onClick={handleUndo} disabled={!canUndo} title="Undo (Cmd+Z)" className="hidden sm:inline-flex">
+        <span className="font-display text-[18px] leading-none font-medium tracking-tight text-fg max-[379px]:hidden">marque</span>
+        <div className="flex min-w-0 shrink-0 items-center gap-0.5 sm:gap-1 max-[379px]:flex-1 max-[379px]:justify-between">
+          <ToolbarButton onClick={undo} disabled={!canUndo} aria-label="Undo" title="Undo (Cmd+Z)">
             <UndoIcon />
           </ToolbarButton>
-          <ToolbarButton onClick={handleRedo} disabled={!canRedo} title="Redo (Cmd+Shift+Z)" className="hidden sm:inline-flex">
+          <ToolbarButton onClick={redo} disabled={!canRedo} aria-label="Redo" title="Redo (Cmd+Shift+Z)">
             <RedoIcon />
           </ToolbarButton>
-          <div className="hidden sm:block w-px h-3.5 bg-border mx-1" />
-          {dissolutionEnabled && (
-            <ToolbarButton
-              onClick={toggleDissolution}
-              title="Dissolution effect is active. Click to turn it off."
-              className="text-amber-300 bg-amber-500/10 hover:bg-amber-500/15 hover:text-amber-200"
-            >
-              <span className="lg:hidden">Fx</span>
-              <span className="hidden lg:inline">Effect On</span>
-            </ToolbarButton>
-          )}
-          {activeSurface === 'illustrator' && (
-            <span
-              title="Export and sharing are using the editable Vector Maker document."
-              className="hidden sm:inline-flex h-7 items-center rounded-md border border-sky-500/20 bg-sky-500/10 px-2 text-xs text-sky-300"
-            >
-              Vector Maker
-            </span>
-          )}
-          <ToolbarButton onClick={handleCopyShareLink} className="hidden lg:inline-flex">
-            {shareState === 'copied' ? 'Copied' : shareState === 'failed' ? 'Failed' : 'Share'}
+          <div className="max-sm:hidden w-px h-3.5 bg-border mx-1" />
+          <InkSwatch />
+          <ToolbarButton
+            onClick={toggleLook}
+            aria-label="Show construction lines"
+            aria-pressed={look === 'construction'}
+            title="Show construction lines (F)"
+            className="aria-pressed:bg-interactive-hover aria-pressed:text-fg"
+          >
+            <ConstructionIcon />
           </ToolbarButton>
+          <ToolbarButton
+            onClick={() => setLayersOpen(!layersOpen)}
+            aria-label="Layers"
+            aria-expanded={layersOpen}
+            title="Layers (L)"
+          >
+            <LayersIcon />
+            <span className="max-sm:hidden">Layers</span>
+          </ToolbarButton>
+          <SavedMenu />
+          <ToolbarButton onClick={handleCopyShareLink} aria-label={SHARE[shareState].name} title="Copy a link to this mark">
+            {SHARE[shareState].icon}
+            <span className="max-sm:hidden" aria-live="polite">{SHARE[shareState].label}</span>
+          </ToolbarButton>
+          <SurvivalPopover />
           <button
+            type="button"
             onClick={() => setExportOpen(true)}
-            disabled={!hasResult}
+            disabled={!canExport}
             className={cn(
               'ml-1 h-7 px-2 sm:px-3 text-xs font-medium rounded-md transition-colors',
               'bg-fg text-surface hover:opacity-80',
@@ -122,26 +101,46 @@ export function Toolbar() {
   )
 }
 
-function ToolbarButton({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+function InkSwatch() {
+  const fillColor = useLogoStore((s) => s.params.fillColor)
+  const setParam = useLogoStore((s) => s.setParam)
+
   return (
-    <button
-      {...props}
+    <span
+      title={`Ink colour ${fillColor.toLowerCase()}`}
       className={cn(
-        'inline-flex h-7 items-center justify-center px-2 text-xs text-sidebar-muted rounded-md transition-colors',
-        'hover:bg-interactive-hover hover:text-fg',
-        'disabled:opacity-30 disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-sidebar-muted',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
-        props.className,
+        'relative mx-1 size-5 shrink-0 rounded-md border border-sidebar-muted',
+        'focus-within:ring-2 focus-within:ring-[color:var(--color-selection)]',
+        'focus-within:ring-offset-2 focus-within:ring-offset-surface-raised',
       )}
+      style={{ backgroundColor: fillColor }}
     >
-      {children}
-    </button>
+      <input
+        type="color"
+        value={fillColor}
+        onChange={(e) => setParam('fillColor', e.target.value)}
+        aria-label="Ink colour"
+        className="absolute inset-0 size-full opacity-0 cursor-pointer"
+      />
+    </span>
   )
 }
 
+const ICON = {
+  width: 14,
+  height: 14,
+  viewBox: '0 0 16 16',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.5,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+  'aria-hidden': true,
+} as const
+
 function UndoIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg {...ICON}>
       <path d="M3 7h7a4 4 0 0 1 0 8H7" />
       <path d="M6 4L3 7l3 3" />
     </svg>
@@ -150,9 +149,59 @@ function UndoIcon() {
 
 function RedoIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <svg {...ICON}>
       <path d="M13 7H6a4 4 0 0 0 0 8h3" />
       <path d="M10 4l3 3-3 3" />
     </svg>
   )
+}
+
+function ConstructionIcon() {
+  return (
+    <svg {...ICON}>
+      <rect x="2" y="6" width="8" height="8" rx="1" />
+      <circle cx="10" cy="6" r="4" strokeDasharray="0.1 2.4" />
+    </svg>
+  )
+}
+
+function LayersIcon() {
+  return (
+    <svg {...ICON} className="sm:hidden">
+      <path d="M8 2.5L2.5 5.5 8 8.5l5.5-3z" />
+      <path d="M2.5 9.5L8 12.5l5.5-3" />
+    </svg>
+  )
+}
+
+function LinkIcon() {
+  return (
+    <svg {...ICON} className="sm:hidden">
+      <path d="M6.5 9.5l3-3" />
+      <path d="M7.5 4.5l1-1a2.8 2.8 0 0 1 4 4l-1 1" />
+      <path d="M8.5 11.5l-1 1a2.8 2.8 0 0 1-4-4l1-1" />
+    </svg>
+  )
+}
+
+function CheckIcon() {
+  return (
+    <svg {...ICON} className="sm:hidden">
+      <path d="M3.5 8.5l3 3 6-7" />
+    </svg>
+  )
+}
+
+function CrossIcon() {
+  return (
+    <svg {...ICON} className="sm:hidden">
+      <path d="M4 4l8 8M12 4l-8 8" />
+    </svg>
+  )
+}
+
+const SHARE: Record<ShareState, { label: string; name: string; icon: React.ReactNode }> = {
+  idle: { label: 'Share', name: 'Share', icon: <LinkIcon /> },
+  copied: { label: 'Copied', name: 'Link copied', icon: <CheckIcon /> },
+  failed: { label: 'Failed', name: 'The link could not be copied', icon: <CrossIcon /> },
 }

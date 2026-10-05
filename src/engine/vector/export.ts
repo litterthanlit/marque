@@ -25,22 +25,20 @@ function serializeTransform(transform: Matrix2D): string {
   return `matrix(${a} ${b} ${c} ${d} ${e} ${f})`
 }
 
-export function composeVectorMark(document: VectorDocument | null): MarkData | null {
-  if (!document) return null
+export function composeVectorMark(document: VectorDocument): MarkData {
   return composeIllustratorMark(vectorDocumentToIllustratorDocument(document))
 }
 
-const markCache = new WeakMap<VectorObject[], MarkData | null>()
+const markCache = new WeakMap<VectorObject[], MarkData>()
 
 /**
  * The composed mark for a document, computed once per set of objects.
  * Selection changes keep the same objects array, so they cost nothing; the
  * canvas, previews and export all read this one result.
  */
-export function composeVectorMarkCached(document: VectorDocument | null): MarkData | null {
-  if (!document) return null
+export function composeVectorMarkCached(document: VectorDocument): MarkData {
   const hit = markCache.get(document.objects)
-  if (hit !== undefined) return hit
+  if (hit) return hit
   const mark = composeVectorMark(document)
   markCache.set(document.objects, mark)
   return mark

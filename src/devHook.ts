@@ -24,7 +24,7 @@ function canvasFrame() {
 }
 
 function layerById(id: string) {
-  return useLogoStore.getState().illustrator?.layers.find((candidate) => candidate.id === id)
+  return useLogoStore.getState().illustrator.layers.find((candidate) => candidate.id === id)
 }
 
 function createDevHook() {
@@ -35,7 +35,7 @@ function createDevHook() {
     /** Client-space positions of the selected recipe's handles. */
     handles() {
       const doc = useLogoStore.getState().illustrator
-      const layer = doc?.selectedLayerIds.length === 1 ? layerById(doc.selectedLayerIds[0]) : undefined
+      const layer = doc.selectedLayerIds.length === 1 ? layerById(doc.selectedLayerIds[0]) : undefined
       const frame = canvasFrame()
       if (!layer?.carve || !frame) return []
       const layout = {

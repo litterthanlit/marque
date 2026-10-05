@@ -15,10 +15,6 @@ export function getGenerator(id: string): LogoGenerator | undefined {
   return registry.get(id)
 }
 
-export function listGenerators(): LogoGenerator[] {
-  return Array.from(registry.values())
-}
-
 // Register built-in generators
 registerGenerator(GeometricRadialGenerator)
 registerGenerator(GridSystemGenerator)

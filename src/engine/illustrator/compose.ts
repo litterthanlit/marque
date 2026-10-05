@@ -1,9 +1,6 @@
 import paper from 'paper'
-import type { GenerationResult, LogoParams } from '../types.ts'
-import { getGenerator } from '../generators/registry.ts'
 import { composeOrderedPaths } from '../boolean/operations.ts'
 import type { IllustratorDocument, IllustratorLayer, MarkData } from './types.ts'
-import { DEFAULT_ILLUSTRATOR_TRANSFORM } from './types.ts'
 
 let illustratorScope: paper.PaperScope | null = null
 
@@ -73,39 +70,6 @@ export function generatedShapesInApplyOrder<T extends { pathData?: string; opera
   ]
 }
 
-export function createIllustratorDocument(
-  result: GenerationResult,
-  params: LogoParams,
-): IllustratorDocument {
-  const generator = getGenerator(params.generatorId)
-  const layers = generatedShapesInApplyOrder(result.shapes)
-    .map((shape, index): IllustratorLayer => ({
-      id: `layer_${shape.id}_${index}`,
-      name: `${shape.type} ${index + 1}`,
-      sourceShapeId: shape.id,
-      operation: shape.operation,
-      visible: true,
-      locked: false,
-      pathData: shape.pathData ?? '',
-      fillRule: 'evenodd',
-      transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
-    }))
-
-  return {
-    id: crypto.randomUUID(),
-    source: {
-      seed: params.seed,
-      modeId: params.modeId,
-      generatorId: params.generatorId,
-      generatorVersion: generator?.version ?? 'v0',
-    },
-    layers,
-    selectedLayerIds: layers[0] ? [layers[0].id] : [],
-    pointSelection: null,
-    mode: 'object',
-  }
-}
-
 /** A layer's path with its transform applied, in layer space. */
 export function layerTransformedPathData(layer: IllustratorLayer): string {
   const scope = getScope()
@@ -117,9 +81,7 @@ export function layerTransformedPathData(layer: IllustratorLayer): string {
   return pathData
 }
 
-export function composeIllustratorMark(doc: IllustratorDocument | null): MarkData | null {
-  if (!doc) return null
-
+export function composeIllustratorMark(doc: IllustratorDocument): MarkData {
   const scope = getScope()
   scope.project.clear()
 
@@ -151,20 +113,4 @@ export function composeIllustratorMark(doc: IllustratorDocument | null): MarkDat
     fillRule: 'evenodd',
     viewBox: result.viewBox,
   }
-}
-
-export function isIllustratorSourceStale(
-  doc: IllustratorDocument | null,
-  params: LogoParams,
-): boolean {
-  if (!doc) return false
-  // A carved slab has no generated source to drift from.
-  if (doc.source.generatorId === 'slab') return false
-  const generator = getGenerator(params.generatorId)
-  return (
-    doc.source.seed !== params.seed ||
-    doc.source.modeId !== params.modeId ||
-    doc.source.generatorId !== params.generatorId ||
-    doc.source.generatorVersion !== (generator?.version ?? 'v0')
-  )
 }

@@ -70,7 +70,8 @@ export function findThinWalls(ink: Uint8Array, w: number, h: number, radius: num
 
   // Every sharp corner loses a speck under any round probe. Drop specks smaller
   // than a fraction of the probe so only real slivers and bridges are reported.
-  const minArea = Math.max(4, radius * radius * 0.3)
+  // A right-angle corner measures about 0.33 to 0.4 r² here, so the cut-off sits above it.
+  const minArea = Math.max(4, radius * radius * 0.5)
   const seen = new Uint8Array(ink.length)
   const stack: number[] = []
   const region: number[] = []

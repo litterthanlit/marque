@@ -38,11 +38,11 @@ const triangle: IllustratorLayer = {
   transform: { dx: 0, dy: 0, scale: 1, rotation: 0 },
 }
 
-function context(selectedIds: string[]): HitContext {
+function context(selectedIds: string[], layers: IllustratorLayer[] = [slab, punch, channel, triangle]): HitContext {
   const doc: IllustratorDocument = {
     id: 'doc',
     source: { seed: 0, modeId: 'slab', generatorId: 'slab', generatorVersion: 'v1' },
-    layers: [slab, punch, channel, triangle],
+    layers,
     selectedLayerIds: selectedIds,
     pointSelection: null,
     mode: 'object',
@@ -122,5 +122,39 @@ describe('edge hit zones', () => {
 
   it('ignores pointers far from every edge', () => {
     expect(findZone(context([]), { x: 0, y: -250 })).toEqual({ kind: 'empty' })
+  })
+})
+
+describe('a cut over nothing', () => {
+  const lone = recipeLayer('lone', { v: 1, kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 40, rotation: 0 }, 'subtract')
+  const over = recipeLayer('over', { v: 1, kind: 'punch', shape: 'circle', center: { x: 10, y: 0 }, radius: 40, rotation: 0 }, 'subtract')
+  // Crosses the slab's right edge (x = 190): half of it has nothing below.
+  const straddling = recipeLayer('straddling', { v: 1, kind: 'punch', shape: 'circle', center: { x: 190, y: 0 }, radius: 40, rotation: 0 }, 'subtract')
+
+  it('is picked up by its body on an empty canvas, the topmost first', () => {
+    expect(findZone(context([], [lone]), { x: 0, y: 0 })).toEqual({ kind: 'body', layerId: 'lone' })
+    expect(findZone(context([], [lone]), { x: 0, y: 30 })).toEqual({ kind: 'body', layerId: 'lone' })
+    expect(findZone(context([], [lone, over]), { x: 5, y: 0 })).toEqual({ kind: 'body', layerId: 'over' })
+    expect(findZone(context([], [lone, over]), { x: -35, y: 0 })).toEqual({ kind: 'body', layerId: 'lone' })
+    expect(findZone(context([], [lone]), { x: 60, y: 0 })).toEqual({ kind: 'empty' })
+  })
+
+  it('is picked up where it sticks out of the shape it cuts', () => {
+    expect(findZone(context([], [slab, straddling]), { x: 210, y: 0 })).toEqual({ kind: 'body', layerId: 'straddling' })
+    expect(findZone(context([], [slab, straddling]), { x: 170, y: 0 })).toEqual({ kind: 'body', layerId: 'straddling' })
+  })
+
+  it('stays out of the way when it is hidden or locked', () => {
+    expect(findZone(context([], [{ ...lone, visible: false }]), { x: 0, y: 0 })).toEqual({ kind: 'empty' })
+    expect(findZone(context([], [{ ...lone, locked: true }]), { x: 0, y: 0 })).toEqual({ kind: 'empty' })
+  })
+
+  it('never takes a press from a shape under the pointer', () => {
+    // A cut below the slab removes nothing from it: the ink there is still the slab's.
+    expect(findZone(context([], [lone, slab]), { x: 0, y: 0 })).toEqual({ kind: 'body', layerId: 'slab' })
+    // A locked shape is not picked up, and the cut beneath it is not offered in its place.
+    expect(findZone(context([], [lone, { ...slab, locked: true }]), { x: 0, y: 0 })).toEqual({ kind: 'empty' })
+    // A locked cut keeps its hole: an older cut under the same shape does not answer for it.
+    expect(findZone(context([], [lone, slab, { ...over, locked: true }]), { x: 5, y: 0 })).toEqual({ kind: 'empty' })
   })
 })

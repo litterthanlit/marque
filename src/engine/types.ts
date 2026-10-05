@@ -1,5 +1,3 @@
-import type { AnimationKeyframe } from './animation/types.ts'
-
 export type StyleFamily =
   | 'minimal'
   | 'heritage'
@@ -29,11 +27,6 @@ export interface LogoParams {
   generatorId: string
   enabledShapes: string[] // subset of PrimitiveType: circle, rectangle, triangle, polygon, blob
   modeParams: ModeParamMap
-}
-
-export interface PersistedLogoState {
-  generatorVersion: string
-  params: LogoParams
 }
 
 /**
@@ -122,10 +115,6 @@ export interface LogoGenerator {
   version: string
   extraParams: ParamDefinition[]
   generate(params: LogoParams, rng: SeededRandom): GenerationResult
-  getAnimationKeyframes?: (
-    params: LogoParams,
-    rng: SeededRandom,
-  ) => AnimationKeyframe[]
 }
 
 export interface GridPoint {
@@ -153,5 +142,3 @@ export const DEFAULT_PARAMS: LogoParams = {
   generatorId: 'geometric-radial',
   modeParams: {},
 }
-
-export type { EffectParamsMap } from './effects/types.ts'

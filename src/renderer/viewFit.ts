@@ -3,18 +3,9 @@
  * Generators draw in a 500-unit space; 600 units across leaves room around a
  * mark for handles. Project coordinates never depend on the canvas size (the
  * view centre stays at (300, 300) on a square canvas), so a resize only needs
- * a redraw, and both tabs show a mark at the same size.
+ * a redraw.
  */
 export const DESIGN_SPAN = 600
-
-/** Animation applied on top of the fit, about the centre of the canvas. */
-export interface ViewMotion {
-  /** Degrees. */
-  rotation: number
-  scale: number
-}
-
-export const STILL: ViewMotion = { rotation: 0, scale: 1 }
 
 interface FitState {
   zoom: number
@@ -37,7 +28,6 @@ export function fitView(
   cssWidth: number,
   cssHeight: number,
   pixelRatio: number,
-  motion: ViewMotion = STILL,
 ): void {
   const view = scope.view
   const width = Math.max(1, Math.round(cssWidth * pixelRatio))
@@ -47,11 +37,7 @@ export function fitView(
   }
   const zoom = Math.min(width, height) / DESIGN_SPAN
   const half = new scope.Point(width / 2, height / 2)
-  view.matrix = new scope.Matrix()
-    .translate(half)
-    .rotate(motion.rotation, new scope.Point(0, 0))
-    .scale(zoom * motion.scale)
-    .translate(half.divide(-zoom))
+  view.matrix = new scope.Matrix().translate(half).scale(zoom).translate(half.divide(-zoom))
   fits.set(scope, { zoom, pixelRatio })
 }
 

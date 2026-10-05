@@ -1,13 +1,11 @@
 import { useEffect } from 'react'
 import { AppShell } from './components/layout/AppShell.tsx'
-import { Onboarding } from './components/onboarding/Onboarding.tsx'
-import { useGeneration } from './hooks/useGeneration.ts'
 import { useUrlState } from './hooks/useUrlState.ts'
 import { useLogoStore } from './store/logoStore.ts'
-import { dispatchEditorKey, isEditorInteracting } from './renderer/directEdit/keyboard.ts'
+import { dispatchEditorKey, isBareKey, isEditorInteracting } from './renderer/directEdit/keyboard.ts'
+import { isShuffleKey, toolForKey } from './components/editor/tools.ts'
 
 function App() {
-  useGeneration()
   useUrlState()
 
   // Apply saved theme on mount
@@ -18,9 +16,13 @@ function App() {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      // Skip when input is focused
-      const tag = (e.target as HTMLElement).tagName
-      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
+      // Skip while typing or choosing. The colour swatch keeps focus after its picker closes, and takes no typing.
+      const target = e.target as HTMLElement
+      const tag = target.tagName
+      const colourSwatch = tag === 'INPUT' && (target as HTMLInputElement).type === 'color'
+      if ((tag === 'INPUT' && !colourSwatch) || tag === 'SELECT' || tag === 'TEXTAREA') return
+      // A dialog over the page has the keyboard: nothing behind it reacts.
+      if (document.querySelector('[aria-modal="true"]')) return
 
       // Canvas editors first: Delete removes a selected point before its layer,
       // Escape steps back one level, arrows nudge.
@@ -30,8 +32,6 @@ function App() {
       }
 
       if (e.metaKey || e.ctrlKey) {
-        // Same routing as the toolbar buttons: Vector Maker has its own command history.
-        const inVectorMaker = useLogoStore.getState().activeSurface === 'illustrator'
         const key = e.key.toLowerCase()
         // Undo waits for the drag to finish: the gesture is not a step yet.
         if (key === 'z' && isEditorInteracting()) {
@@ -40,13 +40,11 @@ function App() {
         }
         if (key === 'z' && !e.shiftKey) {
           e.preventDefault()
-          if (inVectorMaker) useLogoStore.getState().undoVectorCommand()
-          else useLogoStore.temporal.getState().undo()
+          useLogoStore.getState().undoVectorCommand()
         }
         if (key === 'z' && e.shiftKey) {
           e.preventDefault()
-          if (inVectorMaker) useLogoStore.getState().redoVectorCommand()
-          else useLogoStore.temporal.getState().redo()
+          useLogoStore.getState().redoVectorCommand()
         }
         if (e.key === 'e') {
           e.preventDefault()
@@ -55,37 +53,52 @@ function App() {
         }
       }
 
-      // Delete/Backspace = delete selected shape in edit mode (not while a slider has focus)
-      const onSlider = Boolean((e.target as HTMLElement).closest?.('[role="slider"]'))
-      if ((e.key === 'Delete' || e.key === 'Backspace') && !e.metaKey && !e.ctrlKey && !onSlider) {
-        const { ui, activeSurface, illustrator } = useLogoStore.getState()
-        if (activeSurface === 'illustrator' && illustrator?.selectedLayerIds.length) {
+      if (e.key === 'Escape' && useLogoStore.getState().ui.layersOpen) {
+        e.preventDefault()
+        useLogoStore.getState().setLayersOpen(false)
+        return
+      }
+
+      if (isBareKey(e)) {
+        const key = e.key.toLowerCase()
+        if (key === 'f') {
           e.preventDefault()
-          useLogoStore.getState().deleteIllustratorLayers()
+          useLogoStore.getState().toggleLook()
           return
         }
-        if (ui.editMode && ui.selectedShapeId) {
+        if (key === 'l') {
           e.preventDefault()
-          useLogoStore.getState().deleteSelectedShape()
+          const { ui, setLayersOpen } = useLogoStore.getState()
+          setLayersOpen(!ui.layersOpen)
+          return
+        }
+        const tool = toolForKey(e)
+        if (tool) {
+          e.preventDefault()
+          useLogoStore.getState().setActiveTool(tool.id)
+          return
+        }
+        if (isShuffleKey(e)) {
+          e.preventDefault()
+          useLogoStore.getState().shuffleSparks()
+          return
         }
       }
 
-      // R = randomize seed (Generate only: in Vector Maker it would silently
-      // regenerate the hidden generated mark)
-      if (e.key === 'r' && !e.metaKey && !e.ctrlKey && useLogoStore.getState().activeSurface === 'generated') {
-        useLogoStore.getState().randomizeSeed()
+      // Delete/Backspace removes the selected layers (not while a slider has focus)
+      const onSlider = Boolean((e.target as HTMLElement).closest?.('[role="slider"]'))
+      if ((e.key === 'Delete' || e.key === 'Backspace') && !e.metaKey && !e.ctrlKey && !onSlider) {
+        if (useLogoStore.getState().illustrator.selectedLayerIds.length) {
+          e.preventDefault()
+          useLogoStore.getState().deleteIllustratorLayers()
+        }
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
-  return (
-    <>
-      <AppShell />
-      <Onboarding />
-    </>
-  )
+  return <AppShell />
 }
 
 export default App

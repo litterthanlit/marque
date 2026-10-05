@@ -10,7 +10,6 @@ import { generateModularGrid } from '../grid/ModularGrid.ts'
 import { pickPrimitiveType, createPrimitivePath, type PrimitiveType } from '../primitives/index.ts'
 import { createBlobParams } from '../primitives/blob.ts'
 import { composeBooleanResult } from '../boolean/operations.ts'
-import { generateModularKeyframes } from '../animation/keyframes.ts'
 
 const CANVAS_SIZE = 500
 const MAX_SHAPES = 256
@@ -26,7 +25,6 @@ export const ModularGenerator: LogoGenerator = {
     { key: 'rows', label: 'Rows', min: 2, max: 8, step: 1, default: 4 },
     { key: 'circleClip', label: 'Circle Clip', min: 0, max: 1, step: 1, default: 1 },
   ] satisfies ParamDefinition[],
-  getAnimationKeyframes: generateModularKeyframes,
 
   generate(params: LogoParams, rng: SeededRandom): GenerationResult {
     const modularParams = (params.modeParams.modular ?? {}) as Record<string, number>
@@ -99,9 +97,9 @@ export const ModularGenerator: LogoGenerator = {
             }
           })
 
-    // Build path data
-    const booleanInputs = rotatedShapes.map((shape) => {
-      const pathData = createPrimitivePath(
+    const modules = rotatedShapes.map((shape) => ({
+      ...shape,
+      pathData: createPrimitivePath(
         shape.type as PrimitiveType,
         shape.center.x,
         shape.center.y,
@@ -109,25 +107,20 @@ export const ModularGenerator: LogoGenerator = {
         shape.rotation,
         shape.params,
         rng,
-      )
-      shape.pathData = pathData
-      return { pathData, operation: shape.operation }
-    })
+      ),
+    }))
 
-    // If circle clip, add a large circle as the first additive shape
-    if (useClip) {
-      const clipRadius = CANVAS_SIZE * 0.38
-      const clipPath = `M ${-clipRadius} 0 A ${clipRadius} ${clipRadius} 0 1 0 ${clipRadius} 0 A ${clipRadius} ${clipRadius} 0 1 0 ${-clipRadius} 0 Z`
-      booleanInputs.unshift({ pathData: clipPath, operation: 'add' })
-    }
+    // The clip disc is composed like any module, so it is recorded as a shape
+    // too: a mark converted into layers is built from `shapes` alone.
+    const shapes = useClip ? [clipDisc(), ...modules] : modules
 
-    const boolResult = composeBooleanResult(booleanInputs)
+    const boolResult = composeBooleanResult(shapes)
 
-    const addCount = rotatedShapes.filter((s) => s.operation === 'add').length
-    const subCount = rotatedShapes.filter((s) => s.operation === 'subtract').length
+    const addCount = shapes.filter((s) => s.operation === 'add').length
+    const subCount = shapes.filter((s) => s.operation === 'subtract').length
 
     return {
-      shapes: rotatedShapes,
+      shapes,
       mark: {
         layers: boolResult.layers,
         compoundPathData: boolResult.compoundPathData,
@@ -138,7 +131,7 @@ export const ModularGenerator: LogoGenerator = {
         gridCircles: [],
         guideLines: buildGridGuideLines(columns, rows, CANVAS_SIZE),
         stats: {
-          totalShapes: rotatedShapes.length,
+          totalShapes: shapes.length,
           additiveCount: addCount,
           subtractiveCount: subCount,
           symmetryFolds: 1,
@@ -147,6 +140,21 @@ export const ModularGenerator: LogoGenerator = {
       warnings: [...warnings, ...boolResult.warnings],
     }
   },
+}
+
+function clipDisc(): ShapeNode & { pathData: string } {
+  const radius = CANVAS_SIZE * 0.38
+  return {
+    id: 'mod_clip',
+    type: 'circle',
+    role: 'prototype',
+    operation: 'add',
+    center: { x: 0, y: 0 },
+    radius,
+    rotation: 0,
+    params: {},
+    pathData: createPrimitivePath('circle', 0, 0, radius, 0, {}),
+  }
 }
 
 function buildGridGuideLines(

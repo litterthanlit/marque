@@ -33,6 +33,11 @@ export function setEditorInteracting(value: boolean): void {
   interacting = value
 }
 
+/** A key pressed on its own: no modifier held, and not a repeat from holding it down. */
+export function isBareKey(event: KeyboardEvent): boolean {
+  return !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.repeat
+}
+
 /** Arrow-key nudges belong to the canvas only when nothing else has focus. */
 export function canvasOwnsArrowKeys(): boolean {
   const active = document.activeElement

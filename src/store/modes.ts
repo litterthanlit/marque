@@ -3,118 +3,23 @@ import { DEFAULT_PARAMS } from '../engine/types.ts'
 
 export interface LogoModeDefinition {
   id: string
-  name: string
   generatorId: string
-  description: string
-  sharedControls: Array<
-    | 'seed'
-    | 'fillColor'
-    | 'additiveRatio'
-    | 'gridRings'
-    | 'symmetryFolds'
-    | 'baseRadius'
-    | 'radiusVariation'
-    | 'rotation'
-    | 'animationSpeed'
-    | 'styleFamily'
-    | 'brandInput'
-  >
 }
 
-export const STYLE_FAMILIES: Array<{
-  id: StyleFamily
-  label: string
-  accent: string
-  blurb: string
-}> = [
-  {
-    id: 'minimal',
-    label: 'Minimal',
-    accent: 'from-stone-900 via-stone-700 to-stone-500',
-    blurb: 'Quiet geometry and disciplined negative space.',
-  },
-  {
-    id: 'heritage',
-    label: 'Heritage',
-    accent: 'from-amber-900 via-amber-700 to-orange-500',
-    blurb: 'Badge-minded structure with engraved weight.',
-  },
-  {
-    id: 'luxe',
-    label: 'Luxe',
-    accent: 'from-zinc-950 via-neutral-700 to-amber-200',
-    blurb: 'High-contrast elegance with polished restraint.',
-  },
-  {
-    id: 'playful',
-    label: 'Playful',
-    accent: 'from-cyan-500 via-fuchsia-500 to-amber-400',
-    blurb: 'Elastic rhythm, buoyant forms, and bright confidence.',
-  },
-  {
-    id: 'tech',
-    label: 'Tech',
-    accent: 'from-sky-900 via-blue-500 to-cyan-300',
-    blurb: 'Sharper systems, modular spacing, and engineered motion.',
-  },
+export const STYLE_FAMILIES: Array<{ id: StyleFamily }> = [
+  { id: 'minimal' },
+  { id: 'heritage' },
+  { id: 'luxe' },
+  { id: 'playful' },
+  { id: 'tech' },
 ]
 
 export const LOGO_MODES: LogoModeDefinition[] = [
-  {
-    id: 'geometric-radial',
-    name: 'Geometric Radial',
-    generatorId: 'geometric-radial',
-    description: 'Abstract symbol marks built from orbital symmetry and cuts.',
-    sharedControls: [
-      'seed',
-      'styleFamily',
-      'fillColor',
-      'gridRings',
-      'symmetryFolds',
-      'additiveRatio',
-      'baseRadius',
-      'radiusVariation',
-      'rotation',
-      'animationSpeed',
-    ],
-  },
-  {
-    id: 'modular',
-    name: 'Modular',
-    generatorId: 'modular',
-    description: 'Pattern-first logo concepts assembled from repeated modules.',
-    sharedControls: [
-      'seed',
-      'styleFamily',
-      'fillColor',
-      'additiveRatio',
-      'baseRadius',
-      'radiusVariation',
-      'rotation',
-      'animationSpeed',
-    ],
-  },
-  {
-    id: 'grid-system',
-    name: 'Grid System',
-    generatorId: 'grid-system',
-    description: 'Structured badges and icons built from cell grids and corridors.',
-    sharedControls: ['seed', 'styleFamily', 'fillColor', 'additiveRatio', 'rotation'],
-  },
-  {
-    id: 'monogram',
-    name: 'Monogram',
-    generatorId: 'monogram',
-    description: 'Initials-based marks that interlock into one solid symbol.',
-    sharedControls: ['styleFamily', 'fillColor', 'rotation', 'brandInput'],
-  },
-  {
-    id: 'wave-arc',
-    name: 'Wave Arc',
-    generatorId: 'wave-arc',
-    description: 'Concentric crescent marks with bilateral or radial symmetry.',
-    sharedControls: ['seed', 'styleFamily', 'fillColor', 'rotation', 'animationSpeed'],
-  },
+  { id: 'geometric-radial', generatorId: 'geometric-radial' },
+  { id: 'modular', generatorId: 'modular' },
+  { id: 'grid-system', generatorId: 'grid-system' },
+  { id: 'monogram', generatorId: 'monogram' },
+  { id: 'wave-arc', generatorId: 'wave-arc' },
 ]
 
 const DEFAULT_MODE_PARAMS: ModeParamMap = {
@@ -541,16 +446,4 @@ export function sanitizeBrandInput(
 ): BrandInput {
   if (modeId !== 'monogram') return {}
   return { initials: normalizeInitials(brandInput?.initials) }
-}
-
-export function buildModeParamsForPersistence(
-  modeId: string,
-  modeParams: ModeParamMap,
-): ModeParamMap {
-  return {
-    [modeId]: {
-      ...getModeParamDefaults(modeId),
-      ...(modeParams[modeId] ?? {}),
-    },
-  }
 }

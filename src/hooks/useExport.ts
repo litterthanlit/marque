@@ -1,11 +1,10 @@
 import { useLogoStore } from '../store/logoStore.ts'
-import { getGenerator } from '../engine/generators/registry.ts'
-import { DissolutionProcessor } from '../engine/effects/dissolution.ts'
-import type { DissolutionResult } from '../engine/effects/types.ts'
 import { useActiveMark } from './useActiveMark.ts'
 
 export type ArtboardMode = 'tight' | 'square'
 export type PaddingMode = 'none' | 'compact' | 'presentation'
+
+const EXPORT_NAME = 'marque-mark'
 
 interface ExportOptions {
   artboardMode?: ArtboardMode
@@ -52,70 +51,31 @@ function downloadBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url)
 }
 
-export function useExport(dissolution?: DissolutionResult | null) {
+export function useExport() {
   const params = useLogoStore((s) => s.params)
-  const effectParams = useLogoStore((s) => s.effectParams)
   const activeMark = useActiveMark()
-  const generator = getGenerator(params.generatorId)
-  const filenameBase = `logo-${params.seed}-${params.modeId}-${generator?.version ?? 'v0'}`
+  const mark = activeMark.compoundPathData ? activeMark : null
 
-  // Compute dissolution from the store if not explicitly provided
-  const activeDissolution: DissolutionResult | null | undefined =
-    dissolution !== undefined
-      ? dissolution
-      : activeMark && effectParams.dissolution.enabled
-        ? DissolutionProcessor.process({ mark: activeMark }, effectParams.dissolution)
-        : null
-
-  function getExportPaths(): { pathData: string; fillRule: 'nonzero' | 'evenodd' } | null {
-    if (!activeMark?.compoundPathData) return null
-
-    if (activeDissolution) {
-      const parts: string[] = []
-      if (activeDissolution.solidCorePath) parts.push(activeDissolution.solidCorePath)
-      if (activeDissolution.particlePathData) parts.push(activeDissolution.particlePathData)
-      if (parts.length === 0) return null
-      return { pathData: parts.join(' '), fillRule: 'evenodd' }
-    }
-
-    return {
-      pathData: activeMark.compoundPathData,
-      fillRule: activeMark.fillRule,
-    }
-  }
-
-  function getExportViewBox() {
-    return activeDissolution?.viewBox ?? activeMark!.viewBox
+  /** The mark as an SVG document, or null when there is nothing to export. */
+  function svgString(options: ExportOptions = {}): string | null {
+    if (!mark) return null
+    return generateSVGString(mark.compoundPathData, mark.fillRule, mark.viewBox, params.fillColor, options)
   }
 
   function exportSVG(options: ExportOptions = {}) {
-    const paths = getExportPaths()
-    if (!paths) return
-    const svg = generateSVGString(
-      paths.pathData,
-      paths.fillRule,
-      getExportViewBox(),
-      params.fillColor,
-      options,
-    )
+    const svg = svgString(options)
+    if (!svg) return
     const blob = new Blob([svg], { type: 'image/svg+xml' })
-    downloadBlob(blob, `${filenameBase}.svg`)
+    downloadBlob(blob, `${EXPORT_NAME}.svg`)
   }
 
   function exportPNG(scale = 2, options: ExportOptions = {}) {
-    const paths = getExportPaths()
-    if (!paths) return
+    const svg = svgString(options)
+    if (!svg || !mark) return
     const normalizedViewBox = normalizeViewBox(
-      getExportViewBox(),
+      mark.viewBox,
       options.artboardMode ?? 'tight',
       options.paddingMode ?? 'compact',
-    )
-    const svg = generateSVGString(
-      paths.pathData,
-      paths.fillRule,
-      getExportViewBox(),
-      params.fillColor,
-      options,
     )
 
     const img = new Image()
@@ -133,7 +93,7 @@ export function useExport(dissolution?: DissolutionResult | null) {
       URL.revokeObjectURL(url)
 
       canvas.toBlob((blob) => {
-        if (blob) downloadBlob(blob, `${filenameBase}.png`)
+        if (blob) downloadBlob(blob, `${EXPORT_NAME}.png`)
       }, 'image/png')
     }
 
@@ -145,7 +105,7 @@ export function useExport(dissolution?: DissolutionResult | null) {
     img.src = url
   }
 
-  return { exportSVG, exportPNG, canExport: !!getExportPaths(), hasDissolution: !!activeDissolution }
+  return { exportSVG, exportPNG, svgString, canExport: !!mark }
 }
 
 function normalizeViewBox(

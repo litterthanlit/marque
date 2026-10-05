@@ -8,7 +8,8 @@ interface ExportDialogProps {
 }
 
 export function ExportDialog({ open, onClose }: ExportDialogProps) {
-  const { exportSVG, exportPNG, canExport, hasDissolution } = useExport()
+  const { exportSVG, exportPNG, svgString, canExport } = useExport()
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const [pngScale, setPngScale] = useState(2)
   const [artboardMode, setArtboardMode] = useState<'tight' | 'square'>('tight')
   const [paddingMode, setPaddingMode] = useState<'none' | 'compact' | 'presentation'>('compact')
@@ -27,6 +28,24 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onClose, open])
+
+  useEffect(() => {
+    if (copyState === 'idle') return
+    const timer = window.setTimeout(() => setCopyState('idle'), 2000)
+    return () => window.clearTimeout(timer)
+  }, [copyState])
+
+  // The same document Download SVG saves, with the artboard and padding chosen above.
+  async function handleCopySVG() {
+    const svg = svgString({ artboardMode, paddingMode })
+    if (!svg) return
+    try {
+      await navigator.clipboard.writeText(svg)
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    }
+  }
 
   if (!open) return null
 
@@ -47,12 +66,6 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
             <SelectField label="Padding" value={paddingMode} onChange={(v) => setPaddingMode(v as 'none' | 'compact' | 'presentation')} options={[['none', 'None'], ['compact', 'Compact'], ['presentation', 'Presentation']]} />
           </div>
 
-          {hasDissolution && (
-            <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-              Dissolution effect included in export
-            </div>
-          )}
-
           <button
             onClick={() => { exportSVG({ artboardMode, paddingMode }); onClose() }}
             disabled={!canExport}
@@ -64,6 +77,23 @@ export function ExportDialog({ open, onClose }: ExportDialogProps) {
             )}
           >
             Download SVG
+          </button>
+
+          <button
+            type="button"
+            onClick={handleCopySVG}
+            disabled={!canExport}
+            aria-label={copyState === 'copied' ? 'SVG copied to clipboard' : 'Copy SVG'}
+            className={cn(
+              'h-9 text-sm font-medium rounded-lg transition-colors',
+              'border border-border text-fg hover:bg-interactive-hover',
+              'disabled:opacity-30 disabled:cursor-default',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
+            )}
+          >
+            <span aria-live="polite">
+              {copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Failed' : 'Copy SVG'}
+            </span>
           </button>
 
           <div className="flex gap-2">
