@@ -152,19 +152,3 @@ export function composeIllustratorMark(doc: IllustratorDocument | null): MarkDat
     viewBox: result.viewBox,
   }
 }
-
-export function isIllustratorSourceStale(
-  doc: IllustratorDocument | null,
-  params: LogoParams,
-): boolean {
-  if (!doc) return false
-  // A carved slab has no generated source to drift from.
-  if (doc.source.generatorId === 'slab') return false
-  const generator = getGenerator(params.generatorId)
-  return (
-    doc.source.seed !== params.seed ||
-    doc.source.modeId !== params.modeId ||
-    doc.source.generatorId !== params.generatorId ||
-    doc.source.generatorVersion !== (generator?.version ?? 'v0')
-  )
-}

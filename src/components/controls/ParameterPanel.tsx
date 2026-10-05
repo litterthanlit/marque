@@ -9,7 +9,6 @@ import { EffectControls } from './EffectControls.tsx'
 import { getModeDefinition, listModes, STYLE_FAMILIES } from '../../store/modes.ts'
 import { cn } from '../../lib/utils.ts'
 import { useLocalStoragePref } from '../../hooks/useLocalStoragePref.ts'
-import { isIllustratorSourceStale } from '../../engine/illustrator/compose.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../../engine/illustrator/types.ts'
 import type { MarkData } from '../../engine/illustrator/types.ts'
 import { PUNCH_SHAPES, SLAB_KINDS } from '../../engine/carve/geometry.ts'
@@ -418,7 +417,6 @@ function GenerateTab() {
 /* ─── Illustrator Tab ─── */
 
 function IllustratorTab() {
-  const params = useLogoStore((s) => s.params)
   const result = useLogoStore((s) => s.result)
   const illustrator = useLogoStore((s) => s.illustrator)
   const convertCurrentMark = useLogoStore((s) => s.convertCurrentMark)
@@ -435,10 +433,6 @@ function IllustratorTab() {
   const addSlab = useLogoStore((s) => s.addSlab)
   const startOver = useLogoStore((s) => s.startOver)
 
-  const stale = useMemo(
-    () => isIllustratorSourceStale(illustrator, params),
-    [illustrator, params],
-  )
   const selectedLayers = useMemo(() => {
     if (!illustrator) return []
     return illustrator.selectedLayerIds
@@ -512,12 +506,6 @@ function IllustratorTab() {
         <p className="text-xs text-sidebar-muted">
           Convert the generated mark, or start from a solid slab and carve material away.
         </p>
-      )}
-
-      {illustrator && stale && (
-        <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-          This editable copy was made from an older generated mark.
-        </div>
       )}
 
       {illustrator && (

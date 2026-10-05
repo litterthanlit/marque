@@ -45,7 +45,6 @@ async function withPanel(page: Page, run: (panel: Locator) => Promise<unknown>) 
 
 async function openVectorMaker(page: Page) {
   await page.goto('/')
-  await page.getByRole('button', { name: 'Skip' }).click({ timeout: 3_000 }).catch(() => {})
   await withPanel(page, (panel) => panel.getByRole('button', { name: 'Vector Maker', exact: true }).click())
   await expect.poll(() => page.evaluate(() => window.__marque.store.getState().activeSurface)).toBe('illustrator')
 }
@@ -383,7 +382,6 @@ test('a reload from the link keeps recipes, and their handles still work', async
   await page.waitForTimeout(600) // the link is written once edits settle
 
   await page.reload()
-  await page.getByRole('button', { name: 'Skip' }).click({ timeout: 3_000 }).catch(() => {})
   await expect.poll(() => page.evaluate(() => window.__marque.store.getState().activeSurface)).toBe('illustrator')
   expect(await carves(page)).toEqual(before)
 

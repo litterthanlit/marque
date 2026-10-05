@@ -1,30 +1,49 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { useLogoStore } from './logoStore.ts'
 import type { SlabSpec } from '../engine/carve/spec.ts'
+import { generate } from '../engine/pipeline/GenerationPipeline.ts'
 import { illustratorDocumentToVectorDocument } from '../engine/vector/legacyIllustratorAdapter.ts'
 
 function reset(viewport = { width: 600, height: 600 }) {
-  const state = useLogoStore.getState()
-  useLogoStore.setState({
-    activeSurface: 'generated',
-    vectorDocument: null,
-    illustrator: null,
-    vectorUndoStack: [],
-    vectorRedoStack: [],
-    ui: { ...state.ui, viewport, activeTool: null },
-  })
+  const initial = useLogoStore.getInitialState()
+  useLogoStore.setState({ ...initial, ui: { ...initial.ui, viewport } })
 }
 
 const layers = () => useLogoStore.getState().illustrator?.layers ?? []
 const undoDepth = () => useLogoStore.getState().vectorUndoStack.length
 
-describe('logo store', () => {
-  it('loads outside the browser with Vector Maker empty', () => {
-    const state = useLogoStore.getState()
-    expect(state.activeSurface).toBe('generated')
-    expect(state.vectorDocument).toBeNull()
+describe('a fresh store', () => {
+  beforeEach(() => reset())
+
+  it('opens in Vector Maker on an empty document, outside the browser too', () => {
+    const state = useLogoStore.getInitialState()
+    expect(state.activeSurface).toBe('illustrator')
+    expect(state.vectorDocument?.objects).toEqual([])
+    expect(state.illustrator?.layers).toEqual([])
     expect(state.vectorUndoStack).toHaveLength(0)
     expect(state.ui.theme).toBe('dark')
+  })
+
+  it('stays empty when the default mark finishes generating', () => {
+    const blank = useLogoStore.getState().vectorDocument
+    useLogoStore.getState().setResult(generate(useLogoStore.getState().params))
+    expect(useLogoStore.getState().result?.shapes.length).toBeGreaterThan(0)
+    expect(useLogoStore.getState().vectorDocument).toBe(blank)
+    expect(layers()).toEqual([])
+  })
+
+  it('takes a pen shape, and undo empties it again', () => {
+    useLogoStore.getState().addPenShape('M0,0L100,0L100,100Z')
+    expect(layers().map((layer) => layer.operation)).toEqual(['add'])
+    useLogoStore.getState().undoVectorCommand()
+    expect(layers()).toEqual([])
+  })
+
+  it('takes a punch, and undo empties it again', () => {
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 40 })
+    expect(layers().map((layer) => layer.carve?.kind)).toEqual(['punch'])
+    useLogoStore.getState().undoVectorCommand()
+    expect(layers()).toEqual([])
   })
 })
 
@@ -55,13 +74,13 @@ describe('history', () => {
     const store = useLogoStore.getState()
     store.addSlab('square')
     store.addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 30 })
-    expect(undoDepth()).toBe(1)
+    expect(undoDepth()).toBe(2)
 
     const [slab, punch] = layers()
     useLogoStore.getState().selectIllustratorLayer(slab.id)
     useLogoStore.getState().setSelection([punch.id])
     useLogoStore.getState().setSelection([])
-    expect(undoDepth()).toBe(1)
+    expect(undoDepth()).toBe(2)
 
     useLogoStore.getState().undoVectorCommand()
     expect(layers()).toHaveLength(1)
@@ -76,11 +95,11 @@ describe('history', () => {
     const slab = layers()[0]
     const wider: SlabSpec = { ...(slab.carve as SlabSpec), width: 440 }
     useLogoStore.getState().commitLayerEdits({ label: 'Resize', edits: [{ layerId: slab.id, carve: wider }] })
-    expect(undoDepth()).toBe(1)
+    expect(undoDepth()).toBe(2)
     expect((layers()[0].carve as SlabSpec).width).toBe(440)
 
     useLogoStore.getState().commitLayerEdits({ label: 'Resize', edits: [{ layerId: slab.id, carve: wider }] })
-    expect(undoDepth()).toBe(1)
+    expect(undoDepth()).toBe(2)
 
     useLogoStore.getState().undoVectorCommand()
     expect((layers()[0].carve as SlabSpec).width).toBe(380)
@@ -128,8 +147,8 @@ describe('adding slabs', () => {
   })
 })
 
-describe('slabs and the auto-converted generated mark', () => {
-  it('a slab replaces an untouched conversion; undo brings the mark back', () => {
+describe('a slab on a converted mark', () => {
+  it('goes on top and keeps the mark; undo takes only the slab away', () => {
     reset()
     const generated = illustratorDocumentToVectorDocument({
       id: 'gen',
@@ -152,11 +171,9 @@ describe('slabs and the auto-converted generated mark', () => {
     })
     useLogoStore.getState().setVectorDocument(generated)
     useLogoStore.getState().addSlab('rounded')
-    expect(layers()).toHaveLength(1)
-    expect(layers()[0].carve?.kind).toBe('slab')
-    expect((layers()[0].carve as SlabSpec).width).toBe(380)
+    expect(layers().map((layer) => layer.carve?.kind ?? layer.name)).toEqual(['Generated Polygon 01', 'slab'])
     useLogoStore.getState().undoVectorCommand()
-    expect(layers()[0].name).toBe('Generated Polygon 01')
+    expect(layers().map((layer) => layer.name)).toEqual(['Generated Polygon 01'])
   })
 })
 

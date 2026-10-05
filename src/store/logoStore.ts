@@ -36,7 +36,7 @@ import type { CutSpec, PunchShape, SlabKind } from '../engine/carve/geometry.ts'
 import { carveOutline } from '../engine/carve/outline.ts'
 import { carveFromCut, carveLayerName, roundCarveSpec, slabSpec, type CarveSpec } from '../engine/carve/spec.ts'
 import { translateCarve } from '../engine/carve/edit.ts'
-import { sanitizeVectorDocument } from '../engine/vector/document.ts'
+import { createEmptyVectorDocument, sanitizeVectorDocument } from '../engine/vector/document.ts'
 import { composeVectorMarkCached } from '../engine/vector/export.ts'
 import { placeSlab } from '../engine/carve/placement.ts'
 import type { SurvivalSize } from '../engine/carve/survival.ts'
@@ -198,7 +198,6 @@ interface LogoStore {
   redoVectorCommand: () => void
   ensureIllustratorDocument: () => void
   convertCurrentMark: () => void
-  resetIllustrator: () => void
   setIllustratorDocument: (doc: IllustratorDocument | null) => void
   selectIllustratorLayer: (id: string | null, additive?: boolean) => void
   updateIllustratorLayer: (id: string, update: Partial<IllustratorLayer>) => void
@@ -256,9 +255,8 @@ export const useLogoStore = create<LogoStore>()(
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
       },
-      activeSurface: 'generated',
-      illustrator: null,
-      vectorDocument: null,
+      activeSurface: 'illustrator',
+      ...blankDocument(),
       vectorUndoStack: [],
       vectorRedoStack: [],
 
@@ -729,22 +727,6 @@ export const useLogoStore = create<LogoStore>()(
           }
         }),
 
-      resetIllustrator: () =>
-        set((state) => ({
-          activeSurface: 'generated',
-          illustrator: null,
-          vectorDocument: null,
-          vectorUndoStack: [],
-          vectorRedoStack: [],
-          ui: {
-            ...state.ui,
-            activeTool: null,
-            editMode: false,
-            selectedShapeId: null,
-            selectedPathIds: [],
-          },
-        })),
-
       setIllustratorDocument: (doc) =>
         set((state) => {
           const vectorDocument = doc
@@ -1009,22 +991,6 @@ export const useLogoStore = create<LogoStore>()(
             selectedShapeId: null,
             selectedPathIds: [],
           }
-          // Opening Vector Maker converts the generated mark automatically. If
-          // nothing has been edited since, a slab starts a fresh carving instead
-          // of landing on top of a mark nobody chose to work on (undo returns it).
-          if (
-            state.vectorDocument &&
-            state.vectorDocument.source?.generatorId !== 'slab' &&
-            state.vectorUndoStack.length === 0
-          ) {
-            const fresh = slabDocument([recipeLayer(slabSpec(kind), 'add')], state.params.fillColor)
-            return {
-              ...commitVectorDocumentUpdate(state, state.vectorDocument, fresh, 'Start from slab'),
-              activeSurface: 'illustrator',
-              ui,
-            }
-          }
-
           const existing = state.vectorDocument ? composeVectorMarkCached(state.vectorDocument) : null
           const spec = existing?.compoundPathData
             ? placeSlab(kind, existing.viewBox, state.ui.viewport)
@@ -1391,7 +1357,13 @@ function isIdentity(t: IllustratorLayer['transform']): boolean {
   return t.dx === 0 && t.dy === 0 && t.scale === 1 && t.rotation === 0
 }
 
-/** A slab document: carved marks have no generated source to go stale. */
+/** The document the app opens on. It is empty but not null, because the pen and the cuts do nothing without a document. */
+function blankDocument(): Pick<LogoStore, 'vectorDocument' | 'illustrator'> {
+  const vectorDocument = createEmptyVectorDocument()
+  return { vectorDocument, illustrator: vectorDocumentToIllustratorDocument(vectorDocument) }
+}
+
+/** A document that starts from slabs, with no generated mark behind it. */
 function slabDocument(layers: IllustratorLayer[], fillColor: string): VectorDocument {
   const legacy: IllustratorDocument = {
     id: crypto.randomUUID(),
