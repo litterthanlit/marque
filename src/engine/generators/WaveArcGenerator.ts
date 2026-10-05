@@ -11,6 +11,8 @@ import { generateWaveArcKeyframes } from '../animation/keyframes.ts'
 const CANVAS_SIZE = 500
 const MAX_CRESCENTS = 96
 
+type Crescent = ShapeNode & { pathData: string; operation: 'add' }
+
 // ---------------------------------------------------------------------------
 // Helper: negate all X coordinates in an SVG path string
 // ---------------------------------------------------------------------------
@@ -202,8 +204,7 @@ export const WaveArcGenerator: LogoGenerator = {
     const maxRadius = CANVAS_SIZE * 0.4
 
     const warnings: string[] = []
-    const shapes: ShapeNode[] = []
-    const crescentPaths: string[] = []
+    const prototypes: Crescent[] = []
 
     // Build crescents as arc-based shapes (not ellipse subtraction).
     // Each crescent is a closed path: outer arc → tip → inner arc → tip.
@@ -269,9 +270,7 @@ export const WaveArcGenerator: LogoGenerator = {
         ].join(' ')
       }
 
-      crescentPaths.push(pathData)
-
-      shapes.push({
+      prototypes.push({
         id: `crescent_${i}`,
         type: 'ellipse',
         role: 'prototype',
@@ -284,55 +283,51 @@ export const WaveArcGenerator: LogoGenerator = {
       })
     }
 
-    // Apply symmetry to all crescent paths
-    let allPaths: string[] = []
+    // Every composed crescent is recorded with its final path, so a mark
+    // converted into layers has the mirrored and rotated copies too.
+    let shapes: Crescent[] = prototypes.flatMap((proto) =>
+      arcSymmetry === 'bilateral'
+        ? [
+            proto,
+            {
+              ...proto,
+              id: `${proto.id}_m`,
+              role: 'symmetry-instance' as const,
+              pathData: mirrorPathX(proto.pathData),
+            },
+          ]
+        : Array.from({ length: symmetryFolds }, (_, fold) => {
+            if (fold === 0) return proto
+            const angle = (2 * Math.PI * fold) / symmetryFolds
+            return {
+              ...proto,
+              id: `${proto.id}_s${fold}`,
+              role: 'symmetry-instance' as const,
+              rotation: angle,
+              pathData: rotatePathData(proto.pathData, angle),
+            }
+          }),
+    )
 
-    if (arcSymmetry === 'bilateral') {
-      for (const pathData of crescentPaths) {
-        allPaths.push(pathData)
-        allPaths.push(mirrorPathX(pathData))
-      }
-    } else {
-      for (const pathData of crescentPaths) {
-        for (let f = 0; f < symmetryFolds; f++) {
-          const angle = (2 * Math.PI * f) / symmetryFolds
-          allPaths.push(rotatePathData(pathData, angle))
-        }
-      }
-    }
-
-    if (allPaths.length > MAX_CRESCENTS) {
+    if (shapes.length > MAX_CRESCENTS) {
       warnings.push(
-        `Crescent count (${allPaths.length}) capped at ${MAX_CRESCENTS} to keep generation responsive`,
+        `Crescent count (${shapes.length}) capped at ${MAX_CRESCENTS} to keep generation responsive`,
       )
-      allPaths = allPaths.slice(0, MAX_CRESCENTS)
+      shapes = shapes.slice(0, MAX_CRESCENTS)
     }
 
-    // Apply global rotation
     if (globalRotation !== 0) {
-      allPaths = allPaths.map((p) => rotatePathData(p, globalRotation))
-
-      const cos = Math.cos(globalRotation)
-      const sin = Math.sin(globalRotation)
-      for (const shape of shapes) {
-        const x = shape.center.x * cos - shape.center.y * sin
-        const y = shape.center.x * sin + shape.center.y * cos
-        shape.center = {
-          x: Math.round(x * 1000) / 1000,
-          y: Math.round(y * 1000) / 1000,
-        }
-        shape.rotation += globalRotation
-      }
+      shapes = shapes.map((shape) => ({
+        ...shape,
+        rotation: shape.rotation + globalRotation,
+        pathData: rotatePathData(shape.pathData, globalRotation),
+      }))
     }
 
     // Union all crescent paths via boolean operations.
     // Since arc-based crescents don't overlap, this preserves
     // each crescent's shape while computing the viewBox.
-    const booleanInputs = allPaths.map((pathData) => ({
-      pathData,
-      operation: 'add' as const,
-    }))
-    const boolResult = composeBooleanResult(booleanInputs)
+    const boolResult = composeBooleanResult(shapes)
 
     // Construction data: grid circles for each ring
     const gridCircles = Array.from({ length: arcCount }, (_, i) => {
@@ -364,9 +359,6 @@ export const WaveArcGenerator: LogoGenerator = {
             }
           })
 
-    const addCount = shapes.filter((s) => s.operation === 'add').length
-    const subCount = shapes.filter((s) => s.operation === 'subtract').length
-
     return {
       shapes,
       mark: {
@@ -380,8 +372,8 @@ export const WaveArcGenerator: LogoGenerator = {
         guideLines,
         stats: {
           totalShapes: shapes.length,
-          additiveCount: addCount,
-          subtractiveCount: subCount,
+          additiveCount: shapes.length,
+          subtractiveCount: 0,
           symmetryFolds: arcSymmetry === 'radial' ? symmetryFolds : 2,
         },
       },

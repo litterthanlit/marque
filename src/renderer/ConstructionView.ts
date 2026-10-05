@@ -1,5 +1,4 @@
 import type { GenerationResult, ShapeNode } from '../engine/types.ts'
-import { createPrimitivePath, type PrimitiveType } from '../engine/primitives/index.ts'
 
 /**
  * Renders the construction overlay: grid circles, radial guides, individual shapes
@@ -59,17 +58,11 @@ function renderShapeOutline(
   shape: ShapeNode,
   center: paper.Point,
 ): void {
-  const pathData = createPrimitivePath(
-    shape.type as PrimitiveType,
-    center.x + shape.center.x,
-    center.y + shape.center.y,
-    shape.radius,
-    shape.rotation,
-    shape.params,
-  )
+  if (!shape.pathData) return
 
   try {
-    const path = new scope.Path(pathData)
+    const path = new scope.Path(shape.pathData)
+    path.translate(center)
     path.strokeWidth = shape.role === 'prototype' ? 0.85 : 0.45
     if (shape.role !== 'prototype') {
       path.dashArray = [4, 3]
