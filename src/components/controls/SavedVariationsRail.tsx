@@ -1,7 +1,12 @@
 import { useLogoStore } from '../../store/logoStore.ts'
 import { useSavedVariations } from '../../hooks/useSavedVariations.ts'
 
-export function SavedVariationsRail() {
+interface SavedVariationsRailProps {
+  /** A saved mark was put on the canvas. */
+  onOpened?: () => void
+}
+
+export function SavedVariationsRail({ onOpened }: SavedVariationsRailProps) {
   const params = useLogoStore((s) => s.params)
   const vectorDocument = useLogoStore((s) => s.vectorDocument)
   const openSaved = useLogoStore((s) => s.openSaved)
@@ -31,7 +36,10 @@ export function SavedVariationsRail() {
             >
               <button
                 type="button"
-                onClick={() => openSaved(v)}
+                onClick={() => {
+                  openSaved(v)
+                  onOpened?.()
+                }}
                 title="Open this mark. Undo brings the current one back."
                 className="text-sidebar-text hover:text-fg truncate text-left flex-1 min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised rounded-sm"
               >
@@ -40,7 +48,7 @@ export function SavedVariationsRail() {
               <button
                 type="button"
                 onClick={() => removeVariation(v.id)}
-                className="text-sidebar-muted hover:text-red-400 opacity-0 group-hover:opacity-100 ml-2 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised focus-visible:opacity-100 rounded-sm"
+                className="text-sidebar-muted hover:text-red-400 ml-2 px-1 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised rounded-sm"
                 aria-label={`Delete ${v.name}`}
               >
                 &times;

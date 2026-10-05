@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { usePaperScope } from '../../renderer/usePaperScope.ts'
 import { renderLogoOnScope } from '../../renderer/PaperRenderer.ts'
-import { renderIllustratorOnScope, scaleConstructionLines, setInkPathData } from '../../renderer/IllustratorRenderer.ts'
+import { previewColor, renderIllustratorOnScope, scaleConstructionLines, setInkPathData } from '../../renderer/IllustratorRenderer.ts'
 import { CarveTool } from '../../renderer/tools/CarveTool.ts'
 import { DirectEditController, type Modifiers } from '../../renderer/directEdit/DirectEditController.ts'
 import { registerEditorKeys } from '../../renderer/directEdit/keyboard.ts'
@@ -21,6 +21,7 @@ import { DissolutionProcessor } from '../../engine/effects/dissolution.ts'
 import { useAnimation } from '../../hooks/useAnimation.ts'
 import { AnimationControls } from './AnimationControls.tsx'
 import { CanvasHud } from './CanvasHud.tsx'
+import { toolForKey } from '../editor/tools.ts'
 import { canvasPixelRatio, fitView, STILL, visibleUnits, type ViewMotion } from '../../renderer/viewFit.ts'
 import type { AnimationKeyframe } from '../../engine/animation/types.ts'
 import type { DrawnPath } from '../../store/logoStore.ts'
@@ -34,7 +35,8 @@ function modifiersOf(e: React.PointerEvent | PointerEvent): Modifiers {
   return { shift: e.shiftKey, alt: e.altKey, noSnap: e.metaKey || e.ctrlKey }
 }
 
-export function LogoCanvas() {
+/** The drawing surface. `children` float over it, inside the card. */
+export function LogoCanvas({ children }: { children?: React.ReactNode }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const scopeRef = usePaperScope(canvasRef)
   const interactionRef = useRef<InteractionLayer | null>(null)
@@ -317,7 +319,10 @@ export function LogoCanvas() {
           onShape: (pathData) => addPenShape(pathData),
           snapPoint: (p, role, rays, extra) => controllerRef.current?.snapToolPoint(p, role, { rays, extra }) ?? p,
           onGestureEnd: () => controllerRef.current?.endToolSnap(),
-        }, { fillColor: color })
+        }, {
+          // Read at draw time, so switching the look keeps the drawing in progress.
+          fillColor: () => previewColor(useLogoStore.getState().ui.look, color),
+        })
         break
       case 'graffiti':
         toolRef.current = new GraffitiTool(scope, callbacks, { fillColor: color })
@@ -335,6 +340,8 @@ export function LogoCanvas() {
     // Tool keys take precedence over the editor's while a tool is active.
     const unregister = registerEditorKeys((event) => {
       const tool = toolRef.current
+      // A tool key mid-press, or mid-drawing with the pen, would throw the gesture away: it waits.
+      if (toolForKey(event) && (pressOwnerRef.current || (tool instanceof PenTool && tool.isDrawing))) return true
       if (!tool) return false
       if (tool instanceof PenTool) {
         const mod = event.metaKey || event.ctrlKey
@@ -580,29 +587,28 @@ export function LogoCanvas() {
         }
 
   return (
-    <div className="relative w-full h-full flex items-center justify-center">
-      <div className="relative aspect-square w-full max-w-full max-h-full">
-        <div className="absolute inset-0 rounded-2xl bg-white shadow-2xl shadow-black/20">
-          <canvas
-            ref={canvasRef}
-            width={600}
-            height={600}
-            className="size-full rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)]"
-            style={canvasStyle}
-            tabIndex={inVectorMaker ? 0 : undefined}
-            aria-label={inVectorMaker ? 'Vector Maker canvas. Drag a shape to move it, its handles to resize it, or an edge to bend it. Arrow keys nudge the selection; Delete removes it.' : undefined}
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUp}
-            onPointerCancel={handlePointerCancel}
-            onLostPointerCapture={handlePointerCancel}
-            onPointerLeave={handlePointerLeave}
-            onDoubleClick={handleDoubleClick}
-          />
-          {inVectorMaker && <CanvasHud />}
-        </div>
-        {!inVectorMaker && <AnimationControls playing={playing} canAnimate={canAnimate} onToggle={togglePlaying} />}
+    <div className="relative size-full">
+      <div className="absolute inset-0 rounded-2xl bg-white shadow-2xl shadow-black/20">
+        <canvas
+          ref={canvasRef}
+          width={600}
+          height={600}
+          className="size-full rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)]"
+          style={canvasStyle}
+          tabIndex={inVectorMaker ? 0 : undefined}
+          aria-label={inVectorMaker ? 'Vector Maker canvas. Drag a shape to move it, its handles to resize it, or an edge to bend it. Arrow keys nudge the selection; Delete removes it.' : undefined}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
+          onLostPointerCapture={handlePointerCancel}
+          onPointerLeave={handlePointerLeave}
+          onDoubleClick={handleDoubleClick}
+        />
+        {inVectorMaker && <CanvasHud />}
+        {children}
       </div>
+      {!inVectorMaker && <AnimationControls playing={playing} canAnimate={canAnimate} onToggle={togglePlaying} />}
     </div>
   )
 }

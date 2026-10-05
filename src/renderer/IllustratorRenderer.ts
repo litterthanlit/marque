@@ -38,6 +38,11 @@ const CONSTRUCTION = {
   subtract: { color: '#444444', width: 1.25, dash: [1.25, 2.75] },
 }
 
+/** What a shape still being drawn previews in: the ink, or the construction sheet's line colour. */
+export function previewColor(look: CanvasLook, inkColor: string): string {
+  return look === 'construction' ? CONSTRUCTION.outline.color : inkColor
+}
+
 function getCenter(scope: paper.PaperScope): paper.Point {
   return scope.view.center
 }

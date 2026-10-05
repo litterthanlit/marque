@@ -115,6 +115,37 @@ describe('history', () => {
   })
 })
 
+describe('layer order', () => {
+  beforeEach(() => reset())
+
+  const order = () => layers().map((layer) => layer.id)
+
+  it('up is towards the top of the stack, where later layers sit, and down is back', () => {
+    useLogoStore.getState().addSlab('square')
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 40 })
+    const [slab, punch] = order()
+
+    useLogoStore.getState().moveIllustratorLayer(slab, 'up')
+    expect(order()).toEqual([punch, slab])
+
+    useLogoStore.getState().moveIllustratorLayer(slab, 'down')
+    expect(order()).toEqual([slab, punch])
+  })
+
+  it('the top layer has nowhere further up to go, and trying is not an undo step', () => {
+    useLogoStore.getState().addSlab('square')
+    useLogoStore.getState().addSlab('circle')
+    const [bottom, top] = order()
+    const depth = undoDepth()
+
+    useLogoStore.getState().moveIllustratorLayer(top, 'up')
+    useLogoStore.getState().moveIllustratorLayer(bottom, 'down')
+
+    expect(order()).toEqual([bottom, top])
+    expect(undoDepth()).toBe(depth)
+  })
+})
+
 describe('adding slabs', () => {
   it('goes on top, selected, beside the existing ink when there is room', () => {
     reset({ width: 1400, height: 1000 })

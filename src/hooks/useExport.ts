@@ -88,34 +88,33 @@ export function useExport(dissolution?: DissolutionResult | null) {
     return activeDissolution?.viewBox ?? activeMark!.viewBox
   }
 
-  function exportSVG(options: ExportOptions = {}) {
+  /** The mark as an SVG document, or null when there is nothing to export. */
+  function svgString(options: ExportOptions = {}): string | null {
     const paths = getExportPaths()
-    if (!paths) return
-    const svg = generateSVGString(
+    if (!paths) return null
+    return generateSVGString(
       paths.pathData,
       paths.fillRule,
       getExportViewBox(),
       params.fillColor,
       options,
     )
+  }
+
+  function exportSVG(options: ExportOptions = {}) {
+    const svg = svgString(options)
+    if (!svg) return
     const blob = new Blob([svg], { type: 'image/svg+xml' })
     downloadBlob(blob, `${filenameBase}.svg`)
   }
 
   function exportPNG(scale = 2, options: ExportOptions = {}) {
-    const paths = getExportPaths()
-    if (!paths) return
+    const svg = svgString(options)
+    if (!svg) return
     const normalizedViewBox = normalizeViewBox(
       getExportViewBox(),
       options.artboardMode ?? 'tight',
       options.paddingMode ?? 'compact',
-    )
-    const svg = generateSVGString(
-      paths.pathData,
-      paths.fillRule,
-      getExportViewBox(),
-      params.fillColor,
-      options,
     )
 
     const img = new Image()
@@ -145,7 +144,7 @@ export function useExport(dissolution?: DissolutionResult | null) {
     img.src = url
   }
 
-  return { exportSVG, exportPNG, canExport: !!getExportPaths(), hasDissolution: !!activeDissolution }
+  return { exportSVG, exportPNG, svgString, canExport: !!getExportPaths(), hasDissolution: !!activeDissolution }
 }
 
 function normalizeViewBox(

@@ -29,18 +29,22 @@ const test = base.extend<{ errors: string[] }>({
   ],
 })
 
-/* ─── Panel: the sidebar on desktop, the Controls drawer on phones ─── */
+/* ─── Controls: the pill over the canvas, the Layers drawer, the top bar ─── */
 
-async function withPanel(page: Page, run: (panel: Locator) => Promise<unknown>) {
-  const open = page.getByRole('button', { name: 'Controls' })
-  if (await open.isVisible()) {
-    await open.click()
-    const drawer = page.getByRole('dialog', { name: 'Controls' })
-    await run(drawer)
-    await drawer.getByRole('button', { name: 'Done' }).click()
-    return
-  }
-  await run(page.locator('aside').first())
+const layersButton = (page: Page) => page.getByRole('button', { name: 'Layers', exact: true })
+const layersDrawer = (page: Page) => page.getByRole('complementary', { name: 'Layers' })
+const selectionBar = (page: Page) => page.getByRole('toolbar', { name: 'Selection' })
+
+async function openLayers(page: Page): Promise<Locator> {
+  const drawer = layersDrawer(page)
+  if (!(await drawer.isVisible())) await layersButton(page).click()
+  await expect(drawer).toBeVisible()
+  return drawer
+}
+
+async function closeLayers(page: Page) {
+  await layersDrawer(page).getByRole('button', { name: 'Close layers' }).click()
+  await expect(layersDrawer(page)).toBeHidden()
 }
 
 /** Opens on the final look unless asked: the pixel checks read solid ink, which only that look draws. */
@@ -54,18 +58,18 @@ async function openVectorMaker(page: Page, look: 'construction' | 'final' = 'fin
 }
 
 async function startOver(page: Page) {
-  await withPanel(page, async (panel) => {
-    const button = panel.getByRole('button', { name: 'Start over' })
-    if (await button.isEnabled()) await button.click()
-  })
+  const drawer = await openLayers(page)
+  const button = drawer.getByRole('button', { name: 'Start over' })
+  if (await button.isEnabled()) await button.click()
+  await closeLayers(page)
   await expect.poll(() => layers(page).then((list) => list.length)).toBe(0)
 }
 
 const addSlab = (page: Page, name: 'Square' | 'Rounded' | 'Circle' | 'Tall') =>
-  withPanel(page, (panel) => panel.getByRole('button', { name, exact: true }).click())
+  page.getByRole('button', { name: `Add ${name.toLowerCase()} slab` }).click()
 
 const pickTool = (page: Page, name: 'Pen' | 'Punch' | 'Channel' | 'Slice') =>
-  withPanel(page, (panel) => panel.getByRole('button', { name, exact: true }).click())
+  page.getByRole('group', { name: 'Tools' }).getByRole('button', { name, exact: true }).click()
 
 /* ─── Canvas ─── */
 
@@ -343,13 +347,17 @@ test('a drag lands once wherever it is released; holes travel with their slab un
   const [slab, punch] = (await carves(page)) as [SlabSpec, PunchSpec]
 
   // Release outside the canvas: the move lands, and nothing sticks to the pointer afterwards.
+  // The canvas nearly fills the page, so outside is the margin beside it.
+  const outside = Math.min(f.box.x + f.box.width + 20, page.viewportSize()!.width - 2)
+  expect(outside).toBeGreaterThan(f.box.x + f.box.width)
   const body = f.at(150, -120)
   await page.mouse.move(body.x, body.y)
   await page.mouse.down()
-  await page.mouse.move(f.box.x + f.box.width + 20, body.y, { steps: 12 })
+  await page.mouse.move(outside, body.y, { steps: 12 })
   await page.mouse.up()
   const released = (await carves(page)) as [SlabSpec, PunchSpec]
-  await page.mouse.move(f.box.x + f.box.width + 120, body.y + 60, { steps: 4 })
+  await page.mouse.move(outside, body.y + 60, { steps: 4 })
+  await page.mouse.move(body.x, body.y + 60, { steps: 4 })
   expect(await carves(page)).toEqual(released)
   const dx = released[0].center.x - slab.center.x
   expect(dx).toBeGreaterThan(50)
@@ -411,7 +419,10 @@ test('Copy SVG and the canvas show the same mark', async ({ page, context }) => 
   await page.keyboard.press('Escape')
   await pointerAway(page, f)
 
-  await page.getByRole('button', { name: 'Copy SVG' }).click()
+  await page.getByRole('button', { name: 'Export', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Export' })
+  await dialog.getByRole('button', { name: 'Copy SVG' }).click()
+  await expect(dialog.getByRole('button', { name: 'SVG copied to clipboard' })).toBeVisible()
   const svg = await page.evaluate(() => navigator.clipboard.readText())
   const copied = /\sd="([^"]+)"/.exec(svg)?.[1]
   expect(copied).toBeTruthy()
@@ -482,4 +493,159 @@ test('a link that cannot be read says so until the message is dismissed', async 
   await message.getByRole('button', { name: 'Dismiss' }).click()
   await expect(message).toHaveCount(0)
   expect(await layers(page)).toHaveLength(1)
+})
+
+test('the Layers drawer opens and closes, and a row moves the way its arrow points', async ({ page }) => {
+  await openVectorMaker(page)
+  const drawer = layersDrawer(page)
+  await expect(drawer).toBeHidden()
+
+  await layersButton(page).click()
+  await expect(drawer).toBeVisible()
+  await layersButton(page).click()
+  await expect(drawer).toBeHidden()
+  await page.keyboard.press('l')
+  await expect(drawer).toBeVisible()
+  await page.keyboard.press('l')
+  await expect(drawer).toBeHidden()
+  await layersButton(page).click()
+  await page.keyboard.press('Escape')
+  await expect(drawer).toBeHidden()
+  await openLayers(page)
+  await closeLayers(page)
+
+  // A slab with a hole punched in it: the punch is the top layer, so it is the top row.
+  await addSlab(page, 'Square')
+  const f = await frame(page)
+  const hole = f.at(60, 60)
+  await pickTool(page, 'Punch')
+  await drag(page, hole, f.at(90, 60))
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+  await pointerAway(page, f)
+  const [slab, punch] = await layers(page)
+  expect(await isEmpty(page, hole)).toBe(true)
+
+  await openLayers(page)
+  const rows = drawer.getByRole('listitem')
+  const slabRow = rows.filter({ hasText: 'Slab' })
+  await expect(rows).toHaveText([/Punch/, /Slab/])
+  await expect(rows.first().getByRole('button', { name: /^Move .* up$/ })).toBeDisabled()
+  const before = (await slabRow.boundingBox())!.y
+
+  // Up moves the row up the list and the layer up the stack: the slab now covers its hole.
+  await slabRow.getByRole('button', { name: /^Move .* up$/ }).click()
+  await expect(rows).toHaveText([/Slab/, /Punch/])
+  expect((await slabRow.boundingBox())!.y).toBeLessThan(before)
+  expect((await layers(page)).map((layer) => layer.id)).toEqual([punch.id, slab.id])
+  await expect.poll(() => isInk(page, hole)).toBe(true)
+
+  await slabRow.getByRole('button', { name: /^Move .* down$/ }).click()
+  await expect(rows).toHaveText([/Punch/, /Slab/])
+  expect((await layers(page)).map((layer) => layer.id)).toEqual([slab.id, punch.id])
+  await expect.poll(() => isEmpty(page, hole)).toBe(true)
+})
+
+test('the selection bar is there for a selection and gone without one', async ({ page }) => {
+  await openVectorMaker(page)
+  const bar = selectionBar(page)
+  await expect(bar).toBeHidden()
+
+  await addSlab(page, 'Square')
+  await expect(bar).toContainText('Slab · 380 × 380 · corner 0')
+  // A slab has handles on the canvas, so it gets no sliders.
+  await expect(bar.getByRole('button', { name: 'Transform' })).toHaveCount(0)
+  const f = await frame(page)
+
+  await page.keyboard.press('Escape')
+  await expect(bar).toBeHidden()
+  await click(page, f.at(0, 0))
+  await expect(bar).toBeVisible()
+
+  await bar.getByRole('button', { name: 'Cut', exact: true }).click()
+  expect((await layers(page))[0].operation).toBe('subtract')
+  await bar.getByRole('button', { name: 'Delete', exact: true }).click()
+  await expect(bar).toBeHidden()
+  expect(await layers(page)).toHaveLength(0)
+
+  // A pen shape has no handles: its sliders are a click away, and each change is one undo step.
+  await pickTool(page, 'Pen')
+  for (const [x, y] of [
+    [-100, -80],
+    [100, -80],
+    [0, 90],
+  ]) {
+    await click(page, f.at(x, y))
+  }
+  await page.keyboard.press('Enter')
+  await bar.getByRole('button', { name: 'Transform' }).click()
+  const depth = await undoDepth(page)
+  await page.getByRole('slider', { name: 'Move X' }).press('ArrowRight')
+  expect(await page.evaluate(() => window.__marque.store.getState().illustrator?.layers[0].transform.dx)).toBe(1)
+  expect(await undoDepth(page)).toBe(depth + 1)
+})
+
+test('an empty canvas says what to do first, until there is something on it', async ({ page }) => {
+  await page.goto('/')
+  const hint = page.locator('main').getByRole('note')
+  await expect(hint).toContainText('slab')
+
+  await pickTool(page, 'Pen')
+  await expect(hint).toBeHidden()
+  await page.keyboard.press('Escape')
+  await expect(hint).toBeVisible()
+
+  await addSlab(page, 'Square')
+  await expect(hint).toBeHidden()
+})
+
+test('V, P, X, C and S pick the tools, and one pressed mid-drawing does not throw the drawing away', async ({ page }) => {
+  await openVectorMaker(page)
+  const activeTool = () => page.evaluate(() => window.__marque.store.getState().ui.activeTool)
+  for (const [key, tool] of [
+    ['p', 'pen'],
+    ['x', 'punch'],
+    ['c', 'channel'],
+    ['s', 'slice'],
+    ['v', null],
+  ] as const) {
+    await page.keyboard.press(key)
+    expect(await activeTool()).toBe(tool)
+  }
+
+  const f = await frame(page)
+  await page.keyboard.press('p')
+  for (const [x, y] of [
+    [-100, -80],
+    [100, -80],
+    [0, 90],
+  ]) {
+    await click(page, f.at(x, y))
+  }
+  await page.keyboard.press('s')
+  expect(await activeTool()).toBe('pen')
+  await page.keyboard.press('Enter')
+  expect(await layers(page)).toHaveLength(1)
+})
+
+test('Saved keeps a mark and brings it back', async ({ page }) => {
+  await openVectorMaker(page)
+  await addSlab(page, 'Rounded')
+  const kept = await carves(page)
+  const savedButton = page.getByRole('button', { name: 'Saved', exact: true })
+  const menu = page.getByRole('group', { name: 'Saved marks' })
+
+  await savedButton.click()
+  await menu.getByRole('button', { name: 'Save current' }).click()
+  const remove = menu.getByRole('button', { name: /^Delete / })
+  await expect(remove).toHaveCount(1)
+  const name = (await remove.getAttribute('aria-label'))!.replace(/^Delete /, '')
+  await page.keyboard.press('Escape')
+  await expect(menu).toBeHidden()
+
+  await startOver(page)
+  await savedButton.click()
+  await menu.getByRole('button', { name, exact: true }).click()
+  await expect(menu).toBeHidden()
+  expect(await carves(page)).toEqual(kept)
 })

@@ -29,7 +29,8 @@ export interface PenCallbacks {
 }
 
 interface PenOptions {
-  fillColor: string
+  /** The colour the shape will fill with once closed. Asked on every draw: it follows the canvas's look. */
+  fillColor(): string
 }
 
 type Gesture =
@@ -328,7 +329,7 @@ export class PenTool {
         const preview = this.cursor ? placePoint(this.draft, this.cursor) : this.draft
         const ghost = new this.scope.CompoundPath({ pathData: editablePathToPathData({ ...preview, closed: true }), insert: false })
         ghost.translate(center)
-        ghost.fillColor = new this.scope.Color(this.options.fillColor)
+        ghost.fillColor = new this.scope.Color(this.options.fillColor())
         ghost.fillColor.alpha = 0.14
         put(ghost)
       }

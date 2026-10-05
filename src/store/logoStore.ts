@@ -100,6 +100,7 @@ interface UIState {
   /** Size of the Vector Maker canvas in layer units, for placing new slabs. */
   viewport: { width: number; height: number }
   look: CanvasLook
+  layersOpen: boolean
 }
 
 /** One layer change inside a single undoable commit. */
@@ -212,6 +213,7 @@ interface LogoStore {
   ) => void
   duplicateIllustratorLayer: (id: string) => void
   deleteIllustratorLayers: (ids?: string[]) => void
+  /** One place in the stack: 'up' is towards the top, where later layers sit. */
   moveIllustratorLayer: (id: string, direction: 'up' | 'down') => void
   toggleIllustratorLayerVisibility: (id: string) => void
   setIllustratorLayerOperation: (id: string, operation: 'add' | 'subtract') => void
@@ -225,6 +227,7 @@ interface LogoStore {
   commitLayerEdits: (commit: LayerEditCommit) => void
   setViewport: (viewport: { width: number; height: number }) => void
   toggleLook: () => void
+  setLayersOpen: (open: boolean) => void
   addCarveCut: (spec: CutSpec) => void
   /** A closed shape drawn with the pen (layer space): added on top, selected, back to direct editing. */
   addPenShape: (pathData: string) => void
@@ -260,6 +263,7 @@ export const useLogoStore = create<LogoStore>()(
         carve: { ...DEFAULT_CARVE_SETTINGS },
         viewport: { width: 600, height: 600 },
         look: 'construction',
+        layersOpen: false,
       },
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
@@ -901,7 +905,7 @@ export const useLogoStore = create<LogoStore>()(
           const vectorUpdate = mutateVectorViaIllustrator(state, 'Move layer', (doc) => {
             const index = doc.layers.findIndex((layer) => layer.id === id)
             if (index < 0) return null
-            const targetIndex = direction === 'up' ? index - 1 : index + 1
+            const targetIndex = direction === 'up' ? index + 1 : index - 1
             if (targetIndex < 0 || targetIndex >= doc.layers.length) return null
             const layers = [...doc.layers]
             const [layer] = layers.splice(index, 1)
@@ -912,7 +916,7 @@ export const useLogoStore = create<LogoStore>()(
           if (!state.illustrator) return state
           const index = state.illustrator.layers.findIndex((layer) => layer.id === id)
           if (index < 0) return state
-          const targetIndex = direction === 'up' ? index - 1 : index + 1
+          const targetIndex = direction === 'up' ? index + 1 : index - 1
           if (targetIndex < 0 || targetIndex >= state.illustrator.layers.length) return state
 
           const layers = [...state.illustrator.layers]
@@ -1060,6 +1064,9 @@ export const useLogoStore = create<LogoStore>()(
         set((state) => ({
           ui: { ...state.ui, look: state.ui.look === 'construction' ? 'final' : 'construction' },
         })),
+
+      setLayersOpen: (open) =>
+        set((state) => (state.ui.layersOpen === open ? {} : { ui: { ...state.ui, layersOpen: open } })),
 
       addCarveCut: (spec) =>
         set((state) => {

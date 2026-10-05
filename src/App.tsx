@@ -2,7 +2,8 @@ import { useEffect } from 'react'
 import { AppShell } from './components/layout/AppShell.tsx'
 import { useUrlState } from './hooks/useUrlState.ts'
 import { useLogoStore } from './store/logoStore.ts'
-import { dispatchEditorKey, isEditorInteracting } from './renderer/directEdit/keyboard.ts'
+import { dispatchEditorKey, isBareKey, isEditorInteracting } from './renderer/directEdit/keyboard.ts'
+import { toolForKey } from './components/editor/tools.ts'
 
 function App() {
   useUrlState()
@@ -15,9 +16,13 @@ function App() {
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      // Skip when input is focused
-      const tag = (e.target as HTMLElement).tagName
-      if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return
+      // Skip while typing or choosing. The colour swatch keeps focus after its picker closes, and takes no typing.
+      const target = e.target as HTMLElement
+      const tag = target.tagName
+      const colourSwatch = tag === 'INPUT' && (target as HTMLInputElement).type === 'color'
+      if ((tag === 'INPUT' && !colourSwatch) || tag === 'SELECT' || tag === 'TEXTAREA') return
+      // A dialog over the page has the keyboard: nothing behind it reacts.
+      if (document.querySelector('[aria-modal="true"]')) return
 
       // Canvas editors first: Delete removes a selected point before its layer,
       // Escape steps back one level, arrows nudge.
@@ -48,10 +53,31 @@ function App() {
         }
       }
 
-      if (e.key.toLowerCase() === 'f' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.repeat) {
+      if (e.key === 'Escape' && useLogoStore.getState().ui.layersOpen) {
         e.preventDefault()
-        useLogoStore.getState().toggleLook()
+        useLogoStore.getState().setLayersOpen(false)
         return
+      }
+
+      if (isBareKey(e)) {
+        const key = e.key.toLowerCase()
+        if (key === 'f') {
+          e.preventDefault()
+          useLogoStore.getState().toggleLook()
+          return
+        }
+        if (key === 'l') {
+          e.preventDefault()
+          const { ui, setLayersOpen } = useLogoStore.getState()
+          setLayersOpen(!ui.layersOpen)
+          return
+        }
+        const tool = toolForKey(e)
+        if (tool) {
+          e.preventDefault()
+          useLogoStore.getState().setActiveTool(tool.id)
+          return
+        }
       }
 
       // Delete/Backspace = delete selected shape in edit mode (not while a slider has focus)
