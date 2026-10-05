@@ -16,7 +16,7 @@ import type {
   IllustratorLayer,
 } from '../engine/illustrator/types.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../engine/illustrator/types.ts'
-import { bakedEditablePath } from '../engine/illustrator/layerPath.ts'
+import { bakedEditablePath, scaleLayers } from '../engine/illustrator/layerPath.ts'
 import { deleteAnchor, editablePathToPathData, toggleSmooth } from '../engine/path/editPath.ts'
 import { getLayerPathItem } from '../engine/illustrator/compose.ts'
 import type { VectorCommand } from '../engine/vector/commands.ts'
@@ -39,8 +39,9 @@ import { carveFromCut, carveLayerName, roundCarveSpec, slabSpec, type CarveSpec 
 import { translateCarve } from '../engine/carve/edit.ts'
 import { createEmptyVectorDocument, sanitizeVectorDocument } from '../engine/vector/document.ts'
 import { composeVectorMarkCached } from '../engine/vector/export.ts'
-import { placeSlab } from '../engine/carve/placement.ts'
+import { placeMark, placeSlab } from '../engine/carve/placement.ts'
 import type { SurvivalSize } from '../engine/carve/survival.ts'
+import { sparkLayers, type Spark } from '../engine/sparks/sparks.ts'
 import {
   getAllModeParamDefaults,
   getModeGeneratorId,
@@ -101,6 +102,8 @@ interface UIState {
   viewport: { width: number; height: number }
   look: CanvasLook
   layersOpen: boolean
+  /** Which set of sparks the tray deals. */
+  sparkSeed: number
 }
 
 /** One layer change inside a single undoable commit. */
@@ -220,6 +223,12 @@ interface LogoStore {
   addIllustratorPathLayer: (path: Omit<DrawnPath, 'id'>) => void
   setCarveSettings: (update: Partial<CarveSettings>) => void
   addSlab: (kind: SlabKind) => void
+  /** A spark's shapes as layers under everything else, beside the ink: one undo step. */
+  dropSpark: (spark: Spark) => void
+  /** Resize the selected free shapes together about the middle of the box around them: one undo step. */
+  scaleSelection: (factor: number) => void
+  setSparkSeed: (seed: number) => void
+  shuffleSparks: () => void
   startOver: () => void
   /** Put a saved mark in place of the open document: one undo step for the layers. */
   openSaved: (entry: SavedVariation) => void
@@ -264,6 +273,7 @@ export const useLogoStore = create<LogoStore>()(
         viewport: { width: 600, height: 600 },
         look: 'construction',
         layersOpen: false,
+        sparkSeed: crypto.getRandomValues(new Uint32Array(1))[0],
       },
       effectParams: {
         dissolution: { ...DEFAULT_DISSOLUTION_PARAMS },
@@ -1001,6 +1011,42 @@ export const useLogoStore = create<LogoStore>()(
           return update ? { ...update, activeSurface: 'illustrator', ui } : state
         }),
 
+      dropSpark: (spark) =>
+        set((state) => {
+          const existing = state.vectorDocument ? composeVectorMarkCached(state.vectorDocument) : null
+          const target = placeMark(
+            spark.mark.viewBox,
+            SPARK_SPAN,
+            existing?.compoundPathData ? existing.viewBox : null,
+            state.ui.viewport,
+          )
+          const dropped = sparkLayers(spark, target)
+          // A cut removes only what is below it. Underneath, the spark's cuts cannot reach the work already there.
+          const update = mutateVectorViaIllustrator(state, 'Add spark', (doc) => ({
+            ...doc,
+            mode: 'object',
+            layers: [...dropped, ...doc.layers],
+            selectedLayerIds: dropped.map((layer) => layer.id),
+            pointSelection: null,
+          }))
+          return update ? { ...update, ui: { ...state.ui, activeTool: null } } : state
+        }),
+
+      scaleSelection: (factor) =>
+        set((state) => {
+          const doc = state.illustrator
+          if (!doc || !Number.isFinite(factor) || factor <= 0 || factor === 1) return {}
+          const selected = doc.layers.filter((layer) => doc.selectedLayerIds.includes(layer.id))
+          // A recipe is resized by its handles. Scaling its path would turn it into a free shape.
+          if (selected.some((layer) => layer.carve)) return {}
+          return layerEditsUpdate(state, { label: 'Scale shapes', edits: scaleLayers(selected, factor) })
+        }),
+
+      setSparkSeed: (sparkSeed) =>
+        set((state) => (state.ui.sparkSeed === sparkSeed ? {} : { ui: { ...state.ui, sparkSeed } })),
+
+      shuffleSparks: () => set((state) => ({ ui: { ...state.ui, sparkSeed: state.ui.sparkSeed + 1 } })),
+
       startOver: () =>
         set((state) => {
           const fresh = slabDocument([], state.params.fillColor)
@@ -1397,6 +1443,9 @@ function recipeLayer(spec: CarveSpec, operation: 'add' | 'subtract'): Illustrato
     carve,
   }
 }
+
+/** How long a dropped spark is on its longer side. The canvas shows 600 units across. */
+const SPARK_SPAN = 360
 
 const DUPLICATE_OFFSET = 12
 

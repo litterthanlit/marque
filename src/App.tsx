@@ -3,7 +3,7 @@ import { AppShell } from './components/layout/AppShell.tsx'
 import { useUrlState } from './hooks/useUrlState.ts'
 import { useLogoStore } from './store/logoStore.ts'
 import { dispatchEditorKey, isBareKey, isEditorInteracting } from './renderer/directEdit/keyboard.ts'
-import { toolForKey } from './components/editor/tools.ts'
+import { isShuffleKey, toolForKey } from './components/editor/tools.ts'
 
 function App() {
   useUrlState()
@@ -76,6 +76,11 @@ function App() {
         if (tool) {
           e.preventDefault()
           useLogoStore.getState().setActiveTool(tool.id)
+          return
+        }
+        if (isShuffleKey(e)) {
+          e.preventDefault()
+          useLogoStore.getState().shuffleSparks()
           return
         }
       }

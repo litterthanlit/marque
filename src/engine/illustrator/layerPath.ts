@@ -1,7 +1,7 @@
 import paper from 'paper'
 import type { EditablePath } from '../path/editPath.ts'
 import { getLayerPathItem } from './compose.ts'
-import type { IllustratorLayer } from './types.ts'
+import type { IllustratorLayer, MarkData } from './types.ts'
 
 let scope: paper.PaperScope | null = null
 
@@ -44,4 +44,43 @@ export function bakedEditablePath(layer: IllustratorLayer): EditablePath | null 
   }
   s.project.clear()
   return out
+}
+
+function drawnItems(s: paper.PaperScope, layers: IllustratorLayer[]): Array<{ layer: IllustratorLayer; item: paper.PathItem }> {
+  s.project.clear()
+  return layers.flatMap((layer) => {
+    const item = getLayerPathItem(s, layer, true)
+    return item ? [{ layer, item }] : []
+  })
+}
+
+function boundsOf(drawn: Array<{ item: paper.PathItem }>): paper.Rectangle | null {
+  return drawn.reduce<paper.Rectangle | null>((box, { item }) => (box ? box.unite(item.bounds) : item.bounds), null)
+}
+
+/** The box around the layers together, as they are drawn. Null when none of them has a path. */
+export function layersBounds(layers: IllustratorLayer[]): MarkData['viewBox'] | null {
+  const s = getScope()
+  const box = boundsOf(drawnItems(s, layers))
+  s.project.clear()
+  return box && { x: box.x, y: box.y, width: box.width, height: box.height }
+}
+
+/**
+ * The layers scaled as one piece about the middle of the box around them.
+ * The result is baked into each path, as a move on the canvas is. A layer
+ * transform scales about the layer's own middle, so it would also need an
+ * offset, which the Move sliders can neither show nor reach.
+ */
+export function scaleLayers(layers: IllustratorLayer[], factor: number): Array<{ layerId: string; pathData: string }> {
+  const s = getScope()
+  const drawn = drawnItems(s, layers)
+  const box = boundsOf(drawn)
+  if (!box) return []
+  const edits = drawn.map(({ layer, item }) => {
+    item.scale(factor, box.center)
+    return { layerId: layer.id, pathData: item.pathData }
+  })
+  s.project.clear()
+  return edits
 }

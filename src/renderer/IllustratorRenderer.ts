@@ -31,7 +31,7 @@ const HIT_AREA_ALPHA = 0.001
 
 // A construction sheet: the mark in grey with a dark outline, the shapes it is
 // built from as hairlines, the cutters dotted. Widths and dashes are CSS pixels.
-const CONSTRUCTION = {
+export const CONSTRUCTION = {
   fill: '#e5e5e5',
   outline: { color: '#222222', width: 1.25 },
   add: { color: '#808080', width: 0.75, dash: [] as number[] },

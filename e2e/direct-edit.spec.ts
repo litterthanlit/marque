@@ -71,6 +71,26 @@ const addSlab = (page: Page, name: 'Square' | 'Rounded' | 'Circle' | 'Tall') =>
 const pickTool = (page: Page, name: 'Pen' | 'Punch' | 'Channel' | 'Slice') =>
   page.getByRole('group', { name: 'Tools' }).getByRole('button', { name, exact: true }).click()
 
+/* ─── The spark tray under the canvas ─── */
+
+const sparkTray = (page: Page) => page.getByRole('group', { name: 'Sparks' })
+const sparkButton = (page: Page, n: number) => sparkTray(page).getByRole('button', { name: `Add spark ${n}`, exact: true })
+
+/** Deal the set a seed names, so a test always drops the same sparks. */
+async function dealSparks(page: Page, seed: number) {
+  await page.evaluate((value) => window.__marque.store.getState().setSparkSeed(value), seed)
+  await expect(sparkTray(page)).toHaveAttribute('aria-busy', 'false')
+  await expect(sparkTray(page).getByRole('button')).toHaveCount(8)
+}
+
+/** What each thumbnail draws, in tray order. */
+const thumbnails = (page: Page) =>
+  sparkTray(page)
+    .locator('button path')
+    .evaluateAll((paths) => paths.map((path) => path.getAttribute('d')))
+
+const sparkSeed = (page: Page) => page.evaluate(() => window.__marque.store.getState().ui.sparkSeed)
+
 /* ─── Canvas ─── */
 
 interface Frame {
@@ -155,6 +175,31 @@ async function carves(page: Page): Promise<CarveSpec[]> {
 }
 
 const undoDepth = (page: Page) => page.evaluate(() => window.__marque.store.getState().vectorUndoStack.length)
+
+const selectedIds = (page: Page) => page.evaluate(() => window.__marque.store.getState().illustrator?.selectedLayerIds ?? [])
+
+interface Box {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** The box around some paths in layer space, as the browser measures it: no code of the app's is asked. */
+function boxAround(page: Page, pathData: string[]): Promise<Box> {
+  return page.evaluate((list) => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+    path.setAttribute('d', list.join(' '))
+    svg.append(path)
+    document.body.append(svg)
+    const { x, y, width, height } = path.getBBox()
+    svg.remove()
+    return { x, y, width, height }
+  }, pathData)
+}
+
+const middle = (box: Box): Point => ({ x: box.x + box.width / 2, y: box.y + box.height / 2 })
 
 async function handle(page: Page, id: string): Promise<Point> {
   const found = (await page.evaluate(() => window.__marque.handles())).find((candidate) => candidate.id === id)
@@ -648,4 +693,188 @@ test('Saved keeps a mark and brings it back', async ({ page }) => {
   await menu.getByRole('button', { name, exact: true }).click()
   await expect(menu).toBeHidden()
   expect(await carves(page)).toEqual(kept)
+})
+
+test('a spark dropped on an empty canvas lands in the middle, all selected, as one undo step', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await dealSparks(page, 1)
+  await pickTool(page, 'Pen')
+  // Slot 3 of this set carries cuts.
+  await sparkButton(page, 3).click()
+
+  const dropped = await layers(page)
+  expect(dropped.map((layer) => layer.operation)).toEqual(['add', 'add', 'add', 'add', 'subtract', 'subtract'])
+  expect(dropped.every((layer) => layer.carve === null)).toBe(true)
+  expect(await selectedIds(page)).toEqual(dropped.map((layer) => layer.id))
+  expect(await page.evaluate(() => window.__marque.store.getState().ui.activeTool)).toBeNull()
+  expect(await undoDepth(page)).toBe(1)
+  const bar = selectionBar(page)
+  await expect(bar).toContainText('6 layers')
+  await expect(bar.getByRole('button', { name: 'Scale' })).toBeVisible()
+
+  // The mark itself is 360 units on its longer side, about the middle of the canvas.
+  const ink = (await page.evaluate(() => window.__marque.mark()))!
+  expect(Math.max(ink.viewBox.width, ink.viewBox.height)).toBeCloseTo(360, 1)
+  expect(middle(ink.viewBox).x).toBeCloseTo(0, 1)
+  expect(middle(ink.viewBox).y).toBeCloseTo(0, 1)
+
+  // It is drawn as a construction sheet: pale grey wherever the mark is solid.
+  const f = await frame(page)
+  await pointerAway(page, f)
+  const solid = await page.evaluate((d) => {
+    const probe = document.createElement('canvas').getContext('2d')!
+    const path = new Path2D(d)
+    const points: Array<{ x: number; y: number }> = []
+    for (let y = -180; y <= 180; y += 4) {
+      for (let x = -180; x <= 180; x += 4) {
+        const settled = [-6, 0, 6].every((dx) => [-6, 0, 6].every((dy) => probe.isPointInPath(path, x + dx, y + dy, 'evenodd')))
+        if (settled) points.push({ x, y })
+      }
+    }
+    return points
+  }, ink.compoundPathData)
+  expect(solid.length).toBeGreaterThan(3)
+  const drawn = await pixels(page, solid.map((p) => f.at(p.x, p.y)))
+  expect(drawn.filter((pixel) => !pixel.paleGrey)).toEqual([])
+
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(() => layers(page).then((list) => list.length)).toBe(0)
+  await page.keyboard.press('ControlOrMeta+Shift+z')
+  await expect.poll(() => layers(page)).toEqual(dropped)
+})
+
+test('a spark goes beside a slab and under it, and leaves the slab as it was', async ({ page }) => {
+  await openVectorMaker(page)
+  await dealSparks(page, 1)
+  await addSlab(page, 'Square')
+  const [slab] = await layers(page)
+  const depth = await undoDepth(page)
+
+  // Slot 1 of this set has no cuts, so the box around its layers is the box around its ink.
+  await sparkButton(page, 1).click()
+  const all = await layers(page)
+  const dropped = all.slice(0, -1)
+  expect(dropped.length).toBeGreaterThan(1)
+  expect(dropped.every((layer) => layer.operation === 'add')).toBe(true)
+  expect(all.at(-1)).toEqual(slab)
+  expect(await selectedIds(page)).toEqual(dropped.map((layer) => layer.id))
+  expect(await undoDepth(page)).toBe(depth + 1)
+
+  const spark = await boxAround(page, dropped.map((layer) => layer.pathData))
+  const { center, width, height } = slab.carve as SlabSpec
+  const clear =
+    spark.x >= center.x + width / 2 ||
+    spark.x + spark.width <= center.x - width / 2 ||
+    spark.y >= center.y + height / 2 ||
+    spark.y + spark.height <= center.y - height / 2
+  expect(clear).toBe(true)
+  // And on the canvas, not past its edge.
+  const viewport = await page.evaluate(() => window.__marque.store.getState().ui.viewport)
+  expect(Math.abs(middle(spark).x) + spark.width / 2).toBeLessThanOrEqual(viewport.width / 2)
+  expect(Math.abs(middle(spark).y) + spark.height / 2).toBeLessThanOrEqual(viewport.height / 2)
+
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(() => layers(page)).toEqual([slab])
+})
+
+test('Shuffle and R deal new sparks, and R waits for a drawing, a drag or a dialog to finish', async ({ page }) => {
+  await openVectorMaker(page)
+  await dealSparks(page, 1)
+  const first = await thumbnails(page)
+  expect(new Set(first).size).toBe(8)
+
+  await page.getByRole('button', { name: 'Shuffle', exact: true }).click()
+  await expect.poll(() => thumbnails(page)).not.toEqual(first)
+  await expect(sparkTray(page)).toHaveAttribute('aria-busy', 'false')
+  const second = await thumbnails(page)
+
+  await page.keyboard.press('r')
+  await expect.poll(() => thumbnails(page)).not.toEqual(second)
+  await expect(sparkTray(page)).toHaveAttribute('aria-busy', 'false')
+  const third = await thumbnails(page)
+  expect(third).not.toEqual(first)
+  expect(first.filter((d) => second.includes(d) || third.includes(d))).toEqual([])
+
+  // The same seed deals the same set again.
+  await dealSparks(page, 1)
+  expect(await thumbnails(page)).toEqual(first)
+  const seed = await sparkSeed(page)
+
+  // A held modifier is another shortcut, not this one.
+  await page.keyboard.press('Shift+r')
+  expect(await sparkSeed(page)).toBe(seed)
+
+  // Mid-drawing with the pen.
+  const f = await frame(page)
+  await page.keyboard.press('p')
+  await click(page, f.at(-100, -80))
+  await click(page, f.at(100, -80))
+  await page.keyboard.press('r')
+  expect(await sparkSeed(page)).toBe(seed)
+  await click(page, f.at(0, 90))
+  await page.keyboard.press('Enter')
+  expect(await layers(page)).toHaveLength(1)
+
+  // Mid-drag.
+  const body = f.at(0, -40)
+  await page.mouse.move(body.x, body.y)
+  await page.mouse.down()
+  await page.mouse.move(body.x + 30, body.y, { steps: 5 })
+  await page.keyboard.press('r')
+  expect(await sparkSeed(page)).toBe(seed)
+  await page.mouse.up()
+
+  // Behind a dialog.
+  await page.getByRole('button', { name: 'Export', exact: true }).click()
+  await expect(page.getByRole('dialog', { name: 'Export' })).toBeVisible()
+  await page.keyboard.press('r')
+  expect(await sparkSeed(page)).toBe(seed)
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog', { name: 'Export' })).toBeHidden()
+
+  expect(await thumbnails(page)).toEqual(first)
+  await page.keyboard.press('r')
+  await expect.poll(() => sparkSeed(page)).not.toBe(seed)
+})
+
+test('several free shapes scale together about their middle, and a slab among them takes the control away', async ({ page }) => {
+  await openVectorMaker(page)
+  await dealSparks(page, 1)
+  await sparkButton(page, 1).click()
+  const before = await layers(page)
+  const was = await boxAround(page, before.map((layer) => layer.pathData))
+
+  const bar = selectionBar(page)
+  await expect(bar.getByRole('button', { name: 'Transform' })).toHaveCount(0)
+  await bar.getByRole('button', { name: 'Scale' }).click()
+  const size = page.getByRole('slider', { name: 'Size' })
+  await expect(size).toHaveAttribute('aria-valuenow', '360')
+  const depth = await undoDepth(page)
+
+  // Page Down takes ten units off the longer side.
+  await size.press('PageDown')
+  await expect(size).toHaveAttribute('aria-valuenow', '350')
+  expect(await undoDepth(page)).toBe(depth + 1)
+  const after = await layers(page)
+  const now = await boxAround(page, after.map((layer) => layer.pathData))
+  expect(after.map((layer) => layer.id)).toEqual(before.map((layer) => layer.id))
+  expect(Math.max(now.width, now.height)).toBeCloseTo(350, 1)
+  expect(now.width / now.height).toBeCloseTo(was.width / was.height, 3)
+  expect(middle(now).x).toBeCloseTo(middle(was).x, 1)
+  expect(middle(now).y).toBeCloseTo(middle(was).y, 1)
+  expect(await selectedIds(page)).toEqual(before.map((layer) => layer.id))
+
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(() => layers(page)).toEqual(before)
+  await expect(size).toHaveAttribute('aria-valuenow', '360')
+  await page.keyboard.press('Escape')
+
+  // A slab has its own handles: with one in the selection there is nothing to scale together.
+  await addSlab(page, 'Square')
+  await page.evaluate(() => {
+    const { illustrator, setSelection } = window.__marque.store.getState()
+    setSelection(illustrator!.layers.map((layer) => layer.id))
+  })
+  await expect(bar).toContainText(`${before.length + 1} layers`)
+  await expect(bar.getByRole('button', { name: 'Scale' })).toHaveCount(0)
 })

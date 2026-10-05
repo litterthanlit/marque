@@ -21,7 +21,7 @@ import { DissolutionProcessor } from '../../engine/effects/dissolution.ts'
 import { useAnimation } from '../../hooks/useAnimation.ts'
 import { AnimationControls } from './AnimationControls.tsx'
 import { CanvasHud } from './CanvasHud.tsx'
-import { toolForKey } from '../editor/tools.ts'
+import { isShuffleKey, toolForKey } from '../editor/tools.ts'
 import { canvasPixelRatio, fitView, STILL, visibleUnits, type ViewMotion } from '../../renderer/viewFit.ts'
 import type { AnimationKeyframe } from '../../engine/animation/types.ts'
 import type { DrawnPath } from '../../store/logoStore.ts'
@@ -341,7 +341,9 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     const unregister = registerEditorKeys((event) => {
       const tool = toolRef.current
       // A tool key mid-press, or mid-drawing with the pen, would throw the gesture away: it waits.
-      if (toolForKey(event) && (pressOwnerRef.current || (tool instanceof PenTool && tool.isDrawing))) return true
+      // The shuffle key waits too: pressed then, it is a slip of the hand.
+      const gestureKey = toolForKey(event) || isShuffleKey(event)
+      if (gestureKey && (pressOwnerRef.current || (tool instanceof PenTool && tool.isDrawing))) return true
       if (!tool) return false
       if (tool instanceof PenTool) {
         const mod = event.metaKey || event.ctrlKey

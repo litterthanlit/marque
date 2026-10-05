@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { useLogoStore } from '../../store/logoStore.ts'
+import { layersBounds } from '../../engine/illustrator/layerPath.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM, type IllustratorLayer } from '../../engine/illustrator/types.ts'
 import { describeCarve } from '../../engine/carve/spec.ts'
 import { cn } from '../../lib/utils.ts'
@@ -40,6 +41,8 @@ export function SelectionBar() {
   if (selectedLayers.length === 0) return null
 
   const selectedLayer = selectedLayers.length === 1 ? selectedLayers[0] : null
+  // Slabs and cuts are resized by their handles, one at a time.
+  const scalable = selectedLayers.length >= 2 && selectedLayers.every((layer) => !layer.carve)
   const selectedPoint =
     selectedLayer && !selectedLayer.carve && illustrator?.pointSelection?.layerId === selectedLayer.id
       ? illustrator.pointSelection
@@ -113,6 +116,7 @@ export function SelectionBar() {
 
         <div className="flex gap-1">
           {selectedLayer && !selectedLayer.carve && <TransformPopover layer={selectedLayer} />}
+          {scalable && <ScalePopover layers={selectedLayers} />}
           {selectedLayer && (
             <EditorButton onClick={() => duplicateIllustratorLayer(selectedLayer.id)}>Copy</EditorButton>
           )}
@@ -175,5 +179,44 @@ function TransformPopover({ layer }: { layer: IllustratorLayer }) {
         Reset
       </EditorButton>
     </Popover>
+  )
+}
+
+const SIZE_RANGE = { min: 40, max: 800 }
+
+/** One slider for several free shapes at once, which have no handles either. Each release is one undo step. */
+function ScalePopover({ layers }: { layers: IllustratorLayer[] }) {
+  return (
+    <Popover
+      label="Scale"
+      panelClassName="absolute bottom-full left-1/2 mb-2 w-64 max-w-full -translate-x-1/2"
+      trigger={(props) => <EditorButton {...props}>Scale</EditorButton>}
+    >
+      <SizeSlider layers={layers} />
+    </Popover>
+  )
+}
+
+/** The longer side of the box around the shapes. The shapes keep their arrangement and the middle of the box stays put. */
+function SizeSlider({ layers }: { layers: IllustratorLayer[] }) {
+  const scaleSelection = useLogoStore((s) => s.scaleSelection)
+  const size = useMemo(() => {
+    const box = layersBounds(layers)
+    return box ? Math.max(box.width, box.height) : 0
+  }, [layers])
+  if (size <= 0) return null
+  const shown = Math.round(size)
+
+  return (
+    <SliderControl
+      label="Size"
+      value={shown}
+      min={SIZE_RANGE.min}
+      max={SIZE_RANGE.max}
+      step={1}
+      onChange={(next) => {
+        if (next !== shown) scaleSelection(next / size)
+      }}
+    />
   )
 }

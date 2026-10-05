@@ -3,6 +3,7 @@ import { LogoCanvas } from '../canvas/LogoCanvas.tsx'
 import { EmptyHint } from '../editor/EmptyHint.tsx'
 import { LayersDrawer } from '../editor/LayersDrawer.tsx'
 import { SelectionBar } from '../editor/SelectionBar.tsx'
+import { SparkTray } from '../editor/SparkTray.tsx'
 import { ToolPill } from '../editor/ToolPill.tsx'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { cn } from '../../lib/utils.ts'
@@ -42,8 +43,10 @@ export function AppShell() {
         </main>
         <LayersDrawer />
       </div>
-      {/* Reserved for the spark tray. */}
-      <footer className="h-16 shrink-0 border-t border-border bg-surface-raised max-sm:hidden" />
+      {/* Kept out of main, which holds only the drawing: the dev hook and the e2e checks look for the canvas there. */}
+      <footer className="shrink-0 border-t border-border bg-surface-raised">
+        <SparkTray />
+      </footer>
     </div>
   )
 }

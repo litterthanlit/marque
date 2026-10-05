@@ -8,7 +8,7 @@ export function EmptyHint() {
   return (
     <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center px-6">
       <p role="note" className="text-center font-display text-[18px] text-paper-muted">
-        Add a slab or draw with the pen to start.
+        Add a slab, draw with the pen, or pick a spark below.
       </p>
     </div>
   )

@@ -23,3 +23,10 @@ export function toolForKey(event: KeyboardEvent): ToolEntry | undefined {
   const key = event.key.toUpperCase()
   return EDITOR_TOOLS.find((tool) => tool.shortcut === key)
 }
+
+/** Deals a new set of sparks into the tray. */
+export const SHUFFLE_SHORTCUT = 'R'
+
+export function isShuffleKey(event: KeyboardEvent): boolean {
+  return isBareKey(event) && event.key.toUpperCase() === SHUFFLE_SHORTCUT
+}
