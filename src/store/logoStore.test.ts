@@ -3,11 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useLogoStore } from './logoStore.ts'
 import type { SlabSpec } from '../engine/carve/spec.ts'
 import { composeIllustratorMark } from '../engine/illustrator/compose.ts'
-import { layersBounds } from '../engine/illustrator/layerPath.ts'
 import type { IllustratorLayer } from '../engine/illustrator/types.ts'
 import { rollSparks } from '../engine/sparks/sparks.ts'
 import { illustratorDocumentToVectorDocument } from '../engine/vector/legacyIllustratorAdapter.ts'
-import { encodeLink } from '../engine/vector/link.ts'
+import { decodeLink, encodeLink } from '../engine/vector/link.ts'
 import { createSavedVariation, type SavedVariation } from '../engine/vector/saved.ts'
 
 function reset(viewport = { width: 600, height: 600 }) {
@@ -149,7 +148,7 @@ describe('edits write the document directly', () => {
     store.commitLayerEdits({ label: 'Resize', edits: [{ layerId: slab.id, carve: slab.carve! }] })
     store.commitLayerEdits({ label: 'Bend', edits: [{ layerId: shape.id, pathData: shape.pathData }] })
     store.setIllustratorLayerOperation(punch.id, 'subtract')
-    store.updateIllustratorLayerTransform(shape.id, { dx: 0 })
+    store.commitLayerEdits({ label: 'Rotate', edits: [{ layerId: shape.id, frameRotation: 0 }] })
     store.moveIllustratorLayer(shape.id, 'up')
     expect(objects()).toBe(before)
     expect(undoDepth()).toBe(depth)
@@ -221,6 +220,86 @@ describe('edits write the document directly', () => {
   })
 })
 
+describe("a free shape's frame", () => {
+  beforeEach(() => reset())
+
+  const frameOf = (id: string) => {
+    const object = objects().find((candidate) => candidate.id === id)
+    return object?.type === 'path' ? object.frame : undefined
+  }
+
+  it('keeps the turn a gesture gives it, through moves and point edits, until it turns back upright', () => {
+    useLogoStore.getState().addPenShape('M0,0L100,0L100,60L0,60Z')
+    const [shape] = layers()
+    expect(frameOf(shape.id)).toBeUndefined()
+    const depth = undoDepth()
+
+    useLogoStore.getState().commitLayerEdits({
+      label: 'Rotate',
+      edits: [{ layerId: shape.id, pathData: 'M10,-20L96,30L66,82L-20,32Z', frameRotation: 390 }],
+    })
+    expect(frameOf(shape.id)).toEqual({ rotation: 30 })
+    expect(layers()[0].frameRotation).toBe(30)
+    expect(layers()[0].transform).toEqual({ dx: 0, dy: 0, scale: 1, rotation: 0 })
+    expect(undoDepth()).toBe(depth + 1)
+
+    // A move or a point edit says nothing about the frame: it stays.
+    useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: shape.id, pathData: 'M20,-20L106,30L76,82L-10,32Z' }] })
+    expect(frameOf(shape.id)).toEqual({ rotation: 30 })
+
+    // The same turn again is no step at all.
+    const before = objects()
+    useLogoStore.getState().commitLayerEdits({ label: 'Rotate', edits: [{ layerId: shape.id, frameRotation: 30 }] })
+    expect(objects()).toBe(before)
+
+    useLogoStore.getState().commitLayerEdits({ label: 'Rotate', edits: [{ layerId: shape.id, frameRotation: -360 }] })
+    expect(frameOf(shape.id)).toBeUndefined()
+    expect(layers()[0].frameRotation).toBeUndefined()
+
+    useLogoStore.getState().undoVectorCommand()
+    expect(frameOf(shape.id)).toEqual({ rotation: 30 })
+  })
+
+  it('goes with a copy, and never stays on a recipe', () => {
+    useLogoStore.getState().addPenShape('M0,0L100,0L100,60Z')
+    useLogoStore.getState().addSlab('square')
+    const [shape, slab] = layers()
+    useLogoStore.getState().commitLayerEdits({
+      label: 'Rotate',
+      edits: [
+        { layerId: shape.id, pathData: 'M0,0L90,10L80,70Z', frameRotation: 15 },
+        { layerId: slab.id, frameRotation: 15 },
+      ],
+    })
+    expect(frameOf(shape.id)).toEqual({ rotation: 15 })
+    expect(frameOf(slab.id)).toBeUndefined()
+
+    useLogoStore.getState().duplicateIllustratorLayer(shape.id)
+    expect(layers()[1].frameRotation).toBe(15)
+    expect(frameOf(layers()[1].id)).toEqual({ rotation: 15 })
+  })
+
+  it('survives a link, and a frame that is not a finite turn is dropped when a document is opened', () => {
+    useLogoStore.getState().addPenShape('M0,0L100,0L100,60Z')
+    const [shape] = layers()
+    useLogoStore.getState().commitLayerEdits({ label: 'Rotate', edits: [{ layerId: shape.id, pathData: 'M0,0L90,10L80,70Z', frameRotation: 45 }] })
+    const document = useLogoStore.getState().vectorDocument
+    const link = encodeLink(document, '#111111')
+    const decoded = decodeLink(link)
+    expect(decoded.kind).toBe('vector')
+    if (decoded.kind !== 'vector') return
+    useLogoStore.getState().setVectorDocument(decoded.document)
+    expect(frameOf(shape.id)).toEqual({ rotation: 45 })
+
+    const broken = {
+      ...document,
+      objects: document.objects.map((object) => ({ ...object, frame: { rotation: Number.NaN } })),
+    }
+    useLogoStore.getState().setVectorDocument(broken)
+    expect(frameOf(shape.id)).toBeUndefined()
+  })
+})
+
 describe('the other layer actions', () => {
   beforeEach(() => reset())
 
@@ -230,7 +309,7 @@ describe('the other layer actions', () => {
     store.addPenShape('M0,0L100,0L100,100Z')
     const [punch, shape] = layers()
 
-    useLogoStore.getState().updateIllustratorLayerTransform(punch.id, { dx: 10, dy: -5 })
+    useLogoStore.getState().updateIllustratorLayer(punch.id, { transform: { dx: 10, dy: -5, scale: 1, rotation: 0 } })
     expect(layers()[0].transform).toEqual({ dx: 0, dy: 0, scale: 1, rotation: 0 })
     expect(layers()[0].carve).toMatchObject({ kind: 'punch', center: { x: 30, y: 25 }, radius: 40 })
 
@@ -581,7 +660,7 @@ describe('dropping a spark', () => {
     store.addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 20, y: 30 }, radius: 40 })
     store.addPenShape('M-150,-150L-60,-150L-60,-60Z')
     store.selectIllustratorLayer(layers()[2].id)
-    store.updateIllustratorLayerTransform(layers()[2].id, { rotation: 20, scale: 1.2 })
+    store.updateIllustratorLayer(layers()[2].id, { transform: { dx: 0, dy: 0, rotation: 20, scale: 1.2 } })
     store.setSelection([layers()[2].id], { layerId: layers()[2].id, segmentIndex: 1 })
     expect(useLogoStore.getState().illustrator?.pointSelection).not.toBeNull()
     const before = layers()
@@ -633,64 +712,6 @@ describe('dropping a spark', () => {
     expect(Math.max(box.width, box.height)).toBeCloseTo(180, 1)
     expect(box.x + box.width).toBeLessThanOrEqual(300)
     expect(box.y + box.height).toBeLessThanOrEqual(300)
-  })
-})
-
-describe('scaling the selection', () => {
-  const spark = rollSparks(1, 3)[0]
-  const centre = (list: IllustratorLayer[]) => {
-    const box = layersBounds(list)!
-    return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
-  }
-
-  beforeEach(() => {
-    reset({ width: 1400, height: 1000 })
-    useLogoStore.getState().addSlab('square')
-    useLogoStore.getState().dropSpark(spark)
-  })
-
-  it('resizes every selected layer about the middle of their box, as one undo step', () => {
-    const before = layers()
-    const pieces = before.slice(0, spark.shapes.length)
-    const was = layersBounds(pieces)!
-    const depth = undoDepth()
-
-    useLogoStore.getState().scaleSelection(0.5)
-
-    const after = layers()
-    const now = layersBounds(after.slice(0, spark.shapes.length))!
-    expect(now.width).toBeCloseTo(was.width / 2, 2)
-    expect(now.height).toBeCloseTo(was.height / 2, 2)
-    expect(centre(after.slice(0, spark.shapes.length)).x).toBeCloseTo(centre(pieces).x, 2)
-    expect(centre(after.slice(0, spark.shapes.length)).y).toBeCloseTo(centre(pieces).y, 2)
-    expect(after.map((layer) => layer.id)).toEqual(before.map((layer) => layer.id))
-    expect(after.at(-1)).toEqual(before.at(-1))
-    expect(useLogoStore.getState().illustrator?.selectedLayerIds).toEqual(pieces.map((layer) => layer.id))
-    expect(undoDepth()).toBe(depth + 1)
-
-    useLogoStore.getState().undoVectorCommand()
-    expect(layers()).toEqual(before)
-    useLogoStore.getState().redoVectorCommand()
-    expect(layers()).toEqual(after)
-  })
-
-  it('leaves recipes alone: a selection with a slab in it does not scale', () => {
-    const before = layers()
-    useLogoStore.getState().setSelection(before.map((layer) => layer.id))
-    const depth = undoDepth()
-
-    useLogoStore.getState().scaleSelection(2)
-
-    expect(layers()).toEqual(before)
-    expect(undoDepth()).toBe(depth)
-  })
-
-  it.each([1, 0, -2, Number.NaN, Number.POSITIVE_INFINITY])('by %f is no change and no undo step', (factor) => {
-    const before = layers()
-    const depth = undoDepth()
-    useLogoStore.getState().scaleSelection(factor)
-    expect(layers()).toEqual(before)
-    expect(undoDepth()).toBe(depth)
   })
 })
 

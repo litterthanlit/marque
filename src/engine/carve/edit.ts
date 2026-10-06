@@ -22,6 +22,19 @@ import {
   type Vec,
 } from '../path/bezier.ts'
 import type { IllustratorTransform } from '../illustrator/types.ts'
+import {
+  applyAffine,
+  boxHandles,
+  boxRotateHandle,
+  DEFAULT_HANDLE_LAYOUT,
+  MIN_BOX_SIZE,
+  rotateBox,
+  type Affine,
+  type CarveHandle,
+  type HandleId,
+  type HandleLayout,
+  type OrientedBox,
+} from '../box/box.ts'
 import { boxGeometryFor, carveOutline, grooveSpine, KAPPA, type SideRef } from './outline.ts'
 import { isGroove } from './spec.ts'
 import type {
@@ -38,44 +51,8 @@ import type {
 
 /* ─── Handles ─── */
 
-export type HandleId =
-  | 'n'
-  | 'ne'
-  | 'e'
-  | 'se'
-  | 's'
-  | 'sw'
-  | 'w'
-  | 'nw'
-  | 'radius'
-  | 'rotate'
-  | 'from'
-  | 'to'
-  | 'width'
-
-export type HandleKind = 'resize' | 'scale' | 'radius' | 'rotate' | 'endpoint' | 'width'
-
-export interface CarveHandle {
-  id: HandleId
-  kind: HandleKind
-  /** Layer-space position. */
-  at: Vec
-  /** Direction the handle pulls along, in degrees (screen), for cursor choice. */
-  axisDeg: number
-}
-
-export interface HandleLayout {
-  /** Gap between the outline and the resize frame, in layer units. */
-  pad: number
-  /** Extra distance of the rotate dot above the frame. */
-  rotateOffset: number
-  /** Below this size, edge-midpoint handles are hidden to avoid crowding. */
-  minEdgeHandleSize: number
-  /** How far inside its corner the rounding dot sits when the corner is sharp. */
-  radiusInset: number
-}
-
-export const DEFAULT_HANDLE_LAYOUT: HandleLayout = { pad: 12, rotateOffset: 22, minEdgeHandleSize: 30, radiusInset: 10 }
+export type { CarveHandle, HandleId, HandleKind, HandleLayout } from '../box/box.ts'
+export { DEFAULT_HANDLE_LAYOUT } from '../box/box.ts'
 
 /**
  * The rounding dot travels half as far as the radius grows, so it stays near
@@ -83,20 +60,9 @@ export const DEFAULT_HANDLE_LAYOUT: HandleLayout = { pad: 12, rotateOffset: 22, 
  */
 const RADIUS_DOT_RATE = 0.5
 
-const MIN_SIZE = 4
+const MIN_SIZE = MIN_BOX_SIZE
 const MIN_GROOVE_WIDTH = 2
 const MIN_PUNCH_RADIUS = 2
-
-const BOX_HANDLES: Array<{ id: HandleId; fx: -1 | 0 | 1; fy: -1 | 0 | 1; axis: number }> = [
-  { id: 'nw', fx: -1, fy: -1, axis: 45 },
-  { id: 'n', fx: 0, fy: -1, axis: 90 },
-  { id: 'ne', fx: 1, fy: -1, axis: -45 },
-  { id: 'e', fx: 1, fy: 0, axis: 0 },
-  { id: 'se', fx: 1, fy: 1, axis: 45 },
-  { id: 's', fx: 0, fy: 1, axis: 90 },
-  { id: 'sw', fx: -1, fy: 1, axis: -45 },
-  { id: 'w', fx: -1, fy: 0, axis: 0 },
-]
 
 function hasBends(spec: CarveBends): boolean {
   return Boolean(
@@ -123,34 +89,16 @@ export function carveHandles(spec: CarveSpec, layout: HandleLayout = DEFAULT_HAN
 
   if (outline.frame.kind !== 'box') return []
   const { extent } = outline.frame
-  const minX = extent.minX - layout.pad
-  const maxX = extent.maxX + layout.pad
-  const minY = extent.minY - layout.pad
-  const maxY = extent.maxY + layout.pad
-  const midX = (minX + maxX) / 2
-  const midY = (minY + maxY) / 2
-  const toWorld = (p: Vec): Vec => add(spec.center, rotate(p, spec.rotation))
-
-  const handles: CarveHandle[] = []
-  const isPunch = spec.kind === 'punch'
-  for (const h of BOX_HANDLES) {
-    const isEdge = h.fx === 0 || h.fy === 0
-    if (isPunch && isEdge) continue
-    if (isEdge) {
-      const across = h.fx === 0 ? maxX - minX : maxY - minY
-      if (across < layout.minEdgeHandleSize) continue
-    }
-    const local = {
-      x: h.fx === -1 ? minX : h.fx === 1 ? maxX : midX,
-      y: h.fy === -1 ? minY : h.fy === 1 ? maxY : midY,
-    }
-    handles.push({
-      id: h.id,
-      kind: isPunch ? 'scale' : 'resize',
-      at: toWorld(local),
-      axisDeg: h.axis + spec.rotation,
-    })
+  // The box around the outline in the recipe's own frame; bends can push it off centre.
+  const box: OrientedBox = {
+    center: add(spec.center, rotate({ x: (extent.minX + extent.maxX) / 2, y: (extent.minY + extent.maxY) / 2 }, spec.rotation)),
+    width: extent.maxX - extent.minX,
+    height: extent.maxY - extent.minY,
+    rotation: spec.rotation,
   }
+  const toWorld = (p: Vec): Vec => add(spec.center, rotate(p, spec.rotation))
+  const isPunch = spec.kind === 'punch'
+  const handles = boxHandles(box, layout, { kind: isPunch ? 'scale' : 'resize', edges: !isPunch })
 
   if (spec.kind === 'slab') {
     const hw = Math.max(spec.width, 0.5) / 2
@@ -166,9 +114,7 @@ export function carveHandles(spec: CarveSpec, layout: HandleLayout = DEFAULT_HAN
   }
 
   const rotates = spec.kind === 'slab' || spec.shape !== 'circle' || hasBends(spec)
-  if (rotates) {
-    handles.push({ id: 'rotate', kind: 'rotate', at: toWorld({ x: midX, y: minY - layout.rotateOffset }), axisDeg: 0 })
-  }
+  if (rotates) handles.push(boxRotateHandle(box, layout))
 
   return handles
 }
@@ -194,9 +140,7 @@ function angleOf(v: Vec): number {
 }
 
 function rotationDrag(startRotation: number, center: Vec, startPointer: Vec, pointer: Vec, mods: DragModifiers): number {
-  let next = startRotation + (angleOf(sub(pointer, center)) - angleOf(sub(startPointer, center)))
-  if (mods.shift) next = Math.round(next / 15) * 15
-  return normalizeDegrees(next)
+  return rotateBox(startRotation, center, startPointer, pointer, mods.shift)
 }
 
 function dragSlab(start: SlabSpec, id: HandleId, startPointer: Vec, pointer: Vec, mods: DragModifiers): SlabSpec {
@@ -539,6 +483,40 @@ export function foldTransform(spec: CarveSpec, t: IllustratorTransform, pivot: V
     },
     s,
   )
+}
+
+/**
+ * A recipe scaled by `factor` about a pivot: its centre or ends move, and
+ * every length scales alike (size, corner radius, width, bend offsets), so
+ * the outline is the old outline scaled. Turning stays with rotateCarveAbout.
+ */
+export function scaleCarveAbout(spec: CarveSpec, pivot: Vec, factor: number): CarveSpec {
+  return foldTransform(spec, { dx: 0, dy: 0, scale: factor, rotation: 0 }, pivot)
+}
+
+/**
+ * A recipe under an affine map. A similarity (an even scale and a turn,
+ * then a move) maps it exactly. Any other map would skew it out of being a
+ * recipe, so it takes the similarity nearest the map: its centre (a
+ * groove's middle) follows the map, its size scales by the square root of
+ * the map's area factor, and it turns by the map's own rotation. A round
+ * punch stays round, centred where the map puts its centre.
+ */
+export function carveUnderAffine(spec: CarveSpec, m: Affine): CarveSpec {
+  const factor = Math.hypot(m.a, m.b)
+  const similar = Math.abs(m.a - m.d) <= 1e-9 * Math.max(1, factor) && Math.abs(m.b + m.c) <= 1e-9 * Math.max(1, factor)
+  // Read back off the matrix, a whole angle comes out a hair off: keep it whole.
+  const whole = (radians: number) => Math.round(((radians * 180) / Math.PI) * 1e9) / 1e9
+  if (similar && factor > 1e-9) {
+    return foldTransform(spec, { dx: m.e, dy: m.f, scale: factor, rotation: whole(Math.atan2(m.b, m.a)) }, { x: 0, y: 0 })
+  }
+  const center = isGroove(spec) ? scale(add(spec.from, spec.to), 0.5) : spec.center
+  const area = Math.sqrt(Math.abs(m.a * m.d - m.b * m.c))
+  if (area <= 1e-9) return translateCarve(spec, sub(applyAffine(m, center), center))
+  // The rotation of the map's polar decomposition: none for a stretch along any axis.
+  const rotation = whole(Math.atan2(m.b - m.c, m.a + m.d))
+  const moved = sub(applyAffine(m, center), center)
+  return foldTransform(spec, { dx: moved.x, dy: moved.y, scale: area, rotation }, center)
 }
 
 export function isIdentityTransform(t: IllustratorTransform): boolean {

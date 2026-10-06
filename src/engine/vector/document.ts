@@ -286,18 +286,26 @@ function isNonNegativeInteger(value: unknown): value is number {
 
 /**
  * Drop recipes that no longer describe their path (invalid data, an older
- * build edited the path, or a transform crept in). The visible geometry is
- * always kept. Run on every document that comes from outside the editor.
+ * build edited the path, or a transform crept in), and frames that are not a
+ * finite rotation or sit on a recipe. The visible geometry is always kept.
+ * Run on every document that comes from outside the editor.
  */
 export function sanitizeVectorDocument(document: VectorDocument): VectorDocument {
   let changed = false
   const objects = document.objects.map((object) => {
-    if (object.type !== 'path' || object.carve === undefined) return object
-    if (isObjectCarveValid(object.carve, object.path, object.transform)) return object
+    if (object.type !== 'path') return object
+    const keepCarve = object.carve === undefined || isObjectCarveValid(object.carve, object.path, object.transform)
+    const keepFrame = object.frame === undefined || (isValidFrame(object.frame) && (!keepCarve || object.carve === undefined))
+    if (keepCarve && keepFrame) return object
     changed = true
     const next = { ...object }
-    delete next.carve
+    if (!keepCarve) delete next.carve
+    if (!keepFrame) delete next.frame
     return next
   })
   return changed ? { ...document, objects } : document
+}
+
+function isValidFrame(frame: unknown): boolean {
+  return isRecord(frame) && isFiniteNumber(frame.rotation)
 }

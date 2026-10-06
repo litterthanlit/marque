@@ -6,6 +6,7 @@ import {
   cubicPoint,
   distance,
   maxChordDeviation,
+  normalizeDegrees,
   rotate,
   sub,
   type Cubic,
@@ -25,9 +26,11 @@ import {
 import {
   bendCarve,
   carveHandles,
-  DEFAULT_HANDLE_LAYOUT,
+  carveUnderAffine,
   dragCarveHandle,
   isSideBent,
+  rotateCarveAbout,
+  scaleCarveAbout,
   straightenCarve,
   translateCarve,
   type CarveGrab,
@@ -35,6 +38,28 @@ import {
   type HandleId,
   type HandleLayout,
 } from '../../engine/carve/edit.ts'
+import {
+  boxHandlePoint,
+  evenFactorTo,
+  handleFraction,
+  IDENTITY_AFFINE,
+  isCornerHandle,
+  resizeBox,
+  rotateBox,
+  rotationAbout,
+  affineOf,
+  applyAffine,
+  evenScaleFloor,
+  scaleBoxBy,
+  scalesEvenly,
+  scalingAbout,
+  settleAngle,
+  transformPath,
+  wholeBoxResize,
+  type Affine,
+  type BoxResize,
+  type OrientedBox,
+} from '../../engine/box/box.ts'
 import {
   carveKeyPoints,
   documentSizes,
@@ -55,12 +80,20 @@ import { bentEdgeCount, isGroove, type CarveSpec } from '../../engine/carve/spec
 import { bakedEditablePath } from '../../engine/illustrator/layerPath.ts'
 import { createComposeSession, type ComposeSession } from '../../engine/illustrator/composeSession.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
-import type { LayerEditCommit } from '../../store/logoStore.ts'
+import type { LayerEdit, LayerEditCommit } from '../../store/logoStore.ts'
 import { getInkItem, hideLayerOutlines, setInkPathData, setSurvivalVisible } from '../IllustratorRenderer.ts'
 import { carriedCuts } from './carry.ts'
 import { CURSORS, resizeCursor } from './cursors.ts'
 import { hud } from './hud.ts'
 import { EMPTY_ZONE, findZone, freeCurve, zoneKey, type HitContext, type Zone } from './hitZones.ts'
+import {
+  boxHandleList,
+  scaledHandleLayout,
+  selectionBox,
+  selectionHandles,
+  type HandleSet,
+  type LiveHandles,
+} from './handleSet.ts'
 import { canvasOwnsArrowKeys, registerEditorKeys, registerPendingEdits, setEditorInteracting } from './keyboard.ts'
 import {
   drawAnchors,
@@ -136,6 +169,84 @@ interface MovePlan {
   roundPunch: { center: Vec; radius: number } | null
 }
 
+/**
+ * How a box gesture moves its members: free shapes take `affine`; recipes
+ * scale evenly by `factor` about `pivot`, then turn by `turn` about the box
+ * centre, which is what `affine` does too.
+ */
+interface BoxMove {
+  affine: Affine
+  pivot: Vec
+  factor: number
+  turn: number
+}
+
+/** A turn of a box about its centre. */
+function turnMove(box: OrientedBox, turn: number): BoxMove {
+  return { affine: Math.abs(turn) > 1e-9 ? rotationAbout(box.center, turn) : IDENTITY_AFFINE, pivot: box.center, factor: 1, turn }
+}
+
+/** Alt+arrows: an even scale about the box centre, then a turn about it. */
+function keyMove(box: OrientedBox, turn: number, factor: number): BoxMove {
+  const scaling = scalingAbout(box.center, factor)
+  const turning = rotationAbout(box.center, turn)
+  const same = Math.abs(turn) <= 1e-9 && Math.abs(factor - 1) <= 1e-9
+  return {
+    affine: same ? IDENTITY_AFFINE : affineOf((p) => applyAffine(turning, applyAffine(scaling, p))),
+    pivot: box.center,
+    factor,
+    turn,
+  }
+}
+
+/** A resize: an even one scales recipes too, by the factor of its width. */
+function resizeMove(resized: BoxResize): BoxMove {
+  const same = Math.abs(resized.sx - 1) <= 1e-9 && Math.abs(resized.sy - 1) <= 1e-9
+  return { affine: same ? IDENTITY_AFFINE : resized.affine, pivot: resized.pivot, factor: resized.sx, turn: 0 }
+}
+
+/** Where a layer that an edit carries starts: its recipe, or its free path and how far its frame is turned. */
+interface MovedStart {
+  carve?: CarveSpec
+  path?: EditablePath
+  frame: number
+}
+
+type Moved = { carve?: CarveSpec; path?: EditablePath }
+
+/** A layer under an affine map: a free path takes all of it, a recipe as much as keeps it a recipe. */
+function underAffine(start: MovedStart, m: Affine): Moved {
+  return start.carve ? { carve: carveUnderAffine(start.carve, m) } : { path: transformPath(start.path!, m) }
+}
+
+function movedPathData(next: Moved): string {
+  return next.carve ? carveOutline(next.carve).pathData : editablePathToPathData(next.path!)
+}
+
+/** The edit that stores a carried layer. A free path turned by `turn` turns its frame with it. */
+function movedEdit(layerId: string, start: MovedStart, next: Moved, turn: number): LayerEdit {
+  if (next.carve) return { layerId, carve: next.carve }
+  const pathData = editablePathToPathData(next.path!)
+  return Math.abs(turn) > 1e-9 ? { layerId, pathData, frameRotation: normalizeDegrees(start.frame + turn) } : { layerId, pathData }
+}
+
+/** Hit areas that follow a preview: carry them by a layer-space map, or put them back. */
+interface FollowingItems {
+  map(m: Affine): void
+  restore(): void
+}
+
+/** The members of a box, moved together by one map: by a drag, or by a burst of keys. */
+interface BoxPlan {
+  editedIds: Set<string>
+  ids: string[]
+  preview(move: BoxMove, box: OrientedBox, hotId: HandleId | null): void
+  /** Commit the last preview as one undo step, or restore the ink if it changed nothing. */
+  commit(label: string): void
+  cancel(): void
+  drawOverlay(layer: paper.Layer): void
+}
+
 /** The same recipe with every bend removed: drawn dashed behind a bent shape. */
 function unbent(spec: CarveSpec): CarveSpec {
   if (isGroove(spec)) {
@@ -203,21 +314,10 @@ function bendLabel(spec: CarveSpec, side: SideRef): string {
   return side.type === 'corner' ? 'Shape corner' : 'Bend edge'
 }
 
-const BOX_HANDLE_FRACTIONS: Partial<Record<HandleId, Vec>> = {
-  nw: { x: -1, y: -1 },
-  n: { x: 0, y: -1 },
-  ne: { x: 1, y: -1 },
-  e: { x: 1, y: 0 },
-  se: { x: 1, y: 1 },
-  s: { x: 0, y: 1 },
-  sw: { x: -1, y: 1 },
-  w: { x: -1, y: 0 },
-}
-
 /** The point of a recipe that a handle drags: a box corner or side middle, or a groove end. */
 function handleGeometry(spec: CarveSpec, id: HandleId): Vec | null {
   if (isGroove(spec)) return id === 'from' ? spec.from : id === 'to' ? spec.to : null
-  const f = BOX_HANDLE_FRACTIONS[id]
+  const f = handleFraction(id)
   if (!f) return null
   const hw = spec.kind === 'punch' ? spec.radius : spec.width / 2
   const hh = spec.kind === 'punch' ? spec.radius : spec.height / 2
@@ -225,10 +325,10 @@ function handleGeometry(spec: CarveSpec, id: HandleId): Vec | null {
 }
 
 /** Which axes a handle's geometry can move along, in layer space; null when it moves at an angle. */
-function handleAxes(spec: CarveSpec, id: HandleId): { x: boolean; y: boolean } | null {
-  const f = BOX_HANDLE_FRACTIONS[id]
-  if (isGroove(spec) || !f || (f.x !== 0 && f.y !== 0)) return { x: true, y: true }
-  const dir = rotate(f, spec.rotation)
+function handleAxes(rotation: number, id: HandleId): { x: boolean; y: boolean } | null {
+  const f = handleFraction(id)
+  if (!f || (f.x !== 0 && f.y !== 0)) return { x: true, y: true }
+  const dir = rotate(f, rotation)
   if (Math.abs(dir.x) > 0.9999) return { x: true, y: false }
   if (Math.abs(dir.y) > 0.9999) return { x: false, y: true }
   return null
@@ -237,6 +337,16 @@ function handleAxes(spec: CarveSpec, id: HandleId): { x: boolean; y: boolean } |
 /** A free shape's own anchors as snap targets, except the one being dragged. */
 function otherAnchors(path: EditablePath, except: number): SnapTarget[] {
   return path.segs.filter((_, i) => i !== except).map((seg) => ({ p: seg.p, kind: 'point' as const }))
+}
+
+/** A burst of Alt+arrows: the turn and scale so far, about the box at its start, and the layers it started from. */
+interface KeyTransform {
+  plan: BoxPlan
+  box: OrientedBox
+  turn: number
+  percent: number
+  timer: number
+  layers: IllustratorLayer[]
 }
 
 const DOUBLE_CLICK_MS = 300
@@ -259,16 +369,21 @@ export class DirectEditController {
   private session: Session | null = null
   private lastDown: { time: number; point: Vec; key: string } | null = null
   private readonly freePaths = new WeakMap<IllustratorLayer, EditablePath | null>()
-  private nudge: { plan: MovePlan; d: Vec; timer: number } | null = null
+  /** A burst of arrow keys: the move so far, and the layers it started from. */
+  private nudge: { plan: MovePlan; d: Vec; timer: number; layers: IllustratorLayer[] } | null = null
+  /** A burst of Alt+arrows: the turn and scale so far, about the box at its start. */
+  private keyTransform: KeyTransform | null = null
   private pendingPoint: PendingPoint | null = null
+  /** A handle's number is showing by the resting pointer. */
+  private readoutShown = false
   /** Pink guides of the snap in effect, drawn on top of everything. */
   private snapGuides: SnapGuide[] = []
   /** While a tool places something: its snap index (for one document), where it started, the modifiers held. */
   private toolIndex: { doc: IllustratorDocument; index: SnapIndex } | null = null
   private toolStart: SnapResult | null = null
   private toolMods: Modifiers = { shift: false, alt: false, noSnap: false }
-  /** Off while the pen draws: the selection's handles would only get in the way. */
-  private handlesLive = true
+  /** Which handles take presses: fewer while a tool is active, so its presses reach it. */
+  private live: LiveHandles = 'all'
   private readonly unregisterKeys: () => void
   private readonly unregisterPending: () => void
   private destroyed = false
@@ -279,8 +394,14 @@ export class DirectEditController {
     this.host = host
     this.unregisterKeys = registerEditorKeys((event) => this.onKey(event))
     this.unregisterPending = registerPendingEdits(() => {
-      this.flushNudge()
+      this.flushNudge(true)
+      this.flushKeyTransform(true)
       this.flushPendingPoint()
+      // An undo or redo follows: whatever was read out last no longer holds.
+      hud.silence()
+      // Undo may follow at once and bring back the very layers drawn before,
+      // which renders nothing anew: draw the selection again once it has run.
+      queueMicrotask(() => this.drawOverlay())
     })
   }
 
@@ -291,7 +412,27 @@ export class DirectEditController {
       const gone = [...this.session.editedIds].some((id) => !this.items.has(id))
       if (gone) this.cancel()
     }
+    this.resumeBursts()
     this.drawOverlay()
+  }
+
+  /**
+   * A render in the middle of a burst of keys draws the document, which
+   * leaves the burst out: show its preview again. If the document changed
+   * under the burst (an edit from elsewhere), commit the burst now instead.
+   */
+  private resumeBursts() {
+    const layers = this.host.getDoc().layers
+    const nudge = this.nudge
+    if (nudge) {
+      if (nudge.layers === layers) nudge.plan.preview(nudge.d)
+      else this.flushNudge(true)
+    }
+    const t = this.keyTransform
+    if (t) {
+      if (t.layers === layers) this.previewKeyTransform(t)
+      else this.flushKeyTransform(true)
+    }
   }
 
   get isInteracting(): boolean {
@@ -303,16 +444,17 @@ export class DirectEditController {
     this.drawOverlay()
   }
 
-  /** Show (and let presses reach) the selection's handles and points, or not. */
-  setHandlesLive(live: boolean): void {
-    if (this.handlesLive === live) return
-    this.handlesLive = live
+  /** Show (and let presses reach) the selection's handles and points: all, only a recipe's own, or none. */
+  setHandlesLive(live: LiveHandles): void {
+    if (this.live === live) return
+    this.live = live
     this.hover = EMPTY_ZONE
     this.drawOverlay()
   }
 
   destroy(): void {
     this.flushNudge()
+    this.flushKeyTransform()
     this.dropPendingPoint()
     this.cancel()
     this.unregisterKeys()
@@ -326,7 +468,10 @@ export class DirectEditController {
   /* ─── Pointer ─── */
 
   pointerDown(p: Vec, mods: Modifiers, touch: boolean): void {
+    // A burst of keys lands first. Its ink and hit areas already show it, so
+    // the press meets every shape where it is drawn.
     this.flushNudge()
+    this.flushKeyTransform()
     let ctx = this.context(touch)
     let zone = findZone(ctx, p)
     const key = zoneKey(zone)
@@ -352,7 +497,7 @@ export class DirectEditController {
   pointerMove(p: Vec, mods: Modifiers, touch: boolean): void {
     if (this.session) {
       this.session.update(p, mods)
-      this.placeHud(p)
+      this.placeHud(p, touch)
       return
     }
     if (this.press) {
@@ -367,7 +512,7 @@ export class DirectEditController {
         setEditorInteracting(true)
         setSurvivalVisible(this.scope, false)
         session.update(p, mods)
-        this.placeHud(p)
+        this.placeHud(p, touch)
       }
       return
     }
@@ -380,6 +525,8 @@ export class DirectEditController {
       this.session = null
       this.press = null
       session.commit()
+      // What a keyboard edit read out before no longer holds.
+      hud.silence()
       this.endGesture()
       return
     }
@@ -440,20 +587,12 @@ export class DirectEditController {
   }
 
   private handleLayout(): HandleLayout {
-    const u = this.unitsPerPx()
-    return {
-      pad: DEFAULT_HANDLE_LAYOUT.pad * u,
-      rotateOffset: DEFAULT_HANDLE_LAYOUT.rotateOffset * u,
-      minEdgeHandleSize: DEFAULT_HANDLE_LAYOUT.minEdgeHandleSize * u,
-      radiusInset: DEFAULT_HANDLE_LAYOUT.radiusInset * u,
-    }
+    return scaledHandleLayout(this.unitsPerPx())
   }
 
-  /** The single selected recipe layer, if any: it gets handles. */
-  private selectedRecipe(doc: IllustratorDocument, selectedIds: string[]): IllustratorLayer | null {
-    if (selectedIds.length !== 1) return null
-    const layer = doc.layers.find((candidate) => candidate.id === selectedIds[0])
-    return layer && layer.carve && layer.visible && !layer.locked ? layer : null
+  /** The selection's handles: a single recipe's own, or a box around a free shape or several layers. */
+  private handleSet(doc: IllustratorDocument): HandleSet | null {
+    return selectionHandles(doc, this.handleLayout(), (layer) => this.freePathOf(layer), this.live)
   }
 
   private context(touch: boolean): HitContext {
@@ -461,7 +600,7 @@ export class DirectEditController {
     const ids = new Set(doc.layers.map((layer) => layer.id))
     const selectedIds = doc.selectedLayerIds.filter((id) => ids.has(id))
     const freePath = this.selectedFreePath(doc, selectedIds)
-    const recipe = this.selectedRecipe(doc, selectedIds)
+    const handles = this.handleSet(doc)
     const anchorIndex =
       freePath && doc.pointSelection && doc.pointSelection.layerId === freePath.layerId
         ? doc.pointSelection.segmentIndex
@@ -475,7 +614,7 @@ export class DirectEditController {
       selectedIds,
       freePath,
       anchorIndex,
-      handles: recipe ? { layerId: recipe.id, list: carveHandles(recipe.carve!, this.handleLayout()) } : null,
+      handles,
       unitsPerPx: this.unitsPerPx(),
       touch,
       edges: true,
@@ -490,6 +629,33 @@ export class DirectEditController {
       this.drawOverlay()
     }
     this.setCursor(this.cursorFor(zone))
+    this.showRestingReadout(zone, p, touch)
+  }
+
+  /**
+   * Over a handle, the number it changes shows by the pointer before any
+   * drag: the size of the box, or how far it is turned.
+   */
+  private showRestingReadout(zone: Zone, p: Vec, touch: boolean) {
+    const readout = zone.kind === 'handle' ? this.restingReadout(zone.set, zone.handle) : null
+    if (readout) {
+      this.placeHud(p, touch)
+      hud.set({ label: null, chip: readout })
+      this.readoutShown = true
+    } else if (this.readoutShown) {
+      this.readoutShown = false
+      hud.clear()
+    }
+  }
+
+  private restingReadout(set: HandleSet, handle: CarveHandle): string | null {
+    if (set.kind === 'recipe') {
+      const spec = this.layer(set.ids[0])?.carve
+      return spec ? handleReadout(spec, handle) : null
+    }
+    if (!set.box) return null
+    if (handle.kind === 'rotate') return `${r0(set.box.rotation)}°`
+    return `${r0(set.box.width)} × ${r0(set.box.height)}`
   }
 
   private cursorFor(zone: Zone): string {
@@ -499,6 +665,7 @@ export class DirectEditController {
         if (zone.handle.kind === 'radius' || zone.handle.kind === 'endpoint') return CURSORS.point
         return resizeCursor(zone.handle.axisDeg)
       case 'body':
+      case 'frame':
         return CURSORS.move
       case 'anchor':
       case 'bezier':
@@ -520,12 +687,13 @@ export class DirectEditController {
     if (this.canvas.style.cursor !== cursor) this.canvas.style.cursor = cursor
   }
 
-  private placeHud(p: Vec) {
+  /** Put the HUD by a point. Under a finger it goes above the point, where the hand does not cover it. */
+  private placeHud(p: Vec, touch = false) {
     const view = this.scope.view.projectToView(new this.scope.Point(p.x, p.y))
     const rect = this.canvas.getBoundingClientRect()
     const sx = rect.width / this.scope.view.viewSize.width
     const sy = rect.height / this.scope.view.viewSize.height
-    hud.set({ x: view.x * sx, y: view.y * sy })
+    hud.set({ x: view.x * sx, y: view.y * sy, above: touch })
   }
 
   /* ─── Snapping ─── */
@@ -573,9 +741,9 @@ export class DirectEditController {
   /* ─── Tools: snapping what they place ─── */
 
   /** The pointer moved while a tool is active: remember the modifiers and keep the label by it. */
-  toolPointer(p: Vec, mods: Modifiers): void {
+  toolPointer(p: Vec, mods: Modifiers, touch = false): void {
     this.toolMods = mods
-    this.placeHud(p)
+    this.placeHud(p, touch)
   }
 
   /**
@@ -647,6 +815,10 @@ export class DirectEditController {
   pointerLeave(): void {
     if (this.press || this.session) return
     this.hover = EMPTY_ZONE
+    if (this.readoutShown) {
+      this.readoutShown = false
+      hud.clear()
+    }
     this.endToolSnap()
     this.drawOverlay()
   }
@@ -657,6 +829,10 @@ export class DirectEditController {
     const doc = this.host.getDoc()
     const zone = press.zone
     switch (zone.kind) {
+      case 'handle':
+        // Just outside a corner, a drag turns the box; a click there is a click on the empty canvas.
+        if (zone.ring && !press.mods.shift) this.host.setSelection([])
+        return
       case 'body':
         if (press.mods.shift) this.toggleSelected(doc, zone.layerId)
         else this.host.setSelection([zone.layerId], null)
@@ -676,6 +852,9 @@ export class DirectEditController {
           return
         }
         this.host.setSelection([zone.layerId], null)
+        return
+      case 'frame':
+        // A click inside the box, between its shapes, keeps the selection.
         return
       case 'empty':
         if (!press.mods.shift) this.host.setSelection([])
@@ -781,9 +960,12 @@ export class DirectEditController {
     const zone = press.zone
     switch (zone.kind) {
       case 'handle':
-        return this.handleSession(press, zone.layerId, zone.handle)
+        return zone.set.kind === 'recipe' ? this.handleSession(press, zone.set.ids[0], zone.handle) : this.boxSession(press, zone.set, zone.handle)
       case 'body':
         return this.moveSession(press, zone.layerId, mods)
+      case 'frame':
+        // Every member is selected, so the whole selection moves.
+        return this.moveSession(press, zone.set.ids[0], mods)
       case 'edge':
         return zone.carve ? this.carveBendSession(press, zone.layerId, zone.carve) : this.freeBendSession(press, zone)
       case 'anchor':
@@ -822,10 +1004,10 @@ export class DirectEditController {
     }
     if (!starts.size) return null
     const compose = createComposeSession(doc, starts.keys())
-    const itemStarts = new Map<string, paper.Point>()
-    for (const id of starts.keys()) {
-      const item = this.items.get(id)
-      if (item) itemStarts.set(id, item.position.clone())
+    const items = this.followingItems(starts.keys())
+    const restore = () => {
+      items.restore()
+      setInkPathData(this.scope, this.host.getInkPathData())
     }
     const pathFor = (id: string, d: Vec): string => {
       const start = starts.get(id)!
@@ -849,15 +1031,12 @@ export class DirectEditController {
         const replacements = new Map<string, string | null>()
         for (const id of starts.keys()) replacements.set(id, pathFor(id, d))
         this.showInk(compose, replacements)
-        for (const [id, position] of itemStarts) {
-          const item = this.items.get(id)
-          if (item) item.position = position.add(new this.scope.Point(d.x, d.y))
-        }
+        items.map({ ...IDENTITY_AFFINE, e: d.x, f: d.y })
         this.drawOverlay()
       },
       commit: (d) => {
         if (Math.hypot(d.x, d.y) < 0.5) {
-          this.restore(itemStarts)
+          restore()
           return
         }
         this.host.commitLayerEdits({
@@ -871,7 +1050,7 @@ export class DirectEditController {
           anchor: null,
         })
       },
-      cancel: () => this.restore(itemStarts),
+      cancel: restore,
       drawOverlay: (layer) => {
         for (const id of starts.keys()) {
           const item = this.items.get(id)
@@ -892,12 +1071,54 @@ export class DirectEditController {
     setInkPathData(this.scope, ink)
   }
 
-  private restore(itemStarts: Map<string, paper.Point>) {
-    for (const [id, position] of itemStarts) {
+  /**
+   * Hit areas that follow a preview, so a press or a hover in the middle of
+   * a burst of keys meets each shape where it is drawn. Areas are known by
+   * identity: a render mid-burst brings fresh ones, still where the
+   * document has them, and those are carried from there.
+   */
+  private followingItems(ids: Iterable<string>): FollowingItems {
+    const list = [...ids]
+    const applied = new Map<string, { item: paper.PathItem; m: paper.Matrix }>()
+    const carry = (id: string, next: paper.Matrix) => {
       const item = this.items.get(id)
-      if (item) item.position = position
+      if (!item) return
+      const was = applied.get(id)
+      const undo = was?.item === item ? was.m.inverted() : null
+      item.transform(undo ? next.appended(undo) : next)
+      applied.set(id, { item, m: next })
     }
-    setInkPathData(this.scope, this.host.getInkPathData())
+    return {
+      map: (m) => {
+        // The same map in project space, where the hit areas are.
+        const c = this.center()
+        const next = new this.scope.Matrix(m.a, m.b, m.c, m.d, m.e + c.x - (m.a * c.x + m.c * c.y), m.f + c.y - (m.b * c.x + m.d * c.y))
+        for (const id of list) carry(id, next)
+      },
+      restore: () => {
+        for (const [id, was] of applied) {
+          if (this.items.get(id) === was.item) carry(id, new this.scope.Matrix())
+        }
+        applied.clear()
+      },
+    }
+  }
+
+  /** Where the cuts that some shapes carry start, leaving out layers the edit moves anyway. */
+  private carriedStarts(doc: IllustratorDocument, shapeIds: Iterable<string>, moving: Set<string>): Map<string, MovedStart> {
+    const addIds = [...shapeIds].filter((id) => this.layer(id)?.operation === 'add')
+    const starts = new Map<string, MovedStart>()
+    if (!addIds.length) return starts
+    for (const id of carriedCuts(doc, addIds, this.items)) {
+      const layer = this.layer(id)
+      if (!layer || moving.has(id)) continue
+      if (layer.carve) starts.set(id, { carve: layer.carve, frame: 0 })
+      else {
+        const path = this.freePathOf(layer)
+        if (path) starts.set(id, { path, frame: layer.frameRotation ?? 0 })
+      }
+    }
+    return starts
   }
 
   private moveSession(press: Press, pressedId: string, mods: Modifiers): Session | null {
@@ -936,6 +1157,10 @@ export class DirectEditController {
     }
   }
 
+  /**
+   * Drag one of a single recipe's own handles. The recipe alone changes:
+   * cuts that belong to it stay where they are, unlike under a box.
+   */
   private handleSession(press: Press, layerId: string, handle: CarveHandle): Session | null {
     const doc = this.host.getDoc()
     const layer = this.layer(layerId)
@@ -974,6 +1199,208 @@ export class DirectEditController {
   }
 
   /**
+   * Move the members of a box with one map. Free shapes take the whole
+   * affine; recipes only a similarity (an even scale, or a turn), so they
+   * stay recipes. Every free shape a turn moves turns its frame with it: a
+   * single free shape keeps its box turned, while the box around several
+   * layers is upright again after the commit. Cuts that belong to the
+   * members go with them, as they do when the members are dragged, and
+   * always: Alt already means "about the centre" here. A carried free cut
+   * takes the whole affine; a carried recipe the similarity nearest it.
+   */
+  private boxPlan(ids: string[], box: OrientedBox, uniform: boolean): BoxPlan | null {
+    const doc = this.host.getDoc()
+    const members = new Map<string, MovedStart>()
+    for (const id of ids) {
+      const layer = this.layer(id)
+      if (!layer || layer.locked) continue
+      if (layer.carve) {
+        members.set(id, { carve: layer.carve, frame: 0 })
+        continue
+      }
+      const path = this.freePathOf(layer)
+      if (path) members.set(id, { path, frame: layer.frameRotation ?? 0 })
+    }
+    if (!members.size) return null
+    const carried = this.carriedStarts(doc, members.keys(), new Set(members.keys()))
+    const editedIds = new Set([...members.keys(), ...carried.keys()])
+    const compose = createComposeSession(doc, editedIds)
+    const items = this.followingItems(editedIds)
+    const center = this.center()
+    let move: BoxMove = { affine: IDENTITY_AFFINE, pivot: box.center, factor: 1, turn: 0 }
+    let current = box
+    let hot: HandleId | null = null
+
+    const edited = (start: MovedStart): Moved => {
+      if (start.carve) {
+        const scaled = move.factor === 1 ? start.carve : scaleCarveAbout(start.carve, move.pivot, move.factor)
+        return { carve: move.turn ? rotateCarveAbout(scaled, box.center, move.turn) : scaled }
+      }
+      return { path: transformPath(start.path!, move.affine) }
+    }
+    const everyEdit = (): Array<{ id: string; from: MovedStart; next: Moved; carried: boolean }> => [
+      ...[...members].map(([id, from]) => ({ id, from, next: edited(from), carried: false })),
+      ...[...carried].map(([id, from]) => ({ id, from, next: underAffine(from, move.affine), carried: true })),
+    ]
+    const restore = () => {
+      items.restore()
+      setInkPathData(this.scope, this.host.getInkPathData())
+    }
+
+    return {
+      editedIds,
+      ids: [...members.keys()],
+      preview: (next, nextBox, hotId) => {
+        move = next
+        current = nextBox
+        hot = hotId
+        const replacements = new Map<string, string | null>()
+        for (const { id, next: moved } of everyEdit()) replacements.set(id, movedPathData(moved))
+        this.showInk(compose, replacements)
+        items.map(move.affine)
+        this.drawOverlay()
+      },
+      commit: (label) => {
+        const changed = Math.abs(move.turn) > 1e-9 || move.affine !== IDENTITY_AFFINE
+        if (!changed) {
+          restore()
+          return
+        }
+        this.host.commitLayerEdits({ label, edits: everyEdit().map(({ id, from, next }) => movedEdit(id, from, next, move.turn)) })
+      },
+      cancel: restore,
+      drawOverlay: (overlay) => {
+        const all = everyEdit()
+        this.scope.activate()
+        overlay.activate()
+        for (const { next } of all.filter((edit) => edit.carried)) {
+          outlinePathData(this.scope, overlay, movedPathData(next), center, { dashed: true, width: 1.5 })
+        }
+        // A recipe alone keeps its own handles, turning and scaling with it.
+        const lone = members.size === 1 ? all[0].next.carve : undefined
+        if (lone) {
+          this.drawRecipe(overlay, lone, null)
+          return
+        }
+        for (const { next } of all.filter((edit) => !edit.carried)) outlinePathData(this.scope, overlay, movedPathData(next), center)
+        drawCarveHandles(this.scope, overlay, boxHandleList(current, this.handleLayout(), uniform), center, hot)
+      },
+    }
+  }
+
+  /** Drag a box handle: resize squares map the box onto the dragged one, the knob turns it. One commit per drag. */
+  private boxSession(press: Press, set: HandleSet, handle: CarveHandle): Session | null {
+    const doc = this.host.getDoc()
+    const box = set.box
+    if (!box) return null
+    const plan = this.boxPlan(set.ids, box, set.uniform)
+    if (!plan) return null
+    const center = this.center()
+    const startLocal = sub(press.point, center)
+    const rotating = handle.kind === 'rotate'
+    // On touch there is no Shift: corners keep the proportions, and sides stretch one way.
+    const evenly = set.uniform || press.touch
+    let index: SnapIndex | null = null
+    // With snapping on, a gesture lands on whole degrees and whole units, so
+    // the number shown is the number stored. A snap lands exactly.
+
+    return {
+      editedIds: plan.editedIds,
+      update: (p, mods) => {
+        const pointer = sub(p, center)
+        let snap: SnapResult = NO_SNAP
+        if (rotating) {
+          let rotation = rotateBox(box.rotation, box.center, startLocal, pointer, mods.shift)
+          if (this.snapsOn(mods) && !mods.shift) {
+            // Settled on a 15° step, the chip already reads the angle: no label repeats it.
+            rotation = settleAngle(rotation, distance(pointer, box.center), this.snapTolerance(press.touch)) ?? rotation
+            rotation = normalizeDegrees(Math.round(rotation))
+          }
+          const turn = normalizeDegrees(rotation - box.rotation)
+          hud.set({ chip: `${r0(rotation)}°` })
+          this.showSnap(null)
+          plan.preview(turnMove(box, turn), { ...box, rotation }, handle.id)
+          return
+        }
+        let resized = resizeBox(box, handle.id, startLocal, pointer, mods, evenly)
+        if (this.snapsOn(mods)) {
+          index ??= this.makeSnapIndex(doc, plan.editedIds)
+          const snapped = this.snapBoxResize(index, box, resized, handle.id, startLocal, pointer, mods, evenly, press.touch)
+          resized = snapped.resized
+          snap = snapped.snap
+        }
+        if (this.snapsOn(mods) && !snap.label) {
+          const even = scalesEvenly(handle.id, mods, evenly) || (!isCornerHandle(handle.id) && mods.shift)
+          resized = wholeBoxResize(box, resized, even)
+        }
+        hud.set({ chip: `${r0(resized.box.width)} × ${r0(resized.box.height)}` })
+        this.showSnap(snap)
+        plan.preview(resizeMove(resized), resized.box, handle.id)
+      },
+      commit: () => {
+        const several = plan.ids.length > 1
+        // A turned box around several layers comes back upright on release:
+        // it is measured afresh around them, and they keep no shared frame.
+        plan.commit(rotating ? (several ? 'Rotate shapes' : 'Rotate') : several ? 'Resize shapes' : 'Resize')
+      },
+      cancel: () => plan.cancel(),
+      drawOverlay: (overlay) => plan.drawOverlay(overlay),
+    }
+  }
+
+  /**
+   * Snap the corner or side a box handle drags. A free corner or a side
+   * lands on points, alignments and edges: the pointer is nudged by the
+   * snap, which moves it exactly as far. A corner that scales evenly can
+   * only travel along its diagonal, so it lands on an alignment instead:
+   * the factor is solved so its coordinate on that axis matches, and the
+   * snap is kept only if the corner moves no further than the tolerance.
+   */
+  private snapBoxResize(
+    index: SnapIndex,
+    box: OrientedBox,
+    raw: BoxResize,
+    id: HandleId,
+    startPointer: Vec,
+    pointer: Vec,
+    mods: Modifiers,
+    uniform: boolean,
+    touch: boolean,
+  ): { resized: BoxResize; snap: SnapResult } {
+    const tolerance = this.snapTolerance(touch)
+    const none = { resized: raw, snap: NO_SNAP }
+    const point = boxHandlePoint(raw.box, id)
+    if (!point) return none
+
+    if (scalesEvenly(id, mods, uniform)) {
+      let best: { resized: BoxResize; axis: 'x' | 'y'; moved: number } | null = null
+      for (const axis of ['x', 'y'] as const) {
+        const found = snapMoving(index, [point], { tolerance, axes: { x: axis === 'x', y: axis === 'y' } })
+        if (!found.label) continue
+        const target = point[axis] + found.d[axis]
+        const factor = evenFactorTo(box, id, mods.alt, axis, target)
+        if (factor === null) continue
+        const resized = scaleBoxBy(box, id, factor, mods.alt)
+        const corner = boxHandlePoint(resized.box, id)!
+        const moved = distance(corner, point)
+        // Held back by the smallest size, or pulled too far along the diagonal: no snap.
+        if (Math.abs(corner[axis] - target) > 1e-6 || moved > tolerance) continue
+        if (!best || moved < best.moved) best = { resized, axis, moved }
+      }
+      if (!best) return none
+      const corner = boxHandlePoint(best.resized.box, id)!
+      const snap = snapMoving(index, [corner], { tolerance, axes: { x: best.axis === 'x', y: best.axis === 'y' } })
+      return { resized: best.resized, snap: snap.label ? { ...snap, d: { x: 0, y: 0 } } : NO_SNAP }
+    }
+
+    const axes = isCornerHandle(id) ? { x: true, y: true } : handleAxes(box.rotation, id)
+    if (!axes) return none
+    const found = snapMoving(index, [point], { tolerance, axes, edges: true })
+    if (!found.label) return none
+    return { resized: resizeBox(box, id, startPointer, add(pointer, found.d), mods, uniform), snap: found }
+  }
+
+  /**
    * Snap what a handle drags. Corners, sides and groove ends land on points,
    * alignments and edges (the pointer is nudged by the snap, so the recipe's
    * own rules still apply); sizes match sizes already in use; rotation
@@ -997,7 +1424,7 @@ export class DirectEditController {
 
     if (handle.kind === 'resize' || handle.kind === 'endpoint') {
       const point = handleGeometry(raw, handle.id)
-      const axes = handleAxes(raw, handle.id)
+      const axes = isGroove(raw) ? { x: true, y: true } : handleAxes(raw.rotation, handle.id)
       if (!point || !axes) return none
       const other = isGroove(raw) ? (handle.id === 'from' ? raw.to : raw.from) : null
       const snap = snapMoving(index, [point], {
@@ -1036,13 +1463,10 @@ export class DirectEditController {
     }
 
     if (handle.kind === 'rotate' && !isGroove(raw) && !isGroove(start) && !mods.shift) {
-      // The pointer's arc distance to the nearest 15° step, measured at the handle.
-      const reach = Math.max(distance(handle.at, start.center), 1)
-      const step = Math.round(raw.rotation / 15) * 15
-      const off = (Math.abs(raw.rotation - step) * Math.PI * reach) / 180
-      if (off > tolerance) return none
-      const rotation = step === -180 ? 180 : step
-      return { spec: { ...raw, rotation }, snap: { ...NO_SNAP, label: `${rotation}°` } }
+      const rotation = settleAngle(raw.rotation, distance(pointer, start.center), tolerance)
+      if (rotation === null) return none
+      // The chip already reads the angle: no label repeats it.
+      return { spec: { ...raw, rotation }, snap: NO_SNAP }
     }
     return none
   }
@@ -1059,22 +1483,32 @@ export class DirectEditController {
     drawCarveHandles(this.scope, overlay, carveHandles(spec, this.handleLayout()), center, hotHandle)
   }
 
+  /**
+   * The handle a tool's press or hover would reach, if any. Box handles stay
+   * out of a tool's way, and so does the turning ring outside a recipe's
+   * corners: nothing is drawn there, so a press there starts the tool.
+   */
+  private toolHandle(p: Vec, touch: boolean): Extract<Zone, { kind: 'handle' }> | null {
+    if (this.live === 'none') return null
+    const zone = findZone({ ...this.context(touch), edges: false }, p)
+    return zone.kind === 'handle' && !zone.ring ? zone : null
+  }
+
   /** While a tool is active: is the pointer over a handle of the selected cut? */
   handleAt(p: Vec, touch: boolean): boolean {
-    if (!this.handlesLive) return false
-    return findZone({ ...this.context(touch), edges: false }, p).kind === 'handle'
+    return this.toolHandle(p, touch) !== null
   }
 
   /** Hover while a tool is active: only handles react. Returns the cursor to show, if any. */
   toolHover(p: Vec, touch: boolean): string | null {
-    if (!this.handlesLive) return null
-    const zone = findZone({ ...this.context(touch), edges: false }, p)
-    const hot = zone.kind === 'handle' ? zone : EMPTY_ZONE
+    if (this.live === 'none') return null
+    const zone = this.toolHandle(p, touch)
+    const hot = zone ?? EMPTY_ZONE
     if (zoneKey(hot) !== zoneKey(this.hover)) {
       this.hover = hot
       this.drawOverlay()
     }
-    return zone.kind === 'handle' ? this.cursorFor(zone) : null
+    return zone ? this.cursorFor(zone) : null
   }
 
   /** Drag a recipe's edge: its side bends, its corner fills out, or its groove's spine curves. */
@@ -1169,7 +1603,7 @@ export class DirectEditController {
       drawOverlay: (overlay) => {
         outlinePathData(this.scope, overlay, editablePathToPathData(current), center)
         drawCurves(this.scope, overlay, [freeCurve(current, curveIndex)], center)
-        drawAnchors(this.scope, overlay, current, center, null, null)
+        drawAnchors(this.scope, overlay, current, center, null, null, layer.frameRotation ?? 0)
       },
     }
   }
@@ -1241,7 +1675,7 @@ export class DirectEditController {
       cancel: () => setInkPathData(this.scope, this.host.getInkPathData()),
       drawOverlay: (overlay) => {
         outlinePathData(this.scope, overlay, editablePathToPathData(current), center)
-        drawAnchors(this.scope, overlay, current, center, anchorIndex, null)
+        drawAnchors(this.scope, overlay, current, center, anchorIndex, null, layer.frameRotation ?? 0)
       },
     }
   }
@@ -1254,7 +1688,7 @@ export class DirectEditController {
     this.scope.activate()
     setOverlayScale(this.unitsPerPx())
     const layer = resetOverlay(this.scope)
-    const editing = this.session ?? (this.nudge ? this.nudge.plan : null)
+    const editing = this.session ?? this.nudge?.plan ?? this.keyTransform?.plan ?? null
     const edited = editing?.editedIds ?? new Set<string>()
     hideLayerOutlines(this.items, edited)
     const ids = new Set(doc.layers.map((candidate) => candidate.id))
@@ -1272,10 +1706,15 @@ export class DirectEditController {
 
     if (editing) {
       editing.drawOverlay(layer)
-    } else if (this.handlesLive) {
-      const recipe = this.selectedRecipe(doc, selected)
-      if (recipe?.carve) {
-        this.drawRecipe(layer, recipe.carve, this.hover.kind === 'handle' ? this.hover.handle.id : null, false)
+    } else if (this.live !== 'none') {
+      const set = this.handleSet(doc)
+      const hot = this.hover.kind === 'handle' ? this.hover.handle.id : null
+      const recipe = set?.kind === 'recipe' ? this.layer(set.ids[0]) : undefined
+      if (recipe?.carve) this.drawRecipe(layer, recipe.carve, hot, false)
+      if (set?.kind === 'box') {
+        this.scope.activate()
+        layer.activate()
+        drawCarveHandles(this.scope, layer, set.list, this.center(), hot)
       }
       const free = this.selectedFreePath(doc, selected)
       // The curve that would bend under the pointer.
@@ -1285,7 +1724,7 @@ export class DirectEditController {
         const hoverIndex = this.hover.kind === 'anchor' ? this.hover.index : null
         this.scope.activate()
         layer.activate()
-        drawAnchors(this.scope, layer, free.path, this.center(), anchorIndex, hoverIndex)
+        drawAnchors(this.scope, layer, free.path, this.center(), anchorIndex, hoverIndex, this.layer(free.layerId)?.frameRotation ?? 0)
       }
       if (this.pendingPoint) drawGhostPoint(this.scope, layer, this.pendingPoint.point, this.center())
     }
@@ -1355,8 +1794,14 @@ export class DirectEditController {
       ArrowDown: { x: 0, y: 1 },
     }
     const step = arrows[event.key]
-    if (step && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    if (step && !event.metaKey && !event.ctrlKey) {
       if (!canvasOwnsArrowKeys() || !doc.selectedLayerIds.length || this.session) return false
+      if (event.altKey) {
+        // Left and right turn by 1° (15° with Shift); up and down scale by 1% (10%).
+        if (step.x) this.transformBy(step.x * (event.shiftKey ? 15 : 1), 0)
+        else this.transformBy(0, -step.y * (event.shiftKey ? 10 : 1))
+        return true
+      }
       const amount = event.shiftKey ? 10 : 1
       this.nudgeBy({ x: step.x * amount, y: step.y * amount })
       return true
@@ -1364,8 +1809,78 @@ export class DirectEditController {
     return false
   }
 
-  /** Arrow keys preview immediately and commit once per burst. */
+  /**
+   * Alt+arrows turn or scale the selection about its box's centre, evenly,
+   * so recipes stay recipes. Like a nudge, a burst previews at once and
+   * commits once. A nudge still pending lands first, so the ink never
+   * shows one burst without the other.
+   */
+  private transformBy(turn: number, percent: number) {
+    this.flushNudge()
+    if (!this.keyTransform) {
+      const doc = this.host.getDoc()
+      const around = selectionBox(doc, (layer) => this.freePathOf(layer))
+      const plan = around ? this.boxPlan(around.ids, around.box, around.uniform) : null
+      if (!around || !plan) return
+      this.keyTransform = { plan, box: around.box, turn: 0, percent: 100, timer: 0, layers: doc.layers }
+    }
+    const t = this.keyTransform
+    t.turn = normalizeDegrees(t.turn + turn)
+    t.percent = Math.max(t.percent + percent, evenScaleFloor(t.box) * 100)
+    const next = this.previewKeyTransform(t)
+    // The number that changed, by the box's top right corner.
+    const corners = (['nw', 'ne', 'se', 'sw'] as const).map((id) => add(boxHandlePoint(next, id)!, this.center()))
+    this.placeHud({ x: Math.max(...corners.map((c) => c.x)), y: Math.min(...corners.map((c) => c.y)) })
+    hud.set({ label: null, chip: turn ? `${r0(next.rotation)}°` : `${r0(next.width)} × ${r0(next.height)}` })
+    // Each key reads out where the selection now is, never how far the burst has gone.
+    hud.announce(turn ? `Turned to ${r0(next.rotation)}°` : `Size ${r0(next.width)} × ${r0(next.height)}`)
+    window.clearTimeout(t.timer)
+    t.timer = window.setTimeout(() => this.flushKeyTransform(), NUDGE_COMMIT_MS)
+  }
+
+  /**
+   * The box a burst of Alt+arrows has reached, and the map there. A turn
+   * lands on a whole degree, so the angle read out is the angle stored.
+   */
+  private keyStep(t: KeyTransform): { move: BoxMove; next: OrientedBox } {
+    const box = t.box
+    const turn = Math.abs(t.turn) > 1e-9 ? normalizeDegrees(Math.round(box.rotation + t.turn) - box.rotation) : 0
+    const factor = t.percent / 100
+    return {
+      move: keyMove(box, turn, factor),
+      next: { ...box, width: box.width * factor, height: box.height * factor, rotation: normalizeDegrees(box.rotation + turn) },
+    }
+  }
+
+  private previewKeyTransform(t: KeyTransform): OrientedBox {
+    const { move, next } = this.keyStep(t)
+    t.plan.preview(move, next, null)
+    return next
+  }
+
+  /**
+   * Commit a burst of Alt+arrows. The ink and hit areas already show the
+   * burst, so a press straight after meets the shapes where they are drawn.
+   * When an undo may follow at once (`restore`), they go back to the
+   * document first: the undo can restore the very layers drawn before,
+   * which renders nothing anew, and the ink must not keep the burst.
+   */
+  private flushKeyTransform(restore = false) {
+    const t = this.keyTransform
+    if (!t) return
+    this.keyTransform = null
+    window.clearTimeout(t.timer)
+    hud.clear()
+    const turned = Math.abs(t.turn) > 1e-9
+    const several = t.plan.ids.length > 1
+    if (restore) t.plan.cancel()
+    t.plan.commit(turned ? (several ? 'Rotate shapes' : 'Rotate') : several ? 'Resize shapes' : 'Resize')
+    this.drawOverlay()
+  }
+
+  /** Arrow keys preview immediately and commit once per burst. A pending Alt+arrow burst lands first. */
   private nudgeBy(d: Vec) {
+    this.flushKeyTransform()
     if (!this.nudge) {
       const doc = this.host.getDoc()
       const plan = this.movePlan(
@@ -1376,7 +1891,7 @@ export class DirectEditController {
         true,
       )
       if (!plan) return
-      this.nudge = { plan, d: { x: 0, y: 0 }, timer: 0 }
+      this.nudge = { plan, d: { x: 0, y: 0 }, timer: 0, layers: doc.layers }
     }
     const nudge = this.nudge
     nudge.d = add(nudge.d, d)
@@ -1385,11 +1900,13 @@ export class DirectEditController {
     nudge.timer = window.setTimeout(() => this.flushNudge(), NUDGE_COMMIT_MS)
   }
 
-  private flushNudge() {
+  /** Commit a burst of nudges, putting the ink and hit areas back first when an undo may follow (see `flushKeyTransform`). */
+  private flushNudge(restore = false) {
     const nudge = this.nudge
     if (!nudge) return
     this.nudge = null
     window.clearTimeout(nudge.timer)
+    if (restore) nudge.plan.cancel()
     nudge.plan.commit(nudge.d)
   }
 }

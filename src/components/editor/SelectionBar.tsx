@@ -1,12 +1,12 @@
 import { useMemo } from 'react'
 import { useLogoStore } from '../../store/logoStore.ts'
-import { layersBounds } from '../../engine/illustrator/layerPath.ts'
-import { DEFAULT_ILLUSTRATOR_TRANSFORM, type IllustratorLayer } from '../../engine/illustrator/types.ts'
 import { describeCarve } from '../../engine/carve/spec.ts'
+import { bakedObjectPath } from '../../engine/illustrator/layerPath.ts'
+import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
+import type { VectorObject } from '../../engine/vector/types.ts'
+import { selectionBox } from '../../renderer/directEdit/handleSet.ts'
 import { cn } from '../../lib/utils.ts'
-import { SliderControl } from '../controls/SliderControl.tsx'
 import { Divider, EditorButton, FLOATING_SURFACE, Segmented } from './controls.tsx'
-import { Popover } from './Popover.tsx'
 
 const OPERATION_OPTIONS = [
   { value: 'add', label: 'Add' },
@@ -22,10 +22,32 @@ const BOOLEAN_OPS = [
 const RECIPE_HINT =
   'Drag the handles on the canvas to resize, round or turn it. Drag an edge to bend it; double-click a bent edge to straighten it.'
 const FREE_SHAPE_HINT =
-  'Drag an edge on the canvas to bend it, or click it to add a point. Double-click a point to make it sharp or smooth.'
+  'Drag the handles on the canvas to resize or turn it. Drag an edge to bend it, or click it to add a point. Double-click a point to make it sharp or smooth.'
+
+/**
+ * The selection in words: a recipe by its own numbers; a free shape or
+ * several layers by the box their handles sit around, turned or not. So the
+ * size and angle read at rest too, on touch where nothing hovers, and a
+ * screen reader hears where every resize or turn landed.
+ */
+function describeSelection(doc: IllustratorDocument, objects: VectorObject[], selected: IllustratorLayer[]): string {
+  const alone = selected.length === 1 ? selected[0] : null
+  if (alone?.carve) return describeCarve(alone.carve)
+  const name = alone ? alone.name : `${selected.length} layers`
+  const byId = new Map(objects.map((object) => [object.id, object]))
+  const around = selectionBox(doc, (layer) => {
+    const object = byId.get(layer.id)
+    return object?.type === 'path' ? bakedObjectPath(object.path, layer.transform) : null
+  })
+  if (!around) return name
+  const { width, height, rotation } = around.box
+  const turned = Math.round(rotation) ? ` · ${Math.round(rotation)}°` : ''
+  return `${name} · ${Math.round(width)} × ${Math.round(height)}${turned}`
+}
 
 export function SelectionBar() {
   const illustrator = useLogoStore((s) => s.illustrator)
+  const objects = useLogoStore((s) => s.vectorDocument.objects)
   const duplicateIllustratorLayer = useLogoStore((s) => s.duplicateIllustratorLayer)
   const deleteIllustratorLayers = useLogoStore((s) => s.deleteIllustratorLayers)
   const setIllustratorLayerOperation = useLogoStore((s) => s.setIllustratorLayerOperation)
@@ -39,11 +61,13 @@ export function SelectionBar() {
         .filter((layer) => layer != null),
     [illustrator],
   )
+  const description = useMemo(
+    () => (selectedLayers.length ? describeSelection(illustrator, objects, selectedLayers) : ''),
+    [illustrator, objects, selectedLayers],
+  )
   if (selectedLayers.length === 0) return null
 
   const selectedLayer = selectedLayers.length === 1 ? selectedLayers[0] : null
-  // Slabs and cuts are resized by their handles, one at a time.
-  const scalable = selectedLayers.length >= 2 && selectedLayers.every((layer) => !layer.carve)
   const selectedPoint =
     selectedLayer && !selectedLayer.carve && illustrator.pointSelection?.layerId === selectedLayer.id
       ? illustrator.pointSelection
@@ -64,11 +88,7 @@ export function SelectionBar() {
           aria-live="polite"
           title={selectedLayer ? (selectedLayer.carve ? RECIPE_HINT : FREE_SHAPE_HINT) : undefined}
         >
-          {selectedLayer
-            ? selectedLayer.carve
-              ? describeCarve(selectedLayer.carve)
-              : selectedLayer.name
-            : `${selectedLayers.length} layers`}
+          {description}
         </p>
 
         {selectedLayer && (
@@ -116,8 +136,6 @@ export function SelectionBar() {
         <Divider className="max-sm:hidden" />
 
         <div className="flex gap-1">
-          {selectedLayer && !selectedLayer.carve && <TransformPopover layer={selectedLayer} />}
-          {scalable && <ScalePopover layers={selectedLayers} />}
           {selectedLayer && (
             <EditorButton onClick={() => duplicateIllustratorLayer(selectedLayer.id)}>Copy</EditorButton>
           )}
@@ -127,97 +145,5 @@ export function SelectionBar() {
         </div>
       </div>
     </div>
-  )
-}
-
-/** Sliders for a layer that has no resize or rotate handles on the canvas. Each release is one undo step. */
-function TransformPopover({ layer }: { layer: IllustratorLayer }) {
-  const updateIllustratorLayer = useLogoStore((s) => s.updateIllustratorLayer)
-  const updateIllustratorLayerTransform = useLogoStore((s) => s.updateIllustratorLayerTransform)
-
-  return (
-    <Popover
-      label="Transform"
-      panelClassName="absolute bottom-full left-1/2 mb-2 grid w-80 max-w-full -translate-x-1/2 grid-cols-2 gap-x-4 gap-y-2.5"
-      trigger={(props) => <EditorButton {...props}>Transform</EditorButton>}
-    >
-      <SliderControl
-        label="Move X"
-        value={layer.transform.dx}
-        min={-180}
-        max={180}
-        step={1}
-        onChange={(v) => updateIllustratorLayerTransform(layer.id, { dx: v })}
-      />
-      <SliderControl
-        label="Move Y"
-        value={layer.transform.dy}
-        min={-180}
-        max={180}
-        step={1}
-        onChange={(v) => updateIllustratorLayerTransform(layer.id, { dy: v })}
-      />
-      <SliderControl
-        label="Scale"
-        value={layer.transform.scale}
-        min={0.25}
-        max={3}
-        step={0.01}
-        onChange={(v) => updateIllustratorLayerTransform(layer.id, { scale: v })}
-      />
-      <SliderControl
-        label="Rotate"
-        value={layer.transform.rotation}
-        min={-180}
-        max={180}
-        step={1}
-        onChange={(v) => updateIllustratorLayerTransform(layer.id, { rotation: v })}
-      />
-      <EditorButton
-        onClick={() => updateIllustratorLayer(layer.id, { transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM } })}
-        className="col-span-2"
-      >
-        Reset
-      </EditorButton>
-    </Popover>
-  )
-}
-
-const SIZE_RANGE = { min: 40, max: 800 }
-
-/** One slider for several free shapes at once, which have no handles either. Each release is one undo step. */
-function ScalePopover({ layers }: { layers: IllustratorLayer[] }) {
-  return (
-    <Popover
-      label="Scale"
-      panelClassName="absolute bottom-full left-1/2 mb-2 w-64 max-w-full -translate-x-1/2"
-      trigger={(props) => <EditorButton {...props}>Scale</EditorButton>}
-    >
-      <SizeSlider layers={layers} />
-    </Popover>
-  )
-}
-
-/** The longer side of the box around the shapes. The shapes keep their arrangement and the middle of the box stays put. */
-function SizeSlider({ layers }: { layers: IllustratorLayer[] }) {
-  const scaleSelection = useLogoStore((s) => s.scaleSelection)
-  const size = useMemo(() => {
-    const box = layersBounds(layers)
-    return box ? Math.max(box.width, box.height) : 0
-  }, [layers])
-  if (size <= 0) return null
-  const shown = Math.round(size)
-
-  return (
-    <SliderControl
-      label="Size"
-      value={shown}
-      min={SIZE_RANGE.min}
-      max={SIZE_RANGE.max}
-      step={1}
-      onChange={(next) => {
-        if (next !== shown) scaleSelection(next / size)
-      }}
-    />
   )
 }

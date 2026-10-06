@@ -136,6 +136,7 @@ export function vectorObjectToLayer(object: VectorObject): IllustratorLayer | nu
     fillRule: object.fillRule,
     transform: illustratorTransformFromMatrix(object.transform),
     ...(object.carve ? { carve: object.carve } : {}),
+    ...(object.frame && !object.carve ? { frameRotation: object.frame.rotation } : {}),
   }
   layerCache.set(object, layer)
   return layer
@@ -215,6 +216,7 @@ function layerToObjects(
   }
 
   return paths.map((path, index) => ({
+    ...(layer.frameRotation ? { frame: { rotation: layer.frameRotation } } : {}),
     id: paths.length === 1 ? layer.id : `${layer.id}_${index + 1}`,
     type: 'path',
     name: paths.length === 1 ? layer.name : `${layer.name}.${index + 1}`,

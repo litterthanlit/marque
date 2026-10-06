@@ -78,7 +78,17 @@ The eight box handles and the rotate knob move out of `carveHandles` into a shar
 - a single free path or group, around its frame, which keeps its rotation in `frame.rotation`;
 - a multi-selection, around the axis-aligned bounds of its members.
 
-A drag makes an affine map about the opposite handle, or about the centre with Alt. Free paths take the full affine. Recipes take only rotation, translation and uniform scale, so when a selection holds a recipe only the corner handles show and they scale uniformly. Slices are left out of every box, because their paths reach 4000 units past each end. Shift-rotate snaps to 15°. A single recipe keeps its own handles.
+A drag makes an affine map about the opposite handle, or about the centre with Alt. Free paths take the full affine. Recipes take only rotation, translation and uniform scale, so when a selection holds a recipe only the corner handles show and they scale uniformly. Slices are left out of every box, because their paths reach 4000 units past each end. Shift-rotate snaps to 15°. A single recipe keeps its own handles, also when the other selected layers are hidden or locked.
+
+Just outside a corner, a drag turns the selection as the knob does, with the rotate cursor. This holds for a box and for a recipe whose handles have a knob (a slab, a punch that is not a circle), so a shape can be turned when its knob is off the canvas.
+
+A box's turn or resize carries the cuts that a move of its members would carry, with or without Alt, since Alt already means "about the centre" there. A carried free cut takes the full affine. A carried recipe takes the similarity nearest it: its centre follows the affine, its size scales by the square root of the affine's area factor, and it turns by the affine's rotation, so a punch stays round. Dragging a single recipe's own handles leaves its cuts where they are.
+
+With snapping on, a knob turn without Shift lands on whole degrees and a resize lands on whole units, so the number shown is the number stored. The selection bar shows a free shape's or a multi-selection's size and angle at rest, as it does for a recipe: "Shape 1 · 267 × 150 · 26°", "6 layers · 410 × 380".
+
+The box hides a side's square when the padded side is shorter than 48 pixels on screen. That side of the frame still resizes along its whole length, and the corners always show.
+
+Alt with the arrow keys turns and scales the selection about its box's centre, evenly, so recipes stay recipes: Left and Right turn by 1°, or 15° with Shift; Up and Down scale by 1%, or 10% with Shift. Like a nudge, a burst of keys previews at once and commits as one undo step. Each key reads out where the selection now is, such as "Turned to 45°" or "Size 267 × 150".
 
 Linked objects are not transformed directly. The follow pass rebuilds them from their sources.
 
@@ -353,6 +363,7 @@ Each step leaves `npm test`, `npm run build` and `npm run test:e2e` passing. A t
 - The general offset runs at commit only, so its preview shows the old copy moving with the source.
 - There are no rulers. Guides come from the Guide tool, the pen and shapes.
 - A stage 1 build cannot open version 2 links or saved marks.
+- There is no numeric entry for position, size or angle. Exact values come from snapping to whole units and degrees, Shift's 15° steps, arrow nudges, and Alt with the arrow keys.
 
 ## Open questions
 

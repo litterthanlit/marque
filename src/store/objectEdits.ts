@@ -1,4 +1,5 @@
 import type { CarveSpec } from '../engine/carve/spec.ts'
+import { normalizeDegrees } from '../engine/path/bezier.ts'
 import { roundCarveSpec } from '../engine/carve/spec.ts'
 import { carveOutline } from '../engine/carve/outline.ts'
 import { isIdentityMatrix, segsToVectorPath, syncCarve } from '../engine/carve/sync.ts'
@@ -104,24 +105,44 @@ export function moveObject(objects: VectorObject[], id: string, direction: 'up' 
 
 /**
  * A recipe written to an object. The path is always the outline of the
- * rounded recipe, and the transform is the identity.
+ * rounded recipe, and the transform is the identity. A recipe turns by its
+ * own rotation, so it keeps no frame.
  */
 export function writeRecipe(object: PathObject, carve: CarveSpec): PathObject {
   const rounded = roundCarveSpec(carve)
-  if (object.carve && isIdentityMatrix(object.transform) && JSON.stringify(object.carve) === JSON.stringify(rounded)) {
+  if (
+    object.carve &&
+    !object.frame &&
+    isIdentityMatrix(object.transform) &&
+    JSON.stringify(object.carve) === JSON.stringify(rounded)
+  ) {
     return object
   }
-  return {
+  const next: PathObject = {
     ...object,
     transform: identity(),
     path: segsToVectorPath(carveOutline(rounded).segs, object.path.id),
     carve: rounded,
   }
+  delete next.frame
+  return next
+}
+
+/** The rotation of a free path's box, rounded to 0.01°. Upright leaves no frame. */
+export function writeFrame(object: PathObject, rotation: number): PathObject {
+  const rounded = Math.round(normalizeDegrees(rotation) * 100) / 100
+  const turned = rounded !== 0 && !object.carve
+  if (turned ? object.frame?.rotation === rounded : !object.frame) return object
+  const next: PathObject = { ...object }
+  if (turned) next.frame = { rotation: rounded }
+  else delete next.frame
+  return next
 }
 
 /**
  * New path data for an object, already in untransformed layer space. The
  * object becomes a free shape: its recipe goes and its transform is reset.
+ * Its frame stays: a gesture that turns the box writes it with writeFrame.
  * Path data with several subpaths still becomes one object per subpath.
  */
 export function writePathData(object: PathObject, pathData: string): PathObject[] {
@@ -195,6 +216,8 @@ export function objectsFromLayer(layer: IllustratorLayer, context: NewObjectCont
     }
     if (carve) object.carve = carve
     else delete object.carve
+    if (!carve && layer.frameRotation) object.frame = { rotation: layer.frameRotation }
+    else delete object.frame
     return object
   }
   if (synced) return [build(synced.path, layer.id, layer.name, identity(), synced.carve)]

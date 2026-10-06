@@ -154,6 +154,56 @@ async function isEmpty(page: Page, p: Point) {
   return pixel.alpha < 0.1
 }
 
+/**
+ * The points of a grid over the canvas (layer space) that show ink where the
+ * document's mark has none, or none where it has some. Points near an edge
+ * of the mark or under a handle are left out. The mark is measured by the
+ * browser, not by the app.
+ */
+function inkMismatches(page: Page, span = 280, step = 20) {
+  return page.evaluate(
+    ({ span, step }) => {
+      const mark = window.__marque.mark()
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
+      path.setAttribute('d', mark.compoundPathData)
+      path.setAttribute('fill-rule', mark.fillRule)
+      svg.append(path)
+      document.body.append(svg)
+      const inside = (x: number, y: number) => path.isPointInFill(new DOMPoint(x, y))
+      const canvas = document.querySelector('main canvas') as HTMLCanvasElement
+      const rect = canvas.getBoundingClientRect()
+      const unit = Math.min(rect.width, rect.height) / 600
+      const ctx = canvas.getContext('2d')!
+      const handles = window.__marque.handles()
+      const bad: Array<{ x: number; y: number; ink: boolean }> = []
+      for (let x = -span; x <= span; x += step) {
+        for (let y = -span; y <= span; y += step) {
+          const expected = inside(x, y)
+          // Within 4 pixels of an edge, the selection's outline and smoothing decide the pixel.
+          const m = Math.max(3, 4 / unit)
+          const near = [
+            [-m, 0],
+            [m, 0],
+            [0, -m],
+            [0, m],
+          ].some(([dx, dy]) => inside(x + dx, y + dy) !== expected)
+          const cx = rect.width / 2 + x * unit
+          const cy = rect.height / 2 + y * unit
+          const covered = handles.some((h) => Math.hypot(h.x - rect.left - cx, h.y - rect.top - cy) < 12)
+          if (near || covered || cx < 0 || cy < 0 || cx >= rect.width || cy >= rect.height) continue
+          const [r, g, b, a] = ctx.getImageData(Math.floor((cx * canvas.width) / rect.width), Math.floor((cy * canvas.height) / rect.height), 1, 1).data
+          const ink = a > 0.9 * 255 && r + g + b < 120
+          if (ink !== expected) bad.push({ x, y, ink })
+        }
+      }
+      svg.remove()
+      return bad
+    },
+    { span, step },
+  )
+}
+
 /* ─── State, through the development hook ─── */
 
 function layers(page: Page) {
@@ -169,6 +219,18 @@ function layers(page: Page) {
         })) ?? [],
   )
 }
+
+/** How far each layer's box is turned: 0 when it is upright. */
+const frameRotations = (page: Page) =>
+  page.evaluate(() => window.__marque.store.getState().illustrator.layers.map((layer) => layer.frameRotation ?? 0))
+
+/** Every anchor of each layer, in layer space, as the editor sees them. */
+const anchors = (page: Page) =>
+  page.evaluate(() =>
+    window.__marque.store
+      .getState()
+      .illustrator.layers.map((layer) => window.__marque.bakedEditablePath(layer)?.segs.map((seg) => seg.p) ?? []),
+  )
 
 async function carves(page: Page): Promise<CarveSpec[]> {
   return (await layers(page)).map((layer) => layer.carve!)
@@ -205,6 +267,30 @@ async function handle(page: Page, id: string): Promise<Point> {
   const found = (await page.evaluate(() => window.__marque.handles())).find((candidate) => candidate.id === id)
   expect(found, `handle ${id}`).toBeTruthy()
   return found!
+}
+
+const handleIds = async (page: Page) => (await page.evaluate(() => window.__marque.handles())).map((candidate) => candidate.id)
+
+/** The middle of the selection's box, in layer space: halfway between two opposite corner handles. */
+async function boxMiddle(page: Page, f: Frame): Promise<Point> {
+  const nw = await handle(page, 'nw')
+  const se = await handle(page, 'se')
+  return { x: ((nw.x + se.x) / 2 - f.box.x - f.box.width / 2) / f.unit, y: ((nw.y + se.y) / 2 - f.box.y - f.box.height / 2) / f.unit }
+}
+
+/** Drag the rotate knob about a pivot (client space) by `degrees`, clockwise on screen. */
+async function turnKnob(page: Page, pivot: Point, degrees: number, modifiers: string[] = []) {
+  const knob = await handle(page, 'rotate')
+  const reach = Math.hypot(knob.x - pivot.x, knob.y - pivot.y)
+  const angle = Math.atan2(knob.y - pivot.y, knob.x - pivot.x) + (degrees * Math.PI) / 180
+  await drag(page, knob, { x: pivot.x + Math.cos(angle) * reach, y: pivot.y + Math.sin(angle) * reach }, modifiers)
+}
+
+const rotateAbout = (p: Point, pivot: Point, degrees: number): Point => {
+  const r = (degrees * Math.PI) / 180
+  const dx = p.x - pivot.x
+  const dy = p.y - pivot.y
+  return { x: pivot.x + dx * Math.cos(r) - dy * Math.sin(r), y: pivot.y + dx * Math.sin(r) + dy * Math.cos(r) }
 }
 
 function hudLabel(page: Page, text: string) {
@@ -448,6 +534,18 @@ test('undo straight after an arrow nudge takes the nudge back, and the nudge doe
   expect(await carves(page)).toEqual([moved])
   expect(await undoDepth(page)).toBe(depth)
   expect(await page.evaluate(() => window.__marque.store.getState().vectorRedoStack.length)).toBe(1)
+  // The canvas shows what undo restored, not the nudged slab.
+  await pointerAway(page, f)
+  expect(await inkMismatches(page)).toEqual([])
+
+  // A longer burst, undone at once, the same.
+  await page.keyboard.press('Shift+ArrowRight')
+  await page.keyboard.press('Shift+ArrowRight')
+  await page.keyboard.press('Shift+ArrowRight')
+  await page.keyboard.press('ControlOrMeta+z')
+  await page.waitForTimeout(700)
+  expect(await carves(page)).toEqual([moved])
+  expect(await inkMismatches(page)).toEqual([])
 })
 
 test('a reload from the link keeps recipes, and their handles still work', async ({ page }) => {
@@ -636,7 +734,7 @@ test('the selection bar is there for a selection and gone without one', async ({
   await expect(bar).toBeHidden()
   expect(await layers(page)).toHaveLength(0)
 
-  // A pen shape has no handles: its sliders are a click away, and each change is one undo step.
+  // A pen shape has handles too: its east side pulls it wider on that axis alone, as one undo step.
   await pickTool(page, 'Pen')
   for (const [x, y] of [
     [-100, -80],
@@ -646,11 +744,30 @@ test('the selection bar is there for a selection and gone without one', async ({
     await click(page, f.at(x, y))
   }
   await page.keyboard.press('Enter')
-  await bar.getByRole('button', { name: 'Transform' }).click()
+  await expect(bar).toBeVisible()
+  await expect(bar.getByRole('button', { name: 'Transform' })).toHaveCount(0)
+  expect(await handleIds(page)).toEqual(['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w', 'rotate'])
+  const [shape] = await layers(page)
+  const was = await boxAround(page, [shape.pathData])
   const depth = await undoDepth(page)
-  await page.getByRole('slider', { name: 'Move X' }).press('ArrowRight')
-  expect(await page.evaluate(() => window.__marque.store.getState().illustrator?.layers[0].transform.dx)).toBe(1)
+
+  const east = await handle(page, 'e')
+  await page.mouse.move(east.x, east.y)
+  await page.mouse.down()
+  await page.mouse.move(east.x + 50 * f.unit, east.y, { steps: 10 })
+  await expect(page.locator('main').getByText(new RegExp(`^\\d+ × ${Math.round(was.height)}$`))).toBeVisible()
+  await page.mouse.up()
+
+  const [resized] = await layers(page)
+  expect(resized).toMatchObject({ id: shape.id, carve: null })
+  const now = await boxAround(page, [resized.pathData])
+  expect(Math.abs(now.width - was.width - 50)).toBeLessThanOrEqual(1)
+  expect(now.height).toBeCloseTo(was.height, 3)
+  expect(now.x).toBeCloseTo(was.x, 3)
+  expect(now.y).toBeCloseTo(was.y, 3)
   expect(await undoDepth(page)).toBe(depth + 1)
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(() => layers(page)).toEqual([shape])
 })
 
 test('an empty canvas says what to do first, until there is something on it', async ({ page }) => {
@@ -733,7 +850,8 @@ test('a spark dropped on an empty canvas lands in the middle, all selected, as o
   expect(await undoDepth(page)).toBe(1)
   const bar = selectionBar(page)
   await expect(bar).toContainText('3 layers')
-  await expect(bar.getByRole('button', { name: 'Scale' })).toBeVisible()
+  // One box goes round them all, with every handle: there are no recipes among them.
+  expect(await handleIds(page)).toEqual(['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w', 'rotate'])
 
   // The mark itself is 360 units on its longer side, about the middle of the canvas.
   const ink = (await page.evaluate(() => window.__marque.mark()))!
@@ -867,28 +985,32 @@ test('Shuffle and R deal new sparks, and R waits for a drawing, a drag or a dial
   await expect.poll(() => sparkSeed(page)).not.toBe(seed)
 })
 
-test('several free shapes scale together about their middle, and a slab among them takes the control away', async ({ page }) => {
+test('several free shapes scale together from a corner of their box, and a slab among them keeps it uniform', async ({ page }) => {
   await openVectorMaker(page)
   await dealSparks(page, 1)
   await sparkButton(page, 4).click()
+  const f = await frame(page)
   const before = await layers(page)
   const was = await boxAround(page, before.map((layer) => layer.pathData))
-
   const bar = selectionBar(page)
-  await expect(bar.getByRole('button', { name: 'Transform' })).toHaveCount(0)
-  await bar.getByRole('button', { name: 'Scale' }).click()
-  const size = page.getByRole('slider', { name: 'Size' })
-  await expect(size).toHaveAttribute('aria-valuenow', '360')
+  await expect(bar.getByRole('button', { name: 'Scale' })).toHaveCount(0)
   const depth = await undoDepth(page)
 
-  // Page Down takes ten units off the longer side.
-  await size.press('PageDown')
-  await expect(size).toHaveAttribute('aria-valuenow', '350')
+  // Shift and Alt: the corner scales the whole box about its middle, which stays put.
+  const corner = await handle(page, 'se')
+  const middleOnScreen = f.at(middle(was).x, middle(was).y)
+  const inward = 0.1
+  await drag(
+    page,
+    corner,
+    { x: corner.x + (middleOnScreen.x - corner.x) * inward, y: corner.y + (middleOnScreen.y - corner.y) * inward },
+    ['Shift', 'Alt', 'ControlOrMeta'],
+  )
   expect(await undoDepth(page)).toBe(depth + 1)
   const after = await layers(page)
   const now = await boxAround(page, after.map((layer) => layer.pathData))
   expect(after.map((layer) => layer.id)).toEqual(before.map((layer) => layer.id))
-  expect(Math.max(now.width, now.height)).toBeCloseTo(350, 1)
+  expect(now.width).toBeLessThan(was.width - 10)
   expect(now.width / now.height).toBeCloseTo(was.width / was.height, 3)
   expect(middle(now).x).toBeCloseTo(middle(was).x, 1)
   expect(middle(now).y).toBeCloseTo(middle(was).y, 1)
@@ -896,15 +1018,663 @@ test('several free shapes scale together about their middle, and a slab among th
 
   await page.keyboard.press('ControlOrMeta+z')
   await expect.poll(() => layers(page)).toEqual(before)
-  await expect(size).toHaveAttribute('aria-valuenow', '360')
   await page.keyboard.press('Escape')
 
-  // A slab has its own handles: with one in the selection there is nothing to scale together.
+  // With a slab in the selection only the corners show, and they scale every layer alike.
   await addSlab(page, 'Square')
   await page.evaluate(() => {
     const { illustrator, setSelection } = window.__marque.store.getState()
-    setSelection(illustrator!.layers.map((layer) => layer.id))
+    setSelection(illustrator.layers.map((layer) => layer.id))
   })
   await expect(bar).toContainText(`${before.length + 1} layers`)
-  await expect(bar.getByRole('button', { name: 'Scale' })).toHaveCount(0)
+  expect(await handleIds(page)).toEqual(['nw', 'ne', 'se', 'sw', 'rotate'])
+  const all = await layers(page)
+  const slab = all.at(-1)!.carve as SlabSpec
+  const piecesWere = await boxAround(page, all.slice(0, -1).map((layer) => layer.pathData))
+  const handles = await page.evaluate(() => window.__marque.handles())
+  // A corner that is on screen, pulled a fifth of the way towards the opposite one.
+  const inside = (p: Point) => p.x > f.box.x + 4 && p.x < f.box.x + f.box.width - 4 && p.y > f.box.y + 4 && p.y < f.box.y + f.box.height - 4
+  const opposite: Record<string, string> = { nw: 'se', ne: 'sw', se: 'nw', sw: 'ne' }
+  const grabbed = handles.find((candidate) => candidate.id in opposite && inside(candidate))!
+  expect(grabbed, 'a corner on screen').toBeTruthy()
+  const far = handles.find((candidate) => candidate.id === opposite[grabbed.id])!
+  const slabDepth = await undoDepth(page)
+  await drag(page, grabbed, { x: grabbed.x + (far.x - grabbed.x) * 0.2, y: grabbed.y + (far.y - grabbed.y) * 0.2 }, ['ControlOrMeta'])
+  expect(await undoDepth(page)).toBe(slabDepth + 1)
+
+  const scaled = await layers(page)
+  const resized = scaled.at(-1)!.carve as SlabSpec
+  expect(resized).toMatchObject({ kind: 'slab', rotation: 0 })
+  const factor = resized.width / slab.width
+  expect(factor).toBeLessThan(0.95)
+  expect(resized.height / slab.height).toBeCloseTo(factor, 2)
+  expect(resized.radius).toBeCloseTo(slab.radius * factor, 1)
+  const piecesNow = await boxAround(page, scaled.slice(0, -1).map((layer) => layer.pathData))
+  expect(piecesNow.width / piecesWere.width).toBeCloseTo(factor, 2)
+  expect(piecesNow.height / piecesWere.height).toBeCloseTo(factor, 2)
+  // The slab is still a recipe: its own handles come back when it is selected alone.
+  await page.evaluate((id) => window.__marque.store.getState().setSelection([id]), scaled.at(-1)!.id)
+  expect(await handleIds(page)).toContain('radius')
+})
+
+test('a dropped spark turns as one piece in 15° steps with Shift, as one undo step', async ({ page }) => {
+  await openVectorMaker(page)
+  await dealSparks(page, 1)
+  await sparkButton(page, 4).click()
+  const f = await frame(page)
+  const before = await anchors(page)
+  const depth = await undoDepth(page)
+  const pivot = await boxMiddle(page, f)
+
+  const knob = await handle(page, 'rotate')
+  const centre = f.at(pivot.x, pivot.y)
+  const reach = Math.hypot(knob.x - centre.x, knob.y - centre.y)
+  const angle = Math.atan2(knob.y - centre.y, knob.x - centre.x) + (31 * Math.PI) / 180
+  await page.keyboard.down('Shift')
+  await page.mouse.move(knob.x, knob.y)
+  await page.mouse.down()
+  await page.mouse.move(centre.x + Math.cos(angle) * reach, centre.y + Math.sin(angle) * reach, { steps: 10 })
+  await expect(hudLabel(page, '30°')).toBeVisible()
+  await page.mouse.up()
+  await page.keyboard.up('Shift')
+
+  expect(await undoDepth(page)).toBe(depth + 1)
+  const after = await anchors(page)
+  expect(after.map((points) => points.length)).toEqual(before.map((points) => points.length))
+  for (const [i, points] of after.entries()) {
+    for (const [j, p] of points.entries()) {
+      const expected = rotateAbout(before[i][j], pivot, 30)
+      expect(Math.abs(p.x - expected.x)).toBeLessThan(0.01)
+      expect(Math.abs(p.y - expected.y)).toBeLessThan(0.01)
+    }
+  }
+  // Every shape's own box turned with it; the box round them all is upright again.
+  expect(await frameRotations(page)).toEqual(before.map(() => 30))
+  const n = await handle(page, 'n')
+  const s = await handle(page, 's')
+  expect(Math.abs(n.x - s.x)).toBeLessThan(0.5)
+
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(() => anchors(page)).toEqual(before)
+  expect(await frameRotations(page)).toEqual(before.map(() => 0))
+})
+
+test("a pen shape's box turns with it and stays turned, and resizes along its own sides", async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  const f = await frame(page)
+  await pickTool(page, 'Pen')
+  for (const [x, y] of [
+    [-120, -60],
+    [120, -60],
+    [120, 60],
+    [-120, 60],
+  ]) {
+    await click(page, f.at(x, y))
+  }
+  await page.keyboard.press('Enter')
+  const depth = await undoDepth(page)
+
+  await turnKnob(page, f.at(0, 0), 31, ['Shift'])
+  expect(await undoDepth(page)).toBe(depth + 1)
+  expect(await frameRotations(page)).toEqual([30])
+  // The bar reads its size and angle at rest, as it does for a recipe.
+  const label = selectionBar(page).locator('p[aria-live]')
+  await expect(label).toHaveText(/ · 2\d\d × 1\d\d · 30°$/)
+  // The box is turned: its east handle sits out along the shape's own turned axis.
+  const east = await handle(page, 'e')
+  const along = rotateAbout({ x: 1, y: 0 }, { x: 0, y: 0 }, 30)
+  const out = { x: (east.x - f.at(0, 0).x) / f.unit, y: (east.y - f.at(0, 0).y) / f.unit }
+  expect(Math.abs(out.x * along.y - out.y * along.x)).toBeLessThan(0.5)
+
+  // Pull the east side out 40 units along that axis: the shape grows along it alone, and stays turned.
+  await drag(page, east, { x: east.x + along.x * 40 * f.unit, y: east.y + along.y * 40 * f.unit }, ['ControlOrMeta'])
+  expect(await undoDepth(page)).toBe(depth + 2)
+  expect(await frameRotations(page)).toEqual([30])
+  const [points] = await anchors(page)
+  const local = points.map((p) => rotateAbout(p, { x: 0, y: 0 }, -30))
+  const xs = local.map((p) => p.x)
+  const ys = local.map((p) => p.y)
+  expect(Math.abs(Math.max(...xs) - Math.min(...xs) - 280)).toBeLessThanOrEqual(1)
+  expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(120, 2)
+  expect(Math.min(...xs)).toBeCloseTo(-120, 2)
+
+  await page.keyboard.press('ControlOrMeta+z')
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(() => frameRotations(page)).toEqual([0])
+
+  // Turned freely, the knob lands on a whole degree: the angle read out is the angle stored.
+  await turnKnob(page, f.at(0, 0), 37)
+  const [free] = await frameRotations(page)
+  expect(Number.isInteger(free)).toBe(true)
+  expect(Math.abs(free - 37)).toBeLessThanOrEqual(1)
+  await expect(label).toHaveText(new RegExp(` · ${free}°$`))
+
+  // Resized freely with snapping on, the side lands on a whole unit: the size read out is the size stored.
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(() => frameRotations(page)).toEqual([0])
+  const side = await handle(page, 'e')
+  await drag(page, side, { x: side.x + 37.3 * f.unit, y: side.y + 3 })
+  const [resized] = await anchors(page)
+  const width = Math.max(...resized.map((p) => p.x)) - Math.min(...resized.map((p) => p.x))
+  expect(width).toBeGreaterThan(260)
+  expect(Math.abs(width - Math.round(width))).toBeLessThan(1e-6)
+  await expect(label).toHaveText(new RegExp(` · ${Math.round(width)} × 120$`))
+})
+
+test('a carve tool started beside a selected shape cuts it, rather than taking the box handle there', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  const f = await frame(page)
+  await pickTool(page, 'Pen')
+  for (const [x, y] of [
+    [-120, -60],
+    [120, -60],
+    [120, 60],
+    [-120, 60],
+  ]) {
+    await click(page, f.at(x, y))
+  }
+  await page.keyboard.press('Enter')
+  const [shape] = await layers(page)
+  expect(await selectedIds(page)).toEqual([shape.id])
+
+  // The side handle sits just outside the shape's west side, right where a cut across it starts.
+  const west = await handle(page, 'w')
+  await pickTool(page, 'Slice')
+  await drag(page, west, f.at(200, 0))
+  const after = await layers(page)
+  expect(after).toHaveLength(2)
+  expect(after[0].pathData).toBe(shape.pathData)
+  expect(after[1].carve?.kind).toBe('slice')
+  await page.keyboard.press('Escape')
+
+  // A dropped spark is all selected: a cut beside it goes through it too.
+  await startOver(page)
+  await dealSparks(page, 1)
+  await sparkButton(page, 4).click()
+  const pieces = await layers(page)
+  const side = await handle(page, 'w')
+  await pickTool(page, 'Slice')
+  await drag(page, side, f.at(280, (side.y - f.at(0, 0).y) / f.unit))
+  const cut = await layers(page)
+  expect(cut).toHaveLength(pieces.length + 1)
+  expect(cut.slice(0, -1).map((layer) => layer.pathData)).toEqual(pieces.map((layer) => layer.pathData))
+  expect(cut.at(-1)!.carve?.kind).toBe('slice')
+})
+
+test('a spark with cuts sticking far out keeps its box on the ink, and every handle on the canvas', async ({ page }) => {
+  await openVectorMaker(page)
+  await dealSparks(page, 1)
+  await sparkButton(page, 1).click()
+  const f = await frame(page)
+  const pieces = await layers(page)
+  expect(pieces.some((layer) => layer.operation === 'subtract')).toBe(true)
+  const handles = await page.evaluate(() => window.__marque.handles())
+  expect(handles.map((candidate) => candidate.id)).toEqual(['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w', 'rotate'])
+  const reachable = await page.evaluate(() => {
+    const canvas = document.querySelector('main canvas')
+    return window.__marque.handles().map((candidate) => document.elementFromPoint(candidate.x, candidate.y) === canvas)
+  })
+  expect(reachable).toEqual(handles.map(() => true))
+
+  const depth = await undoDepth(page)
+  const pivot = await boxMiddle(page, f)
+  await turnKnob(page, f.at(pivot.x, pivot.y), 31, ['Shift'])
+  expect(await undoDepth(page)).toBe(depth + 1)
+  expect(await frameRotations(page)).toEqual(pieces.map(() => 30))
+})
+
+test('Alt with the arrow keys turns and scales the selection, one undo step for each burst', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  const f = await frame(page)
+  await pickTool(page, 'Pen')
+  for (const [x, y] of [
+    [-100, -50],
+    [100, -50],
+    [100, 50],
+    [-100, 50],
+  ]) {
+    await click(page, f.at(x, y))
+  }
+  await page.keyboard.press('Enter')
+  await page.keyboard.press('Escape')
+  await page.evaluate(() => {
+    const { illustrator, setSelection } = window.__marque.store.getState()
+    setSelection([illustrator.layers[0].id])
+  })
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  const depth = await undoDepth(page)
+
+  // Two turns of 15° and one of 1°: a single step of 31°, about the shape's middle.
+  // The angle shows by the box while the keys are pressed, and each key reads out the angle it reached.
+  await page.keyboard.press('Alt+Shift+ArrowRight')
+  await page.keyboard.press('Alt+Shift+ArrowRight')
+  await expect(hudLabel(page, '30°')).toBeVisible()
+  await expect(page.locator('main').getByRole('status')).toHaveText('Turned to 30°')
+  await page.keyboard.press('Alt+ArrowRight')
+  await expect.poll(() => undoDepth(page)).toBe(depth + 1)
+  await expect(hudLabel(page, '31°')).toBeHidden()
+  await expect(page.locator('main').getByRole('status')).toHaveText('Turned to 31°')
+  expect(await frameRotations(page)).toEqual([31])
+  const [turned] = await anchors(page)
+  expect(Math.abs(turned[0].x - rotateAbout({ x: -100, y: -50 }, { x: 0, y: 0 }, 31).x)).toBeLessThan(0.01)
+  expect(Math.abs(turned[0].y - rotateAbout({ x: -100, y: -50 }, { x: 0, y: 0 }, 31).y)).toBeLessThan(0.01)
+
+  // Up by 10% and down by 1%: 109%, about the same middle, still turned.
+  await page.keyboard.press('Alt+Shift+ArrowUp')
+  await page.keyboard.press('Alt+ArrowDown')
+  await expect.poll(() => undoDepth(page)).toBe(depth + 2)
+  expect(await frameRotations(page)).toEqual([31])
+  const [scaled] = await anchors(page)
+  expect(Math.hypot(scaled[0].x, scaled[0].y) / Math.hypot(turned[0].x, turned[0].y)).toBeCloseTo(1.09, 4)
+
+  // Undo straight after a burst takes it back, and the canvas shows the shape as it was.
+  const shapeBefore = await layers(page)
+  await page.keyboard.press('Alt+Shift+ArrowRight')
+  await page.keyboard.press('ControlOrMeta+z')
+  await page.waitForTimeout(700)
+  expect(await layers(page)).toEqual(shapeBefore)
+  await pointerAway(page, f)
+  expect(await inkMismatches(page)).toEqual([])
+
+  await page.keyboard.press('ControlOrMeta+z')
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(() => frameRotations(page)).toEqual([0])
+
+  // A lone round punch half over a slab turns and scales about its own centre.
+  await startOver(page)
+  await addSlab(page, 'Square')
+  await page.evaluate(() => window.__marque.store.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 190, y: 0 }, radius: 60 }))
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  const punchDepth = await undoDepth(page)
+  await page.keyboard.press('Alt+Shift+ArrowLeft')
+  await page.keyboard.press('Alt+Shift+ArrowLeft')
+  await expect.poll(() => undoDepth(page)).toBe(punchDepth + 1)
+  await page.keyboard.press('Alt+Shift+ArrowUp')
+  await expect.poll(() => undoDepth(page)).toBe(punchDepth + 2)
+  const punch = (await carves(page))[1] as PunchSpec
+  expect(punch.center.x).toBeCloseTo(190, 6)
+  expect(punch.center.y).toBeCloseTo(0, 6)
+  expect(punch.radius).toBeCloseTo(66, 6)
+  expect(punch.rotation).toBe(-30)
+})
+
+test('inside the box of several shapes, a drag moves them all and a click keeps them selected', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  const f = await frame(page)
+  for (const x of [-160, 100]) {
+    await pickTool(page, 'Pen')
+    for (const [dx, dy] of [
+      [0, -30],
+      [60, -30],
+      [60, 30],
+      [0, 30],
+    ]) {
+      await click(page, f.at(x + dx, dy))
+    }
+    await page.keyboard.press('Enter')
+  }
+  await page.keyboard.press('Escape')
+  const before = await layers(page)
+  await page.evaluate(() => {
+    const { illustrator, setSelection } = window.__marque.store.getState()
+    setSelection(illustrator.layers.map((layer) => layer.id))
+  })
+  const ids = before.map((layer) => layer.id)
+
+  // Between the two shapes: nothing is there but the box.
+  await click(page, f.at(0, -20))
+  expect(await selectedIds(page)).toEqual(ids)
+  const depth = await undoDepth(page)
+  await drag(page, f.at(0, 10), f.at(0, 50), ['ControlOrMeta'])
+  expect(await undoDepth(page)).toBe(depth + 1)
+  const [a, b] = await anchors(page)
+  expect(a[0].y).toBeCloseTo(-30 + 40, 0)
+  expect(b[0].y).toBeCloseTo(-30 + 40, 0)
+  expect(await selectedIds(page)).toEqual(ids)
+  // The bar reads the size of their box at rest.
+  await expect(selectionBar(page).locator('p[aria-live]')).toHaveText('2 layers · 320 × 60')
+})
+
+/** Drag with one finger: the canvas sees touch pointers, as on a phone. */
+async function touchDrag(page: Page, from: Point, to: Point, steps = 10) {
+  const cdp = await page.context().newCDPSession(page)
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 })
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: from.x, y: from.y }] })
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps
+    await cdp.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [{ x: from.x + (to.x - from.x) * t, y: from.y + (to.y - from.y) * t }],
+    })
+  }
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+  await cdp.detach()
+}
+
+test('on touch, a corner keeps the proportions of free shapes, and a side stretches them one way', async ({ page }) => {
+  await openVectorMaker(page)
+  await dealSparks(page, 1)
+  await sparkButton(page, 4).click()
+  const was = await boxAround(page, (await layers(page)).map((layer) => layer.pathData))
+  const depth = await undoDepth(page)
+
+  // Pulled out and down, but not along the box's diagonal: no Shift is needed to keep its shape.
+  const corner = await handle(page, 'se')
+  await touchDrag(page, corner, { x: corner.x + 40, y: corner.y + 25 })
+  expect(await undoDepth(page)).toBe(depth + 1)
+  const now = await boxAround(page, (await layers(page)).map((layer) => layer.pathData))
+  expect(now.width).toBeGreaterThan(was.width + 10)
+  expect(Math.abs(now.width / now.height / (was.width / was.height) - 1)).toBeLessThan(0.001)
+
+  const east = await handle(page, 'e')
+  await touchDrag(page, east, { x: east.x + 30, y: east.y })
+  expect(await undoDepth(page)).toBe(depth + 2)
+  const stretched = await boxAround(page, (await layers(page)).map((layer) => layer.pathData))
+  expect(stretched.width).toBeGreaterThan(now.width + 10)
+  expect(stretched.height).toBeCloseTo(now.height, 1)
+})
+
+test('a shape at the top of the canvas turns from just outside a corner, where its knob cannot be reached', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  const f = await frame(page)
+  // 200 units square, its top 20 units below the canvas's top edge.
+  const top = Math.round(-f.box.height / 2 / f.unit + 20)
+  await page.evaluate((y) => window.__marque.store.getState().addPenShape(`M-100,${y}L100,${y}L100,${y + 200}L-100,${y + 200}Z`), top)
+  const [shape] = await layers(page)
+  expect(await selectedIds(page)).toEqual([shape.id])
+  const knob = await handle(page, 'rotate')
+  const knobOnCanvas = await page.evaluate((p) => {
+    const canvas = document.querySelector('main canvas')!
+    return p.y > canvas.getBoundingClientRect().top && document.elementFromPoint(p.x, p.y) === canvas
+  }, knob)
+  expect(knobOnCanvas).toBe(false)
+  const depth = await undoDepth(page)
+
+  // 10 pixels out past the south-east corner square, then round the middle by 31° with Shift.
+  const pivot = f.at(0, top + 100)
+  const se = await handle(page, 'se')
+  const reach = Math.hypot(se.x - pivot.x, se.y - pivot.y) + 10
+  const angle = Math.atan2(se.y - pivot.y, se.x - pivot.x)
+  const from = { x: pivot.x + Math.cos(angle) * reach, y: pivot.y + Math.sin(angle) * reach }
+  await page.mouse.move(from.x, from.y)
+  expect(await page.evaluate(() => window.__marque.cursor())).toBe('rotate')
+  const to = { x: pivot.x + Math.cos(angle + (31 * Math.PI) / 180) * reach, y: pivot.y + Math.sin(angle + (31 * Math.PI) / 180) * reach }
+  await drag(page, from, to, ['Shift'])
+  expect(await undoDepth(page)).toBe(depth + 1)
+  expect(await frameRotations(page)).toEqual([30])
+
+  // A click out there, without a drag, is a click on the empty canvas.
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(() => frameRotations(page)).toEqual([0])
+  // Long enough after the drag's press not to count as a double-click.
+  await page.waitForTimeout(400)
+  await click(page, from)
+  expect(await selectedIds(page)).toEqual([])
+  expect(await undoDepth(page)).toBe(depth)
+})
+
+test('a thin bar stretches along its length from the short sides of its frame', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await page.evaluate(() => window.__marque.store.getState().addPenShape('M-120,-1L120,-1L120,1L-120,1Z'))
+  const f = await frame(page)
+  // The side is too short on screen for its own square.
+  expect(await handleIds(page)).not.toContain('e')
+  const ne = await handle(page, 'ne')
+  const se = await handle(page, 'se')
+  const side = { x: (ne.x + se.x) / 2, y: (ne.y + se.y) / 2 }
+  const depth = await undoDepth(page)
+
+  await drag(page, side, { x: side.x + 40 * f.unit, y: side.y }, ['ControlOrMeta'])
+  expect(await undoDepth(page)).toBe(depth + 1)
+  const extent = async () => {
+    const [points] = await anchors(page)
+    const xs = points.map((p) => p.x)
+    const ys = points.map((p) => p.y)
+    return { left: Math.min(...xs), width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) }
+  }
+  const stretched = await extent()
+  expect(Math.abs(stretched.width - 280)).toBeLessThanOrEqual(1)
+  expect(stretched.height).toBeCloseTo(2, 6)
+  expect(stretched.left).toBeCloseTo(-120, 6)
+
+  // With a finger too: the press goes to the side, not to the point at the bar's end.
+  const ne2 = await handle(page, 'ne')
+  const se2 = await handle(page, 'se')
+  const side2 = { x: (ne2.x + se2.x) / 2, y: (ne2.y + se2.y) / 2 }
+  await touchDrag(page, side2, { x: side2.x + 20 * f.unit, y: side2.y })
+  expect(await undoDepth(page)).toBe(depth + 2)
+  const again = await extent()
+  expect(Math.abs(again.width - 300)).toBeLessThanOrEqual(2)
+  expect(again.height).toBeCloseTo(2, 6)
+  expect(again.left).toBeCloseTo(-120, 6)
+})
+
+test('a press straight after a burst of keys meets the shapes where they are drawn', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  const f = await frame(page)
+  const extent = async () => {
+    const [points] = await anchors(page)
+    const xs = points.map((p) => p.x)
+    const ys = points.map((p) => p.y)
+    return { minX: Math.round(Math.min(...xs)), minY: Math.round(Math.min(...ys)), maxX: Math.round(Math.max(...xs)), maxY: Math.round(Math.max(...ys)) }
+  }
+  await page.evaluate(() => window.__marque.store.getState().addPenShape('M-100,-50L100,-50L100,50L-100,50Z'))
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  const depth = await undoDepth(page)
+
+  // Nudge 50 right, and before the burst lands, drag from where the shape was: that is empty canvas now.
+  for (let i = 0; i < 5; i++) await page.keyboard.press('Shift+ArrowRight')
+  await drag(page, f.at(-80, 0), f.at(-80, 60), ['ControlOrMeta'])
+  expect(await extent()).toEqual({ minX: -50, minY: -50, maxX: 150, maxY: 50 })
+  expect(await undoDepth(page)).toBe(depth + 1)
+  // Nudge again, and drag from where only its new place covers: the shape goes along.
+  for (let i = 0; i < 5; i++) await page.keyboard.press('Shift+ArrowRight')
+  await drag(page, f.at(170, 0), f.at(170, 60), ['ControlOrMeta'])
+  expect(await extent()).toEqual({ minX: 0, minY: 10, maxX: 200, maxY: 110 })
+  expect(await undoDepth(page)).toBe(depth + 3)
+
+  // The same after a turn with Alt and the arrow keys.
+  await startOver(page)
+  await page.evaluate(() => window.__marque.store.getState().addPenShape('M-150,-10L150,-10L150,10L-150,10Z'))
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  for (let i = 0; i < 6; i++) await page.keyboard.press('Alt+Shift+ArrowRight')
+  await drag(page, f.at(120, 0), f.at(120, 60), ['ControlOrMeta'])
+  expect(await extent()).toEqual({ minX: -10, minY: -150, maxX: 10, maxY: 150 })
+  for (let i = 0; i < 6; i++) await page.keyboard.press('Alt+Shift+ArrowRight')
+  await drag(page, f.at(120, 0), f.at(120, 60), ['ControlOrMeta'])
+  expect(await extent()).toEqual({ minX: -150, minY: 50, maxX: 150, maxY: 70 })
+  await pointerAway(page, f)
+  expect(await inkMismatches(page)).toEqual([])
+})
+
+/**
+ * Press keys in the page itself, then sample the canvas two frames later
+ * (after the render a commit brings), all well inside one burst of keys.
+ * Returns whether each point is solid ink, and the undo depth then.
+ */
+function keysThenInk(page: Page, keys: Array<{ key: string; shift?: boolean; alt?: boolean }>, points: Point[]) {
+  return page.evaluate(
+    async ({ keys, points }) => {
+      for (const { key, shift, alt } of keys) {
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key, shiftKey: shift, altKey: alt, bubbles: true, cancelable: true }))
+      }
+      await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
+      const canvas = document.querySelector('main canvas') as HTMLCanvasElement
+      const rect = canvas.getBoundingClientRect()
+      const ctx = canvas.getContext('2d')!
+      const ink = points.map((p) => {
+        const [r, g, b, a] = ctx.getImageData(
+          Math.floor(((p.x - rect.left) * canvas.width) / rect.width),
+          Math.floor(((p.y - rect.top) * canvas.height) / rect.height),
+          1,
+          1,
+        ).data
+        return a > 0.9 * 255 && r + g + b < 120
+      })
+      return { ink, depth: window.__marque.store.getState().vectorUndoStack.length }
+    },
+    { keys, points },
+  )
+}
+
+test('a nudge and a turn with Alt in one burst of keys show together in the ink', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  const f = await frame(page)
+  await page.evaluate(() => window.__marque.store.getState().addPenShape('M-150,-10L150,-10L150,10L-150,10Z'))
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  await pointerAway(page, f)
+  const depth = await undoDepth(page)
+  const quarterTurn = Array.from({ length: 6 }, () => ({ key: 'ArrowRight', shift: true, alt: true }))
+
+  // Up 10, then a quarter turn about the moved bar's middle: the nudge lands, and the ink shows the bar turned upright.
+  const turned = await keysThenInk(page, [{ key: 'ArrowUp', shift: true }, ...quarterTurn], [f.at(0, 100), f.at(120, -10)])
+  expect(turned.depth).toBe(depth + 1)
+  expect(turned.ink).toEqual([true, false])
+  await expect.poll(() => undoDepth(page)).toBe(depth + 2)
+
+  // A quarter turn back, then down 50: the turn lands, and the ink shows the bar lying down again, moved.
+  const moved = await keysThenInk(
+    page,
+    [...quarterTurn, ...Array.from({ length: 5 }, () => ({ key: 'ArrowDown', shift: true }))],
+    [f.at(120, 40), f.at(0, 100), f.at(120, -10)],
+  )
+  expect(moved.depth).toBe(depth + 3)
+  expect(moved.ink).toEqual([true, false, false])
+  await expect.poll(() => undoDepth(page)).toBe(depth + 4)
+  const [points] = await anchors(page)
+  const ys = points.map((p) => Math.round(p.y))
+  expect([Math.min(...ys), Math.max(...ys)]).toEqual([30, 50])
+  expect(await inkMismatches(page)).toEqual([])
+})
+
+test('Alt with the arrow keys reads out the size and angle it reaches, every time', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await page.evaluate(() => window.__marque.store.getState().addPenShape('M-100,-50L100,-50L100,50L-100,50Z'))
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  const status = page.locator('main').getByRole('status')
+
+  // Two separate presses, each read out with the size it reached.
+  await page.keyboard.press('Alt+ArrowUp')
+  await expect(status).toHaveText('Size 202 × 101')
+  await page.keyboard.press('Alt+ArrowUp')
+  await expect(status).toHaveText('Size 204 × 102')
+
+  // The same turn twice, with an undo between, is read out twice; the undo leaves nothing stale.
+  const announced: string[] = []
+  await page.exposeFunction('noteStatus', (text: string) => announced.push(text))
+  await status.evaluate((node) => {
+    new MutationObserver(() => (window as unknown as { noteStatus(text: string): void }).noteStatus(node.textContent ?? '')).observe(node, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    })
+  })
+  await page.keyboard.press('Alt+ArrowRight')
+  await expect(status).toHaveText('Turned to 1°')
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect(status).toHaveText('')
+  await page.keyboard.press('Alt+ArrowRight')
+  await expect(status).toHaveText('Turned to 1°')
+  await expect.poll(() => announced.filter((text) => text === 'Turned to 1°').length).toBe(2)
+})
+
+test('a shape turned or resized by its box takes the holes punched in it along', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  const f = await frame(page)
+  await page.evaluate(() => {
+    const state = window.__marque.store.getState()
+    state.addPenShape('M-150,-100L150,-100L150,100L-150,100Z')
+    window.__marque.store.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 80, y: 30 }, radius: 30 })
+    const { illustrator, setSelection } = window.__marque.store.getState()
+    setSelection([illustrator.layers[0].id])
+  })
+  const depth = await undoDepth(page)
+  const punch = async () => (await carves(page))[1] as PunchSpec
+
+  // A quarter turn: the hole goes round with the shape, one undo step for both.
+  await turnKnob(page, f.at(0, 0), 91, ['Shift'])
+  expect(await undoDepth(page)).toBe(depth + 1)
+  expect(await frameRotations(page)).toEqual([90, 0])
+  const turned = await punch()
+  expect(turned.center.x).toBeCloseTo(-30, 6)
+  expect(turned.center.y).toBeCloseTo(80, 6)
+  await pointerAway(page, f)
+  expect(await inkMismatches(page)).toEqual([])
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(() => frameRotations(page)).toEqual([0, 0])
+
+  // Stretched one way from its west side, the shape keeps the hole at its place along it, still round,
+  // grown by the square root of the stretch.
+  const west = await handle(page, 'w')
+  await drag(page, west, { x: west.x - 60 * f.unit, y: west.y }, ['ControlOrMeta'])
+  expect(await undoDepth(page)).toBe(depth + 1)
+  const stretched = await punch()
+  expect(Math.abs(stretched.center.x - (150 + (80 - 150) * 1.2))).toBeLessThanOrEqual(0.5)
+  expect(stretched.center.y).toBeCloseTo(30, 6)
+  const [points] = await anchors(page)
+  const stretch = (Math.max(...points.map((p) => p.x)) - Math.min(...points.map((p) => p.x))) / 300
+  expect(Math.abs(stretch - 1.2)).toBeLessThan(0.01)
+  expect(stretched.shape).toBe('circle')
+  // Stored recipes keep two decimals.
+  expect(Math.abs(stretched.radius - 30 * Math.sqrt(stretch))).toBeLessThanOrEqual(0.005)
+
+  // About the middle with Alt, the hole goes along all the same: on a box, Alt never leaves it behind.
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(async () => (await punch()).center.x).toBe(80)
+  const east = await handle(page, 'e')
+  await drag(page, east, { x: east.x + 30 * f.unit, y: east.y }, ['Alt', 'ControlOrMeta'])
+  expect(await undoDepth(page)).toBe(depth + 1)
+  expect(Math.abs((await punch()).center.x - 80 * 1.2)).toBeLessThanOrEqual(0.5)
+
+  // A slab turned by its own knob turns alone: the hole in it stays where it was.
+  await startOver(page)
+  await addSlab(page, 'Square')
+  await page.evaluate(() => {
+    window.__marque.store.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 80, y: 30 }, radius: 30 })
+    const { illustrator, setSelection } = window.__marque.store.getState()
+    setSelection([illustrator.layers[0].id])
+  })
+  const slabDepth = await undoDepth(page)
+  await turnKnob(page, f.at(0, 0), 91, ['Shift'])
+  expect(await undoDepth(page)).toBe(slabDepth + 1)
+  const [slab, hole] = await carves(page)
+  expect((slab as SlabSpec).rotation).toBe(90)
+  expect((hole as PunchSpec).center).toEqual({ x: 80, y: 30 })
+})
+
+test('a slab at the top of the canvas turns from just outside a corner, as a free shape does', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  const f = await frame(page)
+  // 200 units square, its top 20 units below the canvas's top edge.
+  const top = Math.round(-f.box.height / 2 / f.unit + 20)
+  await addSlab(page, 'Square')
+  await page.evaluate((y) => {
+    const { illustrator, commitLayerEdits } = window.__marque.store.getState()
+    const slab = illustrator.layers[0]
+    commitLayerEdits({ label: 'Place', edits: [{ layerId: slab.id, carve: { ...slab.carve!, center: { x: 0, y: y + 100 }, width: 200, height: 200 } as SlabSpec }] })
+  }, top)
+  const depth = await undoDepth(page)
+
+  const pivot = f.at(0, top + 100)
+  const se = await handle(page, 'se')
+  const reach = Math.hypot(se.x - pivot.x, se.y - pivot.y) + 10
+  const angle = Math.atan2(se.y - pivot.y, se.x - pivot.x)
+  const from = { x: pivot.x + Math.cos(angle) * reach, y: pivot.y + Math.sin(angle) * reach }
+  await page.mouse.move(from.x, from.y)
+  expect(await page.evaluate(() => window.__marque.cursor())).toBe('rotate')
+  const to = { x: pivot.x + Math.cos(angle + (31 * Math.PI) / 180) * reach, y: pivot.y + Math.sin(angle + (31 * Math.PI) / 180) * reach }
+  await drag(page, from, to, ['Shift'])
+  expect(await undoDepth(page)).toBe(depth + 1)
+  expect(((await carves(page))[0] as SlabSpec).rotation).toBe(30)
 })

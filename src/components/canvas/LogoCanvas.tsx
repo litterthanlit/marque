@@ -205,7 +205,8 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     }
 
     canvas.style.cursor = toolRef.current ? 'crosshair' : 'default'
-    controllerRef.current?.setHandlesLive(!(toolRef.current instanceof PenTool))
+    // The pen hides every handle; a carve tool keeps only a recipe's own, to adjust the cut just made.
+    controllerRef.current?.setHandlesLive(toolRef.current instanceof PenTool ? 'none' : toolRef.current ? 'recipe' : 'all')
 
     // Tool keys take precedence over the editor's while a tool is active.
     const unregister = registerEditorKeys((event) => {
@@ -245,7 +246,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
         toolRef.current.destroy()
         toolRef.current = null
       }
-      controllerRef.current?.setHandlesLive(true)
+      controllerRef.current?.setHandlesLive('all')
     }
   }, [
     ui.activeTool,
@@ -281,7 +282,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     const touch = e.pointerType === 'touch'
     if (toolRef.current && !controller?.handleAt(p, touch)) {
       pressOwnerRef.current = 'tool'
-      controller?.toolPointer(p, modifiersOf(e))
+      controller?.toolPointer(p, modifiersOf(e), touch)
       toolRef.current.onMouseDown(point)
       return
     }
@@ -303,7 +304,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
         const penCursor = tool instanceof PenTool ? tool.cursorAt(point) : null
         e.currentTarget.style.cursor = penCursor ?? controller.toolHover(p, touch) ?? 'crosshair'
       }
-      controller?.toolPointer(p, modifiersOf(e))
+      controller?.toolPointer(p, modifiersOf(e), touch)
       tool.onMouseDrag(point)
       return
     }
@@ -361,7 +362,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
           // The editor sets the cursor itself, per hover zone.
           style={{ imageRendering: 'auto', touchAction: 'none' }}
           tabIndex={0}
-          aria-label="Vector Maker canvas. Drag a shape to move it, its handles to resize it, or an edge to bend it. Arrow keys nudge the selection; Delete removes it."
+          aria-label="Vector Maker canvas. Drag a shape to move it, its handles to resize or rotate it, or an edge to bend it. Arrow keys nudge the selection; Alt with Left or Right rotates it by 1 degree, Alt with Up or Down scales it by 1 percent, and Shift makes each step larger. Delete removes it."
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}

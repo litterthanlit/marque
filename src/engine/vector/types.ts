@@ -90,6 +90,12 @@ export interface PathObject extends VectorBaseObject {
   fillRule: 'nonzero' | 'evenodd'
   /** Recipe for slabs and cuts. Older builds ignore it and keep the path. */
   carve?: CarveSpec
+  /**
+   * How far a free path's box is turned, in degrees: its handles sit around
+   * the path as measured in that frame. Compose and export ignore it. A
+   * recipe has its own rotation and never carries one.
+   */
+  frame?: { rotation: number }
 }
 
 export interface ShapeObject extends VectorBaseObject {

@@ -4,7 +4,7 @@ import type { LogoParams } from '../engine/types.ts'
 import { DEFAULT_PARAMS } from '../engine/types.ts'
 import type { IllustratorDocument, IllustratorLayer, PointSelection } from '../engine/illustrator/types.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../engine/illustrator/types.ts'
-import { bakedEditablePath, scaleLayers } from '../engine/illustrator/layerPath.ts'
+import { bakedEditablePath } from '../engine/illustrator/layerPath.ts'
 import { deleteAnchor, editablePathToPathData, toggleSmooth } from '../engine/path/editPath.ts'
 import { getLayerPathItem } from '../engine/illustrator/compose.ts'
 import { savedDocument, type SavedVariation } from '../engine/vector/saved.ts'
@@ -33,6 +33,7 @@ import {
   objectsFromLayer,
   removeObjects,
   updateObject,
+  writeFrame,
   writeLayerFields,
   writePathData,
   writeRecipe,
@@ -64,6 +65,8 @@ export interface LayerEdit {
   carve?: CarveSpec
   /** New path data for free shapes (already in untransformed layer space). */
   pathData?: string
+  /** How far a free shape's box is turned after the edit, in degrees. Missing keeps its frame as it was. */
+  frameRotation?: number
 }
 
 export interface LayerEditCommit {
@@ -135,10 +138,6 @@ interface LogoStore {
   setIllustratorDocument: (doc: IllustratorDocument) => void
   selectIllustratorLayer: (id: string | null, additive?: boolean) => void
   updateIllustratorLayer: (id: string, update: Partial<IllustratorLayer>) => void
-  updateIllustratorLayerTransform: (
-    id: string,
-    update: Partial<IllustratorLayer['transform']>,
-  ) => void
   duplicateIllustratorLayer: (id: string) => void
   deleteIllustratorLayers: (ids?: string[]) => void
   /** One place in the stack: 'up' is towards the top, where later layers sit. */
@@ -149,8 +148,6 @@ interface LogoStore {
   addSlab: (kind: SlabKind) => void
   /** A spark's shapes as layers under everything else, beside the ink: one undo step. */
   dropSpark: (spark: Spark) => void
-  /** Resize the selected free shapes together about the middle of the box around them: one undo step. */
-  scaleSelection: (factor: number) => void
   setSparkSeed: (seed: number) => void
   shuffleSparks: () => void
   startOver: () => void
@@ -260,11 +257,6 @@ export const useLogoStore = create<LogoStore>()((set) => ({
 
   updateIllustratorLayer: (id, update) => set((state) => layerUpdate(state, 'Update layer', id, (layer) => ({ ...layer, ...update }))),
 
-  updateIllustratorLayerTransform: (id, update) =>
-    set((state) =>
-      layerUpdate(state, 'Transform layer', id, (layer) => ({ ...layer, transform: { ...layer.transform, ...update } })),
-    ),
-
   duplicateIllustratorLayer: (id) =>
     set((state) => {
       const objects = state.vectorDocument.objects
@@ -327,16 +319,6 @@ export const useLogoStore = create<LogoStore>()((set) => ({
         ...commitObjects(state, 'Add spark', insertObjects(state.vectorDocument.objects, dropped, 'bottom'), objectSelection(idsOf(dropped))),
         ui: { ...state.ui, activeTool: null },
       }
-    }),
-
-  scaleSelection: (factor) =>
-    set((state) => {
-      const doc = state.illustrator
-      if (!Number.isFinite(factor) || factor <= 0 || factor === 1) return {}
-      const selected = doc.layers.filter((layer) => doc.selectedLayerIds.includes(layer.id))
-      // A recipe is resized by its handles. Scaling its path would turn it into a free shape.
-      if (selected.some((layer) => layer.carve)) return {}
-      return applyLayerEdits(state, { label: 'Scale shapes', edits: scaleLayers(selected, factor) })
     }),
 
   setSparkSeed: (sparkSeed) =>
@@ -587,9 +569,9 @@ function sameTransform(a: IllustratorLayer['transform'], b: IllustratorLayer['tr
 
 /**
  * A gesture's edits: a recipe edit regenerates the path from the recipe, and
- * a path edit makes the layer a free shape. Edits that change nothing are
- * skipped, and when none changes anything the commit is not a step and leaves
- * the selection alone.
+ * a path edit makes the layer a free shape, which keeps its frame unless the
+ * edit turns it. Edits that change nothing are skipped, and when none changes
+ * anything the commit is not a step and leaves the selection alone.
  */
 function applyLayerEdits(state: LogoStore, commit: LayerEditCommit): Partial<LogoStore> {
   const done = new Set<string>()
@@ -600,8 +582,9 @@ function applyLayerEdits(state: LogoStore, commit: LayerEditCommit): Partial<Log
     objects = updateObject(objects, edit.layerId, (object) => {
       if (object.type !== 'path') return object
       if (edit.carve) return writeRecipe(object, edit.carve)
-      if (edit.pathData !== undefined) return writePathData(object, edit.pathData)
-      return object
+      const written = edit.pathData !== undefined ? writePathData(object, edit.pathData) : [object]
+      const { frameRotation } = edit
+      return frameRotation === undefined ? written : written.map((piece) => writeFrame(piece, frameRotation))
     })
   }
   if (objects === state.vectorDocument.objects) return {}

@@ -5,7 +5,9 @@ import { slabSpec, type CarveSpec } from '../../engine/carve/spec.ts'
 import { composeIllustratorMark, getLayerPathItem } from '../../engine/illustrator/compose.ts'
 import { bakedEditablePath } from '../../engine/illustrator/layerPath.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
-import { findZone, type HitContext } from './hitZones.ts'
+import { DEFAULT_HANDLE_LAYOUT } from '../../engine/box/box.ts'
+import { scaledHandleLayout, selectionHandles } from './handleSet.ts'
+import { findZone, zoneKey, type HitContext } from './hitZones.ts'
 
 const scope = new paper.PaperScope()
 scope.setup(new paper.Size(1, 1))
@@ -156,5 +158,207 @@ describe('a cut over nothing', () => {
     expect(findZone(context([], [lone, { ...slab, locked: true }]), { x: 0, y: 0 })).toEqual({ kind: 'empty' })
     // A locked cut keeps its hole: an older cut under the same shape does not answer for it.
     expect(findZone(context([], [lone, slab, { ...over, locked: true }]), { x: 5, y: 0 })).toEqual({ kind: 'empty' })
+  })
+})
+
+describe('handles and points', () => {
+  // The triangle's box: x 210…290, y -100…-20. Its handles sit 12 units out.
+  function withBox(selectedIds: string[], anchorIndex: number | null = null): HitContext {
+    const ctx = context(selectedIds)
+    const handles = selectionHandles(ctx.doc, DEFAULT_HANDLE_LAYOUT, (layer) => bakedEditablePath(layer))
+    const path = bakedEditablePath(triangle)!
+    return {
+      ...ctx,
+      handles,
+      freePath: selectedIds.length === 1 && selectedIds[0] === 'triangle' ? { layerId: 'triangle', path } : null,
+      anchorIndex,
+    }
+  }
+
+  it("put a free shape's box handles above its body and edges", () => {
+    const ctx = withBox(['triangle'])
+    const east = ctx.handles!.list.find((h) => h.id === 'e')!
+    expect(east.at).toEqual({ x: 302, y: -60 })
+    const zone = findZone(ctx, east.at)
+    expect(zone.kind).toBe('handle')
+    if (zone.kind === 'handle') {
+      expect(zone.handle.id).toBe('e')
+      expect(zone.set.ids).toEqual(['triangle'])
+    }
+    expect(zoneKey(zone)).toBe('handle:box:triangle:e')
+  })
+
+  it('reach every point and every handle on its own centre: the nearer wins, and a point wins a tie', () => {
+    const ctx = withBox(['triangle'])
+    // The apex (250, -100) sits 12 units under the north handle (250, -112).
+    expect(findZone(ctx, { x: 250, y: -100 })).toEqual({ kind: 'anchor', layerId: 'triangle', index: 0 })
+    const north = findZone(ctx, { x: 250, y: -112 })
+    expect(north.kind === 'handle' && north.handle.id).toBe('n')
+    // Halfway between, the point wins.
+    expect(findZone(ctx, { x: 250, y: -106 })).toEqual({ kind: 'anchor', layerId: 'triangle', index: 0 })
+    expect(findZone(ctx, { x: 250, y: -107 }).kind).toBe('handle')
+  })
+
+  it('target every layer of a selection from one box', () => {
+    const ctx = withBox(['slab', 'triangle'])
+    expect(ctx.handles!.uniform).toBe(true)
+    const corner = ctx.handles!.list.find((h) => h.id === 'ne')!
+    const zone = findZone(ctx, corner.at)
+    expect(zone.kind === 'handle' && zone.set.ids).toEqual(['slab', 'triangle'])
+    expect(zoneKey(zone)).toBe('handle:box:slab,triangle:ne')
+  })
+})
+
+describe('a free shape on touch', () => {
+  function free(id: string, pathData: string): IllustratorLayer {
+    return { ...triangle, id, name: id, pathData }
+  }
+  const rect = free('rect', 'M-100,-50L100,-50L100,50L-100,50Z')
+  const tiny = free('tiny', 'M300,300L315,300L315,315L300,315Z')
+
+  function touchContext(selectedIds: string[], layers: IllustratorLayer[]): HitContext {
+    const ctx = { ...context(selectedIds, layers), touch: true }
+    const only = selectedIds.length === 1 ? layers.find((layer) => layer.id === selectedIds[0]) : undefined
+    return {
+      ...ctx,
+      handles: selectionHandles(ctx.doc, DEFAULT_HANDLE_LAYOUT, (layer) => bakedEditablePath(layer)),
+      freePath: only ? { layerId: only.id, path: bakedEditablePath(only)! } : null,
+    }
+  }
+
+  it('bends the middle of a side, and resizes from the side handle on its own centre', () => {
+    const ctx = touchContext(['rect'], [rect])
+    for (const p of [
+      { x: 0, y: -50 },
+      { x: 0, y: -52 },
+      { x: 0, y: -48 },
+      { x: 5, y: -50 },
+    ]) {
+      expect(zoneKey(findZone(ctx, p))).toBe('edge:rect:0')
+    }
+    expect(zoneKey(findZone(ctx, { x: 0, y: -62 }))).toBe('handle:box:rect:n')
+    expect(zoneKey(findZone({ ...ctx, touch: false }, { x: 0, y: -62 }))).toBe('handle:box:rect:n')
+  })
+
+  it('moves a shape small on screen from its middle, and still reaches its points from their centres', () => {
+    const ctx = touchContext(['tiny'], [rect, tiny])
+    expect(findZone(ctx, { x: 307.5, y: 307.5 })).toEqual({ kind: 'body', layerId: 'tiny' })
+    expect(findZone(ctx, { x: 300, y: 300 })).toEqual({ kind: 'anchor', layerId: 'tiny', index: 0 })
+    expect(findZone(ctx, { x: 296, y: 296 })).toEqual({ kind: 'anchor', layerId: 'tiny', index: 0 })
+  })
+})
+
+describe('a long thin shape', () => {
+  const at = (pathData: string, id = 'bar'): IllustratorLayer => ({ ...triangle, id, name: id, pathData })
+
+  /** A selected bar at a zoom of `unitsPerPx`, on touch or with a mouse. */
+  function barContext(layer: IllustratorLayer, unitsPerPx: number, touch: boolean): HitContext {
+    const ctx = { ...context([layer.id], [layer]), unitsPerPx, touch }
+    return {
+      ...ctx,
+      handles: selectionHandles(ctx.doc, scaledHandleLayout(unitsPerPx), (candidate) => bakedEditablePath(candidate)),
+      freePath: { layerId: layer.id, path: bakedEditablePath(layer)! },
+    }
+  }
+
+  it('keeps the full reach of its points from inside it', () => {
+    // 300 × 12, at 1.6 units per pixel: about 7.5 pixels tall on screen.
+    const bar = at('M-150,-6L150,-6L150,6L-150,6Z')
+    expect(findZone(barContext(bar, 1.6, true), { x: 144, y: 2 })).toEqual({ kind: 'anchor', layerId: 'bar', index: 2 })
+    expect(findZone(barContext(bar, 1.6, false), { x: 147, y: 3 })).toEqual({ kind: 'anchor', layerId: 'bar', index: 2 })
+  })
+
+  it('is not resized by a side handle reaching onto it', () => {
+    const bar = at('M-150,-6L150,-6L150,6L-150,6Z')
+    // The north handle sits 19.2 units above the top and reaches 22.4 on touch: past the edge's thin band.
+    expect(findZone(barContext(bar, 1.6, true), { x: 0, y: -3.2 })).toEqual({ kind: 'body', layerId: 'bar' })
+  })
+
+  it('stretches along its length from the short sides of its frame, where no side handle shows', () => {
+    // 240 × 2: the east and west handles are hidden, the frame's short sides are 26 units long.
+    const bar = at('M-120,-1L120,-1L120,1L-120,1Z')
+    for (const touch of [false, true]) {
+      const ctx = barContext(bar, 1, touch)
+      expect(ctx.handles!.list.map((h) => h.id)).toEqual(['nw', 'n', 'ne', 'se', 's', 'sw', 'rotate'])
+      expect(zoneKey(findZone(ctx, { x: 132, y: 0 }))).toBe('handle:box:bar:e')
+      expect(zoneKey(findZone(ctx, { x: -132, y: 0 }))).toBe('handle:box:bar:w')
+      expect(zoneKey(findZone(ctx, { x: 132, y: -13 }))).toBe('handle:box:bar:ne')
+    }
+  })
+})
+
+describe('inside a box', () => {
+  const left: IllustratorLayer = { ...triangle, id: 'left', name: 'left', pathData: 'M-200,-20L-160,-20L-160,20L-200,20Z' }
+  const right: IllustratorLayer = { ...triangle, id: 'right', name: 'right', pathData: 'M160,-20L200,-20L200,20L160,20Z' }
+
+  function boxContext(selectedIds: string[]): HitContext {
+    const ctx = context(selectedIds, [left, right])
+    return { ...ctx, handles: selectionHandles(ctx.doc, DEFAULT_HANDLE_LAYOUT, (layer) => bakedEditablePath(layer)) }
+  }
+
+  it('moves the selection from the empty space between its shapes, up to its frame', () => {
+    const ctx = boxContext(['left', 'right'])
+    expect(zoneKey(findZone(ctx, { x: 0, y: 0 }))).toBe('frame:left,right')
+    expect(zoneKey(findZone(ctx, { x: 100, y: -27 }))).toBe('frame:left,right')
+    expect(findZone(ctx, { x: -180, y: 0 })).toEqual({ kind: 'body', layerId: 'left' })
+  })
+
+  it('resizes from anywhere along a side of its frame, and the corners keep their own squares', () => {
+    const ctx = boxContext(['left', 'right'])
+    // The frame runs 12 units outside the shapes: x -212…212, y -32…32.
+    for (const p of [
+      { x: 100, y: -32 },
+      { x: 100, y: -35 },
+      { x: -150, y: -29 },
+    ]) {
+      expect(zoneKey(findZone(ctx, p))).toBe('handle:box:left,right:n')
+    }
+    expect(zoneKey(findZone(ctx, { x: 212, y: 10 }))).toBe('handle:box:left,right:e')
+    expect(zoneKey(findZone(ctx, { x: 207, y: -32 }))).toBe('handle:box:left,right:ne')
+  })
+
+  it('turns from just outside a corner, and a click there is a click on the empty canvas', () => {
+    const ctx = boxContext(['left', 'right'])
+    // The north-east corner square sits at (212, -32).
+    const ring = findZone(ctx, { x: 224, y: -42 })
+    expect(zoneKey(ring)).toBe('handle:box:left,right:rotate:ring')
+    expect(ring.kind === 'handle' && ring.handle.kind).toBe('rotate')
+    expect(findZone(ctx, { x: 240, y: -50 })).toEqual({ kind: 'empty' })
+    // Inside the frame it is still the frame.
+    expect(zoneKey(findZone(ctx, { x: 206, y: -26 }))).toBe('frame:left,right')
+  })
+
+  it('is empty outside the frame, or with nothing selected', () => {
+    expect(findZone(boxContext(['left', 'right']), { x: 0, y: 40 })).toEqual({ kind: 'empty' })
+    expect(findZone(boxContext([]), { x: 0, y: 0 })).toEqual({ kind: 'empty' })
+  })
+})
+
+describe('a recipe that turns', () => {
+  function recipeContext(layer: IllustratorLayer): HitContext {
+    const ctx = context([layer.id], [layer])
+    return { ...ctx, handles: selectionHandles(ctx.doc, DEFAULT_HANDLE_LAYOUT, (candidate) => bakedEditablePath(candidate)) }
+  }
+
+  it('turns from just outside a corner of its own handles, like a box does', () => {
+    for (const rotation of [0, 30]) {
+      const turnedSlab = recipeLayer('slab', { ...slabSpec('square'), rotation }, 'add')
+      const ctx = recipeContext(turnedSlab)
+      const at = (id: string) => ctx.handles!.list.find((h) => h.id === id)!.at
+      const se = at('se')
+      const out = { x: se.x - at('nw').x, y: se.y - at('nw').y }
+      const reach = Math.hypot(out.x, out.y)
+      // 10 units further out along the diagonal.
+      const ring = findZone(ctx, { x: se.x + (out.x / reach) * 10, y: se.y + (out.y / reach) * 10 })
+      expect(zoneKey(ring)).toBe('handle:recipe:slab:rotate:ring')
+      expect(ring.kind === 'handle' && ring.handle.kind).toBe('rotate')
+    }
+  })
+
+  it('has no ring when it does not turn, such as a round punch', () => {
+    const round = recipeLayer('round', { v: 1, kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 50, rotation: 0 }, 'subtract')
+    const ctx = recipeContext(round)
+    const se = ctx.handles!.list.find((h) => h.id === 'se')!.at
+    expect(findZone(ctx, { x: se.x + 7, y: se.y + 7 })).toEqual({ kind: 'empty' })
   })
 })

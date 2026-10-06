@@ -142,7 +142,12 @@ export function drawSnapGuides(scope: paper.PaperScope, layer: paper.Layer, guid
   }
 }
 
-/** Anchors of a free shape; the selected one is filled and shows its handles. */
+/**
+ * Anchors of a free shape; the selected one is filled and shows its handles.
+ * They are smaller and lighter than the resize squares of a box, which sit
+ * close by at every corner, so the two never read as one family. They turn
+ * by `turn` (the shape's frame), so they square up with the box's handles.
+ */
 export function drawAnchors(
   scope: paper.PaperScope,
   layer: paper.Layer,
@@ -150,6 +155,7 @@ export function drawAnchors(
   center: Vec,
   selectedIndex: number | null,
   hoverIndex: number | null,
+  turn = 0,
 ) {
   const at = (v: Vec) => new scope.Point(v.x + center.x, v.y + center.y)
   if (selectedIndex !== null && path.segs[selectedIndex]) {
@@ -176,6 +182,7 @@ export function drawAnchors(
       point: [seg.p.x + center.x - size / 2, seg.p.y + center.y - size / 2],
       size: [size, size],
     })
+    if (turn) square.rotate(turn, at(seg.p))
     square.fillColor = new scope.Color(i === selectedIndex ? SELECTION_COLOR : '#ffffff')
     square.strokeColor = new scope.Color(SELECTION_COLOR)
     square.strokeWidth = 1.25 * u
@@ -185,9 +192,11 @@ export function drawAnchors(
 }
 
 /**
- * Handles of the selected recipe: resize squares on a frame just outside the
+ * Handles of the selection: resize squares on a frame just outside the
  * shape, a rounding dot, a rotate dot on a short stem, end points and a width
- * dot for grooves. The frame line ties the handles together visually.
+ * dot for grooves. The frame line ties the handles together visually. Resize
+ * squares turn with their box and stand out with a soft shadow, larger than
+ * a free shape's anchors.
  */
 export function drawCarveHandles(
   scope: paper.PaperScope,
@@ -247,9 +256,13 @@ export function drawCarveHandles(
     const p = at(handle.at)
     let shape: paper.Path
     if (handle.kind === 'resize' || handle.kind === 'scale') {
-      const size = (hot ? 9 : 7.5) * u
+      const size = (hot ? 9.5 : 8) * u
       shape = new scope.Path.Rectangle({ point: [p.x - size / 2, p.y - size / 2], size: [size, size] })
+      if (handle.turn) shape.rotate(handle.turn, p)
       shape.fillColor = white
+      // Canvas shadows ignore the view's scale: the blur is given in device pixels.
+      shape.shadowColor = new scope.Color(0, 0, 0, 0.28)
+      shape.shadowBlur = 3 * scope.view.pixelRatio
     } else if (handle.kind === 'radius') {
       shape = new scope.Path.Circle(p, (hot ? 5.5 : 4.5) * u)
       shape.fillColor = blue

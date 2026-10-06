@@ -5,13 +5,13 @@
  */
 import { useLogoStore } from './store/logoStore.ts'
 import { bakedEditablePath } from './engine/illustrator/layerPath.ts'
-import { carveHandles, DEFAULT_HANDLE_LAYOUT } from './engine/carve/edit.ts'
 import { grooveSpine } from './engine/carve/outline.ts'
 import { isGroove } from './engine/carve/spec.ts'
 import { cubicPoint, cubicTangent, type Vec } from './engine/path/bezier.ts'
 import { composeVectorMarkCached } from './engine/vector/export.ts'
 import { DESIGN_SPAN } from './renderer/viewFit.ts'
 import { CURSORS } from './renderer/directEdit/cursors.ts'
+import { scaledHandleLayout, selectionHandles } from './renderer/directEdit/handleSet.ts'
 
 function canvasFrame() {
   const canvas = document.querySelector('main canvas') as HTMLCanvasElement | null
@@ -32,19 +32,16 @@ function createDevHook() {
     store: useLogoStore,
     bakedEditablePath,
 
-    /** Client-space positions of the selected recipe's handles. */
+    /**
+     * Client-space positions of the selection's handles, as the canvas
+     * computes them: a recipe's own, or the box around a free shape or
+     * several layers.
+     */
     handles() {
-      const doc = useLogoStore.getState().illustrator
-      const layer = doc.selectedLayerIds.length === 1 ? layerById(doc.selectedLayerIds[0]) : undefined
       const frame = canvasFrame()
-      if (!layer?.carve || !frame) return []
-      const layout = {
-        pad: DEFAULT_HANDLE_LAYOUT.pad / frame.unit,
-        rotateOffset: DEFAULT_HANDLE_LAYOUT.rotateOffset / frame.unit,
-        minEdgeHandleSize: DEFAULT_HANDLE_LAYOUT.minEdgeHandleSize / frame.unit,
-        radiusInset: DEFAULT_HANDLE_LAYOUT.radiusInset / frame.unit,
-      }
-      return carveHandles(layer.carve, layout).map((h) => ({ id: h.id, ...frame.toClient(h.at) }))
+      if (!frame) return []
+      const set = selectionHandles(useLogoStore.getState().illustrator, scaledHandleLayout(1 / frame.unit), bakedEditablePath)
+      return (set?.list ?? []).map((h) => ({ id: h.id, ...frame.toClient(h.at) }))
     },
 
     /** Name of the editor cursor currently shown on the canvas. */

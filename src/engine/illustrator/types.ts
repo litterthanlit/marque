@@ -28,6 +28,8 @@ export interface IllustratorLayer {
   transform: IllustratorTransform
   /** Recipe for slabs and cuts; the path above is always generated from it. */
   carve?: CarveSpec
+  /** How far a free shape's box is turned, in degrees. Missing is upright. */
+  frameRotation?: number
 }
 
 export interface PointSelection {

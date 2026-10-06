@@ -1,18 +1,23 @@
 import { describe, expect, it } from 'vitest'
-import { add, cubicPoint, rotate } from '../path/bezier.ts'
+import { add, cubicPoint, rotate, rotateAbout, scale, sub, type Vec } from '../path/bezier.ts'
+import { IDENTITY_MATRIX } from '../vector/document.ts'
+import { affineOf, applyAffine } from '../box/box.ts'
 import {
   bendCarve,
   carveHandles,
+  carveUnderAffine,
   dragCarveHandle,
   isSideBent,
   locateCarveGrab,
   MAX_FULLNESS,
   rotateCarveAbout,
+  scaleCarveAbout,
   straightenCarve,
   translateCarve,
 } from './edit.ts'
-import { carveOutline } from './outline.ts'
-import { slabSpec, type GrooveSpec, type PunchSpec, type SlabSpec } from './spec.ts'
+import { carveOutline, grooveSpine } from './outline.ts'
+import { isGroove, roundCarveSpec, slabSpec, type CarveSpec, type GrooveSpec, type PunchSpec, type SlabSpec } from './spec.ts'
+import { isObjectCarveValid, segsToVectorPath } from './sync.ts'
 
 const rotated: SlabSpec = { ...slabSpec('rounded'), center: { x: 30, y: -10 }, rotation: 30 }
 
@@ -175,5 +180,131 @@ describe('moving recipes', () => {
     expect(east.at.x).toBeCloseTo(202, 6)
     const ids = handles.map((h) => h.id)
     expect(ids).toEqual(expect.arrayContaining(['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw', 'radius', 'rotate']))
+  })
+})
+
+describe('scaling and turning a recipe as part of a selection', () => {
+  const pivot = { x: -40, y: 25 }
+  const recipes: Array<[string, CarveSpec]> = [
+    ['a bent, rounded, turned slab', { ...rotated, radius: 30, sides: { top: { a1: 0.05, o1: 18, a2: -0.05, o2: 12 } }, corners: { br: { k1: 1.3, k2: 0.8 } } }],
+    ['a circle punch', { v: 1, kind: 'punch', shape: 'circle', center: { x: 60, y: 40 }, radius: 45, rotation: 0 }],
+    ['a bent square punch', { v: 1, kind: 'punch', shape: 'square', center: { x: 60, y: 40 }, radius: 45, rotation: 20, sides: { right: { a1: 0, o1: 10, a2: 0, o2: 10 } } }],
+    ['a triangle punch', { v: 1, kind: 'punch', shape: 'triangle', center: { x: -10, y: 70 }, radius: 50, rotation: 10 }],
+    ['a bent channel', { v: 1, kind: 'channel', from: { x: -100, y: 0 }, to: { x: 120, y: 30 }, width: 36, bend: { a1: 0, o1: 25, a2: 0, o2: 25 } }],
+    ['a slice', { v: 1, kind: 'slice', from: { x: -80, y: -60 }, to: { x: 90, y: 50 }, width: 20 }],
+  ]
+
+  /**
+   * A box recipe's outline, point by point and handle by handle, is the old
+   * one mapped by `map`. A groove's outline is rebuilt around its spine (and a
+   * slice's reaches the same distance past its ends), so its spine is
+   * compared instead, with its width scaled by `factor`.
+   */
+  function expectMapped(next: CarveSpec, start: CarveSpec, map: (p: Vec) => Vec, factor: number) {
+    if (isGroove(start) || isGroove(next)) {
+      if (!isGroove(start) || !isGroove(next)) throw new Error('a groove stays a groove')
+      const was = grooveSpine(start)
+      const now = grooveSpine(next)
+      now.forEach((p, i) => {
+        expect(p.x).toBeCloseTo(map(was[i]).x, 6)
+        expect(p.y).toBeCloseTo(map(was[i]).y, 6)
+      })
+      expect(next.width).toBeCloseTo(start.width * factor, 6)
+      return
+    }
+    const was = carveOutline(start).segs
+    const now = carveOutline(next).segs
+    expect(now).toHaveLength(was.length)
+    now.forEach((seg, i) => {
+      const p = map(was[i].p)
+      expect(seg.p.x).toBeCloseTo(p.x, 6)
+      expect(seg.p.y).toBeCloseTo(p.y, 6)
+      for (const key of ['hIn', 'hOut'] as const) {
+        const before = was[i][key]
+        const after = seg[key]
+        expect(Boolean(after)).toBe(Boolean(before))
+        if (!before || !after) continue
+        const tip = sub(map(add(was[i].p, before)), p)
+        expect(after.x).toBeCloseTo(tip.x, 6)
+        expect(after.y).toBeCloseTo(tip.y, 6)
+      }
+    })
+  }
+
+  const expectValid = (spec: CarveSpec) => {
+    const rounded = roundCarveSpec(spec)
+    expect(isObjectCarveValid(rounded, segsToVectorPath(carveOutline(rounded).segs, 'p'), IDENTITY_MATRIX)).toBe(true)
+  }
+
+  it.each(recipes)('scales %s about a pivot, every length alike, and it stays a valid recipe', (_, spec) => {
+    for (const factor of [0.6, 1.75]) {
+      const next = scaleCarveAbout(spec, pivot, factor)
+      expect(next.kind).toBe(spec.kind)
+      expectMapped(next, spec, (p) => add(pivot, scale(sub(p, pivot), factor)), factor)
+      expectValid(next)
+    }
+  })
+
+  it.each(recipes)('turns %s about a pivot and it stays a valid recipe', (_, spec) => {
+    const next = rotateCarveAbout(spec, pivot, 30)
+    expectMapped(next, spec, (p) => rotateAbout(p, pivot, 30), 1)
+    expectValid(next)
+  })
+})
+
+describe('a recipe carried by a map', () => {
+  const pivot = { x: -40, y: 25 }
+  const slab: SlabSpec = { ...rotated, radius: 30, sides: { top: { a1: 0.05, o1: 18, a2: -0.05, o2: 12 } } }
+  const channel: GrooveSpec = { v: 1, kind: 'channel', from: { x: -100, y: 0 }, to: { x: 120, y: 30 }, width: 36 }
+
+  it('follows a turn, an even scale and a move exactly, and stays a valid recipe', () => {
+    const map = affineOf((p) => add(rotateAbout(add(pivot, scale(sub(p, pivot), 1.4)), pivot, 30), { x: 12, y: -7 }))
+    for (const spec of [slab, channel] as CarveSpec[]) {
+      const next = carveUnderAffine(spec, map)
+      const expected = translateCarve(rotateCarveAbout(scaleCarveAbout(spec, pivot, 1.4), pivot, 30), { x: 12, y: -7 })
+      const outline = carveOutline(next).segs
+      carveOutline(expected).segs.forEach((seg, i) => {
+        expect(outline[i].p.x).toBeCloseTo(seg.p.x, 6)
+        expect(outline[i].p.y).toBeCloseTo(seg.p.y, 6)
+      })
+      if (!isGroove(next)) expect(next.rotation).toBe(60)
+      const rounded = roundCarveSpec(next)
+      expect(isObjectCarveValid(rounded, segsToVectorPath(carveOutline(rounded).segs, 'p'), IDENTITY_MATRIX)).toBe(true)
+    }
+  })
+
+  it('takes the similarity nearest a stretch: its centre follows, its size scales by the area, its angle by the turn', () => {
+    // Twice as wide along the x axis: the area doubles and nothing turns.
+    const stretch = affineOf((p) => ({ x: pivot.x + (p.x - pivot.x) * 2, y: p.y }))
+    const next = carveUnderAffine(slab, stretch) as SlabSpec
+    expect(next.center).toEqual(applyAffine(stretch, slab.center))
+    expect(next.rotation).toBe(slab.rotation)
+    expect(next.width).toBeCloseTo(slab.width * Math.SQRT2, 9)
+    expect(next.height).toBeCloseTo(slab.height * Math.SQRT2, 9)
+    expect(next.radius).toBeCloseTo(slab.radius * Math.SQRT2, 9)
+    expect(next.sides!.top!.o1).toBeCloseTo(18 * Math.SQRT2, 9)
+    const groove = carveUnderAffine(channel, stretch) as GrooveSpec
+    const middle = { x: (channel.from.x + channel.to.x) / 2, y: (channel.from.y + channel.to.y) / 2 }
+    const grooveMiddle = { x: (groove.from.x + groove.to.x) / 2, y: (groove.from.y + groove.to.y) / 2 }
+    expect(grooveMiddle.x).toBeCloseTo(applyAffine(stretch, middle).x, 9)
+    expect(grooveMiddle.y).toBeCloseTo(applyAffine(stretch, middle).y, 9)
+    expect(Math.hypot(groove.to.x - groove.from.x, groove.to.y - groove.from.y)).toBeCloseTo(
+      Math.hypot(channel.to.x - channel.from.x, channel.to.y - channel.from.y) * Math.SQRT2,
+      9,
+    )
+    expect(groove.width).toBeCloseTo(channel.width * Math.SQRT2, 9)
+
+    // A stretch in a frame turned by 30°, then a quarter turn: the punch turns by the quarter turn alone, and stays round.
+    const punch: PunchSpec = { v: 1, kind: 'punch', shape: 'circle', center: { x: 50, y: 20 }, radius: 10, rotation: 0 }
+    const along = affineOf((p) => {
+      const local = rotate(sub(p, pivot), -30)
+      return rotateAbout(add(pivot, rotate({ x: local.x * 1.5, y: local.y * 0.6 }, 30)), pivot, 90)
+    })
+    const carried = carveUnderAffine(punch, along) as PunchSpec
+    expect(carried.shape).toBe('circle')
+    expect(carried.center.x).toBeCloseTo(applyAffine(along, punch.center).x, 9)
+    expect(carried.center.y).toBeCloseTo(applyAffine(along, punch.center).y, 9)
+    expect(carried.radius).toBeCloseTo(10 * Math.sqrt(1.5 * 0.6), 9)
+    expect(carried.rotation).toBe(90)
   })
 })

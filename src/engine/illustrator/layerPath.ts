@@ -1,7 +1,10 @@
 import paper from 'paper'
+import { affineOf, pathBoundsInFrame, transformPath } from '../box/box.ts'
+import { add, boundsCenter, rotate, scale, sub } from '../path/bezier.ts'
 import type { EditablePath } from '../path/editPath.ts'
+import type { VectorPath } from '../vector/types.ts'
 import { getLayerPathItem } from './compose.ts'
-import type { IllustratorLayer, MarkData } from './types.ts'
+import type { IllustratorLayer, IllustratorTransform, MarkData } from './types.ts'
 
 let scope: paper.PaperScope | null = null
 
@@ -46,6 +49,23 @@ export function bakedEditablePath(layer: IllustratorLayer): EditablePath | null 
   return out
 }
 
+/**
+ * A document path with a layer's transform baked in, as `bakedEditablePath`
+ * gives it, but worked out without paper: it never switches the active
+ * scope, so a component can measure a layer as it renders. The transform
+ * scales and turns about the middle of the path's bounds, then moves.
+ */
+export function bakedObjectPath(path: VectorPath, transform: IllustratorTransform): EditablePath {
+  const editable: EditablePath = {
+    closed: path.closed,
+    segs: path.segments.map((seg) => ({ p: seg.point, hIn: seg.handleIn, hOut: seg.handleOut })),
+  }
+  const { dx, dy, scale: factor, rotation } = transform
+  if (dx === 0 && dy === 0 && factor === 1 && rotation === 0) return editable
+  const pivot = boundsCenter(pathBoundsInFrame(editable))
+  return transformPath(editable, affineOf((p) => add(add(pivot, rotate(scale(sub(p, pivot), factor), rotation)), { x: dx, y: dy })))
+}
+
 function drawnItems(s: paper.PaperScope, layers: IllustratorLayer[]): Array<{ layer: IllustratorLayer; item: paper.PathItem }> {
   s.project.clear()
   return layers.flatMap((layer) => {
@@ -64,23 +84,4 @@ export function layersBounds(layers: IllustratorLayer[]): MarkData['viewBox'] | 
   const box = boundsOf(drawnItems(s, layers))
   s.project.clear()
   return box && { x: box.x, y: box.y, width: box.width, height: box.height }
-}
-
-/**
- * The layers scaled as one piece about the middle of the box around them.
- * The result is baked into each path, as a move on the canvas is. A layer
- * transform scales about the layer's own middle, so it would also need an
- * offset, which the Move sliders can neither show nor reach.
- */
-export function scaleLayers(layers: IllustratorLayer[], factor: number): Array<{ layerId: string; pathData: string }> {
-  const s = getScope()
-  const drawn = drawnItems(s, layers)
-  const box = boundsOf(drawn)
-  if (!box) return []
-  const edits = drawn.map(({ layer, item }) => {
-    item.scale(factor, box.center)
-    return { layerId: layer.id, pathData: item.pathData }
-  })
-  s.project.clear()
-  return edits
 }
