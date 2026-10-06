@@ -427,6 +427,29 @@ test('a drag lands once wherever it is released; holes travel with their slab un
   await expect.poll(() => layers(page).then((list) => list.length)).toBe(0)
 })
 
+test('undo straight after an arrow nudge takes the nudge back, and the nudge does not land later', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await addSlab(page, 'Square')
+  const f = await frame(page)
+  const [slab] = (await carves(page)) as SlabSpec[]
+  // A drag first, so there is an older step that a late nudge could write over.
+  const body = f.at(slab.center.x - 100, slab.center.y - 100)
+  await drag(page, body, { x: body.x + 40 * f.unit, y: body.y })
+  const [moved] = (await carves(page)) as SlabSpec[]
+  expect(moved.center.x).toBeGreaterThan(slab.center.x + 20)
+  const depth = await undoDepth(page)
+
+  // The nudge waits 450 ms to commit; undo comes before that.
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ControlOrMeta+z')
+  await page.waitForTimeout(700)
+
+  expect(await carves(page)).toEqual([moved])
+  expect(await undoDepth(page)).toBe(depth)
+  expect(await page.evaluate(() => window.__marque.store.getState().vectorRedoStack.length)).toBe(1)
+})
+
 test('a reload from the link keeps recipes, and their handles still work', async ({ page }) => {
   await openVectorMaker(page)
   await startOver(page)

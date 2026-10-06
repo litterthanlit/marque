@@ -1,3 +1,4 @@
+import paper from 'paper'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useLogoStore } from './logoStore.ts'
 import type { SlabSpec } from '../engine/carve/spec.ts'
@@ -15,6 +16,7 @@ function reset(viewport = { width: 600, height: 600 }) {
 }
 
 const layers = () => useLogoStore.getState().illustrator?.layers ?? []
+const objects = () => useLogoStore.getState().vectorDocument.objects
 const undoDepth = () => useLogoStore.getState().vectorUndoStack.length
 
 describe('a fresh store', () => {
@@ -107,6 +109,208 @@ describe('history', () => {
     expect(layers()).toHaveLength(0)
     useLogoStore.getState().undoVectorCommand()
     expect(layers()).toHaveLength(1)
+  })
+})
+
+describe('edits write the document directly', () => {
+  beforeEach(() => {
+    reset()
+    const store = useLogoStore.getState()
+    store.addSlab('square')
+    store.addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 40 })
+    store.addPenShape('M-150,-150L-60,-150L-60,-60Z')
+  })
+
+  it('moving one of three layers leaves the other two objects as they were, by reference', () => {
+    const [slab, punch, shape] = objects()
+    useLogoStore.getState().moveIllustratorLayer(slab.id, 'up')
+    expect(objects()).toHaveLength(3)
+    expect(objects()[0]).toBe(punch)
+    expect(objects()[1]).toBe(slab)
+    expect(objects()[2]).toBe(shape)
+  })
+
+  it('an edit to one object keeps every other object, and its layer view', () => {
+    const [slab, punch, shape] = objects()
+    const [, punchLayer, shapeLayer] = layers()
+    useLogoStore.getState().toggleIllustratorLayerVisibility(slab.id)
+    expect(objects()[0]).not.toBe(slab)
+    expect(objects()[1]).toBe(punch)
+    expect(objects()[2]).toBe(shape)
+    expect(layers()[1]).toBe(punchLayer)
+    expect(layers()[2]).toBe(shapeLayer)
+  })
+
+  it('a commit that changes nothing is no undo step and keeps the objects array', () => {
+    const before = objects()
+    const depth = undoDepth()
+    const [slab, punch, shape] = layers()
+    const store = useLogoStore.getState()
+    store.commitLayerEdits({ label: 'Resize', edits: [{ layerId: slab.id, carve: slab.carve! }] })
+    store.commitLayerEdits({ label: 'Bend', edits: [{ layerId: shape.id, pathData: shape.pathData }] })
+    store.setIllustratorLayerOperation(punch.id, 'subtract')
+    store.updateIllustratorLayerTransform(shape.id, { dx: 0 })
+    store.moveIllustratorLayer(shape.id, 'up')
+    expect(objects()).toBe(before)
+    expect(undoDepth()).toBe(depth)
+  })
+
+  it('undo puts back the very same objects array, and redo the one after it', () => {
+    const before = objects()
+    const document = useLogoStore.getState().vectorDocument
+    useLogoStore.getState().commitLayerEdits({
+      label: 'Resize',
+      edits: [{ layerId: before[0].id, carve: { ...(layers()[0].carve as SlabSpec), width: 300 } }],
+    })
+    const after = objects()
+    expect(after).not.toBe(before)
+
+    useLogoStore.getState().undoVectorCommand()
+    expect(objects()).toBe(before)
+    expect(useLogoStore.getState().vectorDocument.selection).toEqual(document.selection)
+    useLogoStore.getState().redoVectorCommand()
+    expect(objects()).toBe(after)
+  })
+
+  it('a selection change keeps the objects array and the layers, and is no undo step', () => {
+    const before = objects()
+    const layerView = layers()
+    const depth = undoDepth()
+    useLogoStore.getState().setSelection([before[0].id, before[1].id])
+    useLogoStore.getState().selectIllustratorLayer(before[2].id)
+    expect(objects()).toBe(before)
+    expect(layers()).toBe(layerView)
+    expect(useLogoStore.getState().illustrator.selectedLayerIds).toEqual([before[2].id])
+    expect(undoDepth()).toBe(depth)
+  })
+
+  it('freezes every object it writes in development, so an edit in place throws', () => {
+    const [slab] = objects()
+    expect(import.meta.env.DEV).toBe(true)
+    expect(() => {
+      ;(slab as { name: string }).name = 'Changed'
+    }).toThrow(TypeError)
+    expect(() => {
+      if (slab.type === 'path') slab.path.segments[0].point.x = 999
+    }).toThrow(TypeError)
+    expect(slab.name).toBe('Slab')
+  })
+
+  it('a recipe edit rewrites the path from the recipe; a path edit drops the recipe', () => {
+    const [slab] = layers()
+    useLogoStore.getState().commitLayerEdits({
+      label: 'Resize',
+      edits: [{ layerId: slab.id, carve: { ...(slab.carve as SlabSpec), width: 300 } }],
+    })
+    expect(layers()[0].pathData).toContain('150')
+    expect(layers()[0].carve).toMatchObject({ kind: 'slab', width: 300 })
+
+    useLogoStore.getState().commitLayerEdits({ label: 'Bend', edits: [{ layerId: slab.id, pathData: 'M0,0L100,0L100,100Z' }] })
+    expect(layers()[0].carve).toBeUndefined()
+    expect(layers()[0].pathData).toBe('M0,0h100v100z')
+    expect(layers()[0].transform).toEqual({ dx: 0, dy: 0, scale: 1, rotation: 0 })
+  })
+
+  it('leaves no paper items behind in the scope that was active', () => {
+    const canvas = new paper.PaperScope()
+    canvas.setup(new paper.Size(1, 1))
+    canvas.activate()
+    useLogoStore.getState().toggleIllustratorLayerVisibility(layers()[0].id)
+    useLogoStore.getState().commitLayerEdits({ label: 'Bend', edits: [{ layerId: layers()[2].id, pathData: 'M0,0L100,0L100,100Z' }] })
+    expect(canvas.project.activeLayer.children).toHaveLength(0)
+  })
+})
+
+describe('the other layer actions', () => {
+  beforeEach(() => reset())
+
+  it('turn a recipe into its recipe, never a transform, and a free shape into its transform', () => {
+    const store = useLogoStore.getState()
+    store.addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 20, y: 30 }, radius: 40 })
+    store.addPenShape('M0,0L100,0L100,100Z')
+    const [punch, shape] = layers()
+
+    useLogoStore.getState().updateIllustratorLayerTransform(punch.id, { dx: 10, dy: -5 })
+    expect(layers()[0].transform).toEqual({ dx: 0, dy: 0, scale: 1, rotation: 0 })
+    expect(layers()[0].carve).toMatchObject({ kind: 'punch', center: { x: 30, y: 25 }, radius: 40 })
+
+    useLogoStore.getState().duplicateIllustratorLayer(shape.id)
+    const copy = layers()[2]
+    expect(copy.name).toBe('Shape 2 copy')
+    expect(copy.pathData).toBe(shape.pathData)
+    expect(copy.transform).toEqual({ dx: 12, dy: 12, scale: 1, rotation: 0 })
+    expect(useLogoStore.getState().illustrator.selectedLayerIds).toEqual([copy.id])
+
+    useLogoStore.getState().updateIllustratorLayer(copy.id, { transform: { dx: 0, dy: 0, scale: 1, rotation: 0 } })
+    expect(layers()[2].transform).toEqual({ dx: 0, dy: 0, scale: 1, rotation: 0 })
+    expect(undoDepth()).toBe(5)
+  })
+
+  it('rename, hide and switch to a cut without touching the path', () => {
+    useLogoStore.getState().addSlab('square')
+    const [slab] = objects()
+    useLogoStore.getState().updateIllustratorLayer(slab.id, { name: 'Base' })
+    useLogoStore.getState().toggleIllustratorLayerVisibility(slab.id)
+    useLogoStore.getState().setIllustratorLayerOperation(slab.id, 'subtract')
+    const [now] = objects()
+    expect(now).toMatchObject({ name: 'Base', visible: false, source: { compatOperation: 'subtract' } })
+    expect(now.type === 'path' && slab.type === 'path' && now.path).toBe(slab.type === 'path' && slab.path)
+    expect(undoDepth()).toBe(4)
+  })
+
+  it('combine the selection in the order it was picked, where the lowest of them sat, as the first one', () => {
+    const store = useLogoStore.getState()
+    store.addPenShape('M500,500L510,500L510,510Z')
+    store.addCarveCut({ kind: 'punch', shape: 'square', center: { x: 50, y: 0 }, radius: 50 })
+    store.addSlab('square')
+    store.addPenShape('M600,600L610,600L610,610Z')
+    const [bottom, punch, slab, top] = layers()
+
+    useLogoStore.getState().setSelection([slab.id, punch.id])
+    useLogoStore.getState().booleanIllustratorLayers('subtract')
+
+    const after = layers()
+    expect(after.map((layer) => layer.id)).toEqual([bottom.id, after[1].id, top.id])
+    expect(after[1]).toMatchObject({ name: 'subtract result', operation: 'add' })
+    expect(after[1].carve).toBeUndefined()
+    expect(useLogoStore.getState().illustrator.selectedLayerIds).toEqual([after[1].id])
+  })
+
+  it('combine into pieces when the result has a hole, and select every piece', () => {
+    const store = useLogoStore.getState()
+    store.addPenShape('M0,0L200,0L200,200L0,200Z')
+    store.addPenShape('M50,50L150,50L150,150L50,150Z')
+    const [outer, inner] = layers()
+    useLogoStore.getState().setSelection([outer.id, inner.id])
+    useLogoStore.getState().booleanIllustratorLayers('subtract')
+    const pieces = layers()
+    expect(pieces.map((layer) => layer.name)).toEqual(['subtract result.1', 'subtract result.2'])
+    expect(useLogoStore.getState().illustrator.selectedLayerIds).toEqual(pieces.map((layer) => layer.id))
+  })
+
+  it('make a point sharp or smooth, or delete it, as one step each', () => {
+    useLogoStore.getState().addPenShape('M0,0L100,0L100,100L0,100Z')
+    const [shape] = layers()
+    useLogoStore.getState().editAnchor(shape.id, 1, 'toggle-smooth')
+    expect(layers()[0].pathData).toContain('c')
+    expect(useLogoStore.getState().illustrator.pointSelection).toMatchObject({ layerId: shape.id, segmentIndex: 1 })
+    useLogoStore.getState().editAnchor(shape.id, 1, 'delete')
+    expect(useLogoStore.getState().illustrator.pointSelection).toBeNull()
+    expect(undoDepth()).toBe(3)
+    useLogoStore.getState().undoVectorCommand()
+    useLogoStore.getState().undoVectorCommand()
+    expect(layers()[0]).toBe(shape)
+  })
+
+  it('Start over gives an empty document, and undo brings the earlier one back whole', () => {
+    useLogoStore.getState().addSlab('square')
+    const before = useLogoStore.getState().vectorDocument
+    useLogoStore.getState().startOver()
+    expect(useLogoStore.getState().vectorDocument).toMatchObject({ name: 'Slab', objects: [], selection: { targets: [] } })
+    useLogoStore.getState().undoVectorCommand()
+    const restored = useLogoStore.getState().vectorDocument
+    expect(restored.objects).toBe(before.objects)
+    expect(restored).toMatchObject({ id: before.id, name: before.name, artboards: before.artboards })
   })
 })
 
@@ -312,6 +516,23 @@ describe('the look', () => {
   })
 })
 
+describe('appearance', () => {
+  beforeEach(() => reset())
+
+  it('new objects take the ink they are made with; existing objects keep theirs', () => {
+    useLogoStore.getState().setParam('fillColor', '#ff3300')
+    useLogoStore.getState().addSlab('rounded')
+    useLogoStore.getState().setParam('fillColor', '#0055ff')
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 20, y: 30 }, radius: 40 })
+    useLogoStore.getState().toggleIllustratorLayerVisibility(layers()[0].id)
+
+    expect(useLogoStore.getState().vectorDocument.objects.map((object) => object.appearance?.fill)).toEqual([
+      { type: 'solid', color: '#ff3300' },
+      { type: 'solid', color: '#0055ff' },
+    ])
+  })
+})
+
 describe('dropping a spark', () => {
   const WIDE = { width: 1400, height: 1000 }
   const spark = rollSparks(1, 3)[0]
@@ -379,6 +600,7 @@ describe('dropping a spark', () => {
 
     const state = useLogoStore.getState()
     expect(state.params.fillColor).toBe('#ff3300')
+    // Everything here was made with this ink.
     expect(state.vectorDocument?.objects.map((object) => object.appearance?.fill)).toEqual(
       after.map(() => ({ type: 'solid', color: '#ff3300' })),
     )

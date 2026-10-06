@@ -1,87 +1,53 @@
 import type { MarkData } from '../illustrator/types.ts'
 import { composeIllustratorMark } from '../illustrator/compose.ts'
 import { vectorDocumentToIllustratorDocument } from './legacyIllustratorAdapter.ts'
-import { vectorPathToPathData } from './pathSerialization.ts'
-import type { Matrix2D, Paint, PathObject, VectorDocument, VectorObject } from './types.ts'
-
-function isVisiblePath(object: VectorObject): object is PathObject {
-  return object.type === 'path' && object.visible
-}
-
-function isOnArtboard(artboardId: string) {
-  return (object: VectorObject): boolean => object.artboardId === artboardId
-}
-
-function serializePaintAttribute(name: 'fill' | 'stroke', paint: Paint, fallbackFill: string): string {
-  if (paint.type === 'none') return `${name}="none"`
-
-  if (name === 'fill') return `${name}="${paint.color || fallbackFill}"`
-
-  return `${name}="${paint.color}"`
-}
-
-function serializeTransform(transform: Matrix2D): string {
-  const { a, b, c, d, e, f } = transform
-  return `matrix(${a} ${b} ${c} ${d} ${e} ${f})`
-}
+import type { VectorDocument, VectorObject } from './types.ts'
 
 export function composeVectorMark(document: VectorDocument): MarkData {
   return composeIllustratorMark(vectorDocumentToIllustratorDocument(document))
 }
 
+/**
+ * What composition reads, per visible path in stack order: the path itself
+ * (by identity), whether it adds or cuts, its legacy transform and its fill
+ * rule. Names, locks, selection and appearance are not in it.
+ */
+type InkKey = unknown[]
+
+function inkKey(objects: VectorObject[]): InkKey {
+  const key: unknown[] = []
+  for (const object of objects) {
+    if (object.type !== 'path' || !object.visible) continue
+    const { a, b, c, d, e, f } = object.transform
+    key.push(object.path, object.source?.compatOperation ?? 'add', a, b, c, d, e, f, object.fillRule)
+  }
+  return key
+}
+
+function sameKey(a: InkKey, b: InkKey): boolean {
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
 const markCache = new WeakMap<VectorObject[], MarkData>()
 
+/** The last few marks by what they were composed from, newest first. */
+const recentMarks: Array<{ key: InkKey; mark: MarkData }> = []
+const RECENT_MARKS = 4
+
 /**
- * The composed mark for a document, computed once per set of objects.
- * Selection changes keep the same objects array, so they cost nothing; the
- * canvas, previews and export all read this one result.
+ * The composed mark for a document. It is kept per objects array, so a
+ * selection change and an undo cost nothing. A new array whose visible paths,
+ * operations and transforms are unchanged (a rename, a lock) reuses the mark
+ * too. The canvas, previews and export all read this one result.
  */
 export function composeVectorMarkCached(document: VectorDocument): MarkData {
   const hit = markCache.get(document.objects)
   if (hit) return hit
-  const mark = composeVectorMark(document)
-  markCache.set(document.objects, mark)
-  return mark
-}
-
-export function serializeVectorDocumentToSvg(
-  document: VectorDocument,
-  fallbackFill = '#111111',
-): string {
-  const artboard = document.artboards[0]
-  const viewBox = artboard
-    ? `${artboard.rect.x} ${artboard.rect.y} ${artboard.rect.width} ${artboard.rect.height}`
-    : '-512 -512 1024 1024'
-
-  const body = document.objects
-    .filter(isVisiblePath)
-    .filter(artboard ? isOnArtboard(artboard.id) : () => true)
-    .map((object) => {
-      const { appearance } = object
-      const attributes = [
-        `d="${vectorPathToPathData(object.path)}"`,
-        serializePaintAttribute('fill', appearance.fill, fallbackFill),
-        serializePaintAttribute('stroke', appearance.stroke, fallbackFill),
-        `stroke-width="${appearance.strokeWidth}"`,
-        `stroke-linecap="${appearance.strokeCap}"`,
-        `stroke-linejoin="${appearance.strokeJoin}"`,
-        `stroke-miterlimit="${appearance.strokeMiterLimit}"`,
-        `fill-rule="${object.fillRule}"`,
-        `opacity="${appearance.opacity}"`,
-        `transform="${serializeTransform(object.transform)}"`,
-      ]
-
-      if (appearance.strokeDashArray.length > 0) {
-        attributes.push(`stroke-dasharray="${appearance.strokeDashArray.join(' ')}"`)
-      }
-
-      return `  <path ${attributes.join(' ')} />`
-    })
-    .join('\n')
-
-  return [
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" preserveAspectRatio="xMidYMid meet">`,
-    body,
-    '</svg>',
-  ].join('\n')
+  const key = inkKey(document.objects)
+  const index = recentMarks.findIndex((entry) => sameKey(entry.key, key))
+  const entry = index >= 0 ? recentMarks.splice(index, 1)[0] : { key, mark: composeVectorMark(document) }
+  recentMarks.unshift(entry)
+  recentMarks.length = Math.min(recentMarks.length, RECENT_MARKS)
+  markCache.set(document.objects, entry.mark)
+  return entry.mark
 }

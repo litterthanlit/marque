@@ -3,12 +3,39 @@ import type { VectorPath, VectorPathSegment } from './types.ts'
 
 let vectorPathScope: paper.PaperScope | null = null
 
-function getScope(): paper.PaperScope {
+/**
+ * The scope that is active now. Paper keeps it private, but an item made
+ * without a parent records the active scope's project, and a project its scope.
+ */
+function activeScope(): paper.PaperScope | null {
+  try {
+    const probe = new paper.Path({ insert: false })
+    return (probe.project as unknown as { _scope?: paper.PaperScope } | null)?._scope ?? null
+  } catch {
+    // No scope has a project yet.
+    return null
+  }
+}
+
+/**
+ * Run `work` in this module's own scope, then give the caller's scope back.
+ * Items made here never land in the canvas, and the canvas stays active.
+ */
+function inOwnScope<T>(work: (scope: paper.PaperScope) => T): T {
+  const previous = activeScope()
   if (!vectorPathScope) {
     vectorPathScope = new paper.PaperScope()
     vectorPathScope.setup(new paper.Size(1, 1))
   }
-  return vectorPathScope
+  const scope = vectorPathScope
+  scope.activate()
+  scope.project.clear()
+  try {
+    return work(scope)
+  } finally {
+    scope.project.clear()
+    if (previous && previous !== scope) previous.activate()
+  }
 }
 
 function toSegment(segment: paper.Segment): VectorPathSegment {
@@ -27,10 +54,7 @@ function toSegment(segment: paper.Segment): VectorPathSegment {
 }
 
 export function pathDataToVectorPaths(pathData: string): VectorPath[] {
-  const scope = getScope()
-  scope.project.clear()
-
-  try {
+  return inOwnScope((scope) => {
     const item = new scope.CompoundPath(pathData)
     const paths = item.getItems({ class: scope.Path })
     return paths
@@ -41,16 +65,11 @@ export function pathDataToVectorPaths(pathData: string): VectorPath[] {
         segments: path.segments.map(toSegment),
       }))
       .filter((path) => path.segments.length > 0)
-  } finally {
-    scope.project.clear()
-  }
+  })
 }
 
 export function vectorPathToPathData(path: VectorPath): string {
-  const scope = getScope()
-  scope.project.clear()
-
-  try {
+  return inOwnScope((scope) => {
     const paperPath = new scope.Path()
     paperPath.closed = path.closed
     for (const segment of path.segments) {
@@ -64,7 +83,5 @@ export function vectorPathToPathData(path: VectorPath): string {
     }
 
     return paperPath.pathData
-  } finally {
-    scope.project.clear()
-  }
+  })
 }

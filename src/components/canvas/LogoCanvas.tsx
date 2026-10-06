@@ -112,11 +112,13 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     }
   }, [scopeRef])
 
-  // Render
+  // Render. The renderer reads only the layers, so a selection change, which
+  // keeps the same layers array, does not rebuild the scope.
+  const layers = illustrator.layers
   useEffect(() => {
     const scope = scopeRef.current
     if (!scope) return
-    const itemMap = renderIllustratorOnScope(scope, illustrator, {
+    const itemMap = renderIllustratorOnScope(scope, { ...useLogoStore.getState().illustrator, layers }, {
       fillColor: params.fillColor,
       look: ui.look,
       survival,
@@ -125,7 +127,13 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     controllerRef.current?.sync(itemMap)
     // A render clears the canvas: the pen's drawing in progress goes back on top.
     if (toolRef.current instanceof PenTool) toolRef.current.redraw()
-  }, [illustrator, activeMark, survival, ui.viewport, ui.look, params.fillColor, scopeRef])
+  }, [layers, activeMark, survival, ui.viewport, ui.look, params.fillColor, scopeRef])
+
+  // The editor draws the selection over the canvas: a new selection redraws only that.
+  const { selectedLayerIds, pointSelection } = illustrator
+  useEffect(() => {
+    controllerRef.current?.refresh()
+  }, [selectedLayerIds, pointSelection])
 
   /** Live preview of a cut mid-drag: the document below it is composed once per drag. */
   const previewCut = useCallback((spec: CutSpec | null) => {

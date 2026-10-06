@@ -61,7 +61,7 @@ import { carriedCuts } from './carry.ts'
 import { CURSORS, resizeCursor } from './cursors.ts'
 import { hud } from './hud.ts'
 import { EMPTY_ZONE, findZone, freeCurve, zoneKey, type HitContext, type Zone } from './hitZones.ts'
-import { canvasOwnsArrowKeys, registerEditorKeys, setEditorInteracting } from './keyboard.ts'
+import { canvasOwnsArrowKeys, registerEditorKeys, registerPendingEdits, setEditorInteracting } from './keyboard.ts'
 import {
   drawAnchors,
   drawCarveHandles,
@@ -270,6 +270,7 @@ export class DirectEditController {
   /** Off while the pen draws: the selection's handles would only get in the way. */
   private handlesLive = true
   private readonly unregisterKeys: () => void
+  private readonly unregisterPending: () => void
   private destroyed = false
 
   constructor(scope: paper.PaperScope, canvas: HTMLCanvasElement, host: DirectEditHost) {
@@ -277,6 +278,10 @@ export class DirectEditController {
     this.canvas = canvas
     this.host = host
     this.unregisterKeys = registerEditorKeys((event) => this.onKey(event))
+    this.unregisterPending = registerPendingEdits(() => {
+      this.flushNudge()
+      this.flushPendingPoint()
+    })
   }
 
   /** Called after every render with the fresh hit areas. */
@@ -293,7 +298,7 @@ export class DirectEditController {
     return this.session !== null
   }
 
-  /** The canvas changed size on screen: redraw handles at their constant on-screen size. */
+  /** Redraw the overlay: after a selection change, or when the canvas changed size and handles keep their on-screen size. */
   refresh(): void {
     this.drawOverlay()
   }
@@ -311,6 +316,7 @@ export class DirectEditController {
     this.dropPendingPoint()
     this.cancel()
     this.unregisterKeys()
+    this.unregisterPending()
     this.destroyed = true
     hud.clear()
     resetOverlay(this.scope)

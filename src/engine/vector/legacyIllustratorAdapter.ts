@@ -87,7 +87,8 @@ function vectorSelectionToPointSelection(
   }
 }
 
-function pointSelectionToVectorSelection(
+/** The selection a layer view describes: a selected point, or the selected layers. */
+export function pointSelectionToVectorSelection(
   pointSelection: PointSelection | null,
   selectedLayerIds: string[],
 ): VectorSelection {
@@ -119,7 +120,8 @@ function pointSelectionToVectorSelection(
 // reused: a selection change then costs nothing per path.
 const layerCache = new WeakMap<VectorObject, IllustratorLayer>()
 
-function vectorObjectToLayer(object: VectorObject): IllustratorLayer | null {
+/** An object's layer view. Objects other than paths have none. */
+export function vectorObjectToLayer(object: VectorObject): IllustratorLayer | null {
   if (object.type !== 'path') return null
   const cached = layerCache.get(object)
   if (cached) return cached
@@ -139,21 +141,44 @@ function vectorObjectToLayer(object: VectorObject): IllustratorLayer | null {
   return layer
 }
 
+// The layers array is kept per objects array, so a selection change hands the
+// canvas the very same layers and it does not redraw them.
+const layersCache = new WeakMap<VectorObject[], IllustratorLayer[]>()
+
+function layersOf(objects: VectorObject[]): IllustratorLayer[] {
+  const cached = layersCache.get(objects)
+  if (cached) return cached
+  const layers = objects.map(vectorObjectToLayer).filter((layer): layer is IllustratorLayer => layer != null)
+  layersCache.set(objects, layers)
+  return layers
+}
+
 export function vectorDocumentToIllustratorDocument(
   document: VectorDocument,
   previous?: IllustratorDocument | null,
 ): IllustratorDocument {
-  const selectedLayerIds = vectorSelectionToLayerIds(document.selection)
+  // An unchanged selection keeps its arrays, so the canvas does not redraw the overlay for it.
+  const ids = vectorSelectionToLayerIds(document.selection)
+  const selectedLayerIds = previous && sameIds(previous.selectedLayerIds, ids) ? previous.selectedLayerIds : ids
+  const point = vectorSelectionToPointSelection(document.selection)
+  const pointSelection = previous && samePoint(previous.pointSelection, point) ? previous.pointSelection : point
   return {
     id: previous?.id ?? document.id,
     source: sourceFromVector(document.source),
-    layers: document.objects
-      .map(vectorObjectToLayer)
-      .filter((layer): layer is IllustratorLayer => layer != null),
+    layers: layersOf(document.objects),
     selectedLayerIds,
-    pointSelection: vectorSelectionToPointSelection(document.selection),
+    pointSelection,
     mode: previous?.mode ?? (document.selection.targets.some((target) => target.type !== 'object') ? 'points' : 'object'),
   }
+}
+
+function sameIds(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((id, index) => id === b[index])
+}
+
+function samePoint(a: PointSelection | null, b: PointSelection | null): boolean {
+  if (a === null || b === null) return a === b
+  return a.layerId === b.layerId && a.segmentIndex === b.segmentIndex && a.handle === b.handle
 }
 
 function layerToObjects(

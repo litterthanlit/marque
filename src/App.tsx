@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { AppShell } from './components/layout/AppShell.tsx'
 import { useUrlState } from './hooks/useUrlState.ts'
 import { useLogoStore } from './store/logoStore.ts'
-import { dispatchEditorKey, isBareKey, isEditorInteracting } from './renderer/directEdit/keyboard.ts'
+import { dispatchEditorKey, flushPendingEdits, isBareKey, isEditorInteracting } from './renderer/directEdit/keyboard.ts'
 import { isShuffleKey, toolForKey } from './components/editor/tools.ts'
 
 function App() {
@@ -38,12 +38,15 @@ function App() {
           e.preventDefault()
           return
         }
+        // A nudge waiting to commit lands first, so it is undone rather than written over the undo.
         if (key === 'z' && !e.shiftKey) {
           e.preventDefault()
+          flushPendingEdits()
           useLogoStore.getState().undoVectorCommand()
         }
         if (key === 'z' && e.shiftKey) {
           e.preventDefault()
+          flushPendingEdits()
           useLogoStore.getState().redoVectorCommand()
         }
         if (e.key === 'e') {
