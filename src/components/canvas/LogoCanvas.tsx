@@ -19,7 +19,7 @@ import { pinsLostWithTarget } from '../../engine/vector/pins.ts'
 import type { Contour } from '../../engine/vector/types.ts'
 import type { EditablePath } from '../../engine/path/editPath.ts'
 import { CanvasHud } from './CanvasHud.tsx'
-import { isShuffleKey, toolForKey } from '../editor/tools.ts'
+import { isShuffleKey, sidesKeyStep, toolForKey } from '../editor/tools.ts'
 import { canvasPixelRatio, fitView, visibleUnits } from '../../renderer/viewFit.ts'
 import { useActiveMark } from '../../hooks/useActiveMark.ts'
 
@@ -296,16 +296,18 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
           onCut: (spec) => {
             carveSessionRef.current = null
             // A punch started on a shape's centre is pinned there.
-            addCarveCut(spec, spec.kind === 'punch' ? (controllerRef.current?.toolStartPin() ?? null) : null)
+            addCarveCut(spec, spec.kind === 'punch' || spec.kind === 'polygon' ? (controllerRef.current?.toolStartPin() ?? null) : null)
           },
           onPreview: previewCut,
           snapPoint: (p, from, role) =>
             controllerRef.current?.snapToolPoint(p, role, { rays: from ? [from] : [], pins: ui.activeTool === 'punch' }) ?? p,
-          snapRadius: (center, radius, round) => controllerRef.current?.snapToolRadius(center, radius, round) ?? radius,
+          snapRadius: (center, radius, like) => controllerRef.current?.snapToolRadius(center, radius, like) ?? radius,
           onGestureEnd: () => controllerRef.current?.endToolSnap(),
         }, {
           kind: ui.activeTool,
           punchShape: ui.carve.punchShape,
+          // Read at draw time: stepping a selected polygon also sets the next count, and must not rebuild the tool under the pen.
+          polygonSides: () => useLogoStore.getState().ui.carve.polygonSides,
           cutWidth: ui.carve.cutWidth,
         })
         break
@@ -356,8 +358,8 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     const unregister = registerEditorKeys((event) => {
       const tool = toolRef.current
       // A tool key mid-press, or mid-drawing with the pen, would throw the gesture away: it waits.
-      // The shuffle key waits too: pressed then, it is a slip of the hand.
-      const gestureKey = toolForKey(event) || isShuffleKey(event)
+      // The shuffle key waits too: pressed then, it is a slip of the hand. So do [ and ], which change a polygon's sides.
+      const gestureKey = toolForKey(event) || isShuffleKey(event) || sidesKeyStep(event) !== 0
       if (gestureKey && (pressOwnerRef.current || (tool instanceof PenTool && tool.isDrawing))) return true
       if (!tool) return false
       if (tool instanceof PenTool) {

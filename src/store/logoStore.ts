@@ -15,13 +15,13 @@ import {
   vectorDocumentToIllustratorDocument,
   vectorObjectToLayer,
 } from '../engine/vector/view.ts'
-import type { CutSpec, PunchShape, SlabKind } from '../engine/carve/geometry.ts'
+import { slabEntrySpec, type CutSpec, type PunchToolShape, type SlabEntry } from '../engine/carve/geometry.ts'
 import { carveOutline } from '../engine/carve/outline.ts'
-import { carveFromCut, carveLayerName, roundCarveSpec, slabSpec, type CarveSpec } from '../engine/carve/spec.ts'
-import { translateCarve } from '../engine/carve/edit.ts'
+import { carveFromCut, carveLayerName, clampSides, DEFAULT_SIDES, roundCarveSpec, type CarveSpec } from '../engine/carve/spec.ts'
+import { stepPolygonSides, translateCarve } from '../engine/carve/edit.ts'
 import { createEmptyVectorDocument, repairStructure, sanitizeVectorDocument } from '../engine/vector/document.ts'
 import { detachGuide, follow, type DocumentLists } from '../engine/vector/follow.ts'
-import { closedContourOf, constructionLines, makeGuide, moveGuideShape, tangentFrame, type GuideShape, type GuideStyle } from '../engine/vector/guides.ts'
+import { closedContourOf, constructionLines, makeGuide, moveGuideShape, respokeGuides, tangentFrame, type GuideShape, type GuideStyle } from '../engine/vector/guides.ts'
 import { asCircle, type Circle } from '../engine/geometry/asCircle.ts'
 import { composeVectorMarkCached } from '../engine/vector/export.ts'
 import { placeMark, placeSlab } from '../engine/carve/placement.ts'
@@ -131,7 +131,9 @@ export interface HistoryStep {
 }
 
 export interface CarveSettings {
-  punchShape: PunchShape
+  punchShape: PunchToolShape
+  /** How many sides a new polygon has, from the punch or the slab row: 3 to 12. */
+  polygonSides: number
   /** Width of new channels and slices, in layer units. */
   cutWidth: number
   survivalSize: SurvivalSize
@@ -142,6 +144,7 @@ export interface CarveSettings {
 
 export const DEFAULT_CARVE_SETTINGS: CarveSettings = {
   punchShape: 'circle',
+  polygonSides: DEFAULT_SIDES,
   cutWidth: 44,
   survivalSize: 32,
   showWeakSpots: true,
@@ -179,7 +182,12 @@ interface LogoStore {
   toggleIllustratorLayerVisibility: (id: string) => void
   setIllustratorLayerOperation: (id: string, operation: 'add' | 'subtract') => void
   setCarveSettings: (update: Partial<CarveSettings>) => void
-  addSlab: (kind: SlabKind) => void
+  addSlab: (kind: SlabEntry) => void
+  /**
+   * A side more or fewer on every selected polygon, from 3 to 12: one undo
+   * step. With no polygon selected, a side more or fewer on the next one.
+   */
+  stepPolygonSides: (delta: 1 | -1) => void
   /** A spark's shapes as layers under everything else, beside the ink: one undo step. */
   dropSpark: (spark: Spark) => void
   setSparkSeed: (seed: number) => void
@@ -382,15 +390,49 @@ export const useLogoStore = create<LogoStore>()((set) => ({
   addSlab: (kind) =>
     set((state) => {
       const existing = composeVectorMarkCached(state.vectorDocument)
+      const sides = state.ui.carve.polygonSides
       const spec = existing.compoundPathData
-        ? placeSlab(kind, existing.viewBox, state.ui.viewport)
-        : slabSpec(kind)
+        ? placeSlab(kind, existing.viewBox, state.ui.viewport, undefined, undefined, sides)
+        : slabEntrySpec(kind, sides)
       const slab = objectFromLayer(recipeLayer(spec, 'add'))
       // New material goes on top: older cuts can't bite into it.
       return {
         ...commitObjects(state, 'Add slab', insertObjects(state.vectorDocument.objects, [slab], 'top'), objectSelection([slab.id])),
         ui: { ...state.ui, activeTool: null },
       }
+    }),
+
+  stepPolygonSides: (delta) =>
+    set((state) => {
+      const ids = new Set(state.illustrator.selectedLayerIds)
+      let sides: number | null = null
+      const stepped: PathObject[] = []
+      const objects = updateObjects(state.vectorDocument.objects, (object) => {
+        if (object.type !== 'path' || !ids.has(object.id) || !object.visible || object.locked || object.carve?.kind !== 'polygon') return object
+        const carve = stepPolygonSides(object.carve, delta)
+        sides = carve.sides
+        if (carve === object.carve) return object
+        const written = writeRecipe(object, carve)
+        // A name the polygon was given keeps; the name it was made with follows its sides.
+        const named = object.name === carveLayerName(object.carve) ? { ...written, name: carveLayerName(written.carve!) } : written
+        stepped.push(named)
+        return named
+      })
+      // With none selected, the keys step the sides of the next polygon, as the punch's Sides control does.
+      if (sides === null) {
+        const next = clampSides(state.ui.carve.polygonSides + delta)
+        return next === state.ui.carve.polygonSides ? {} : { ui: { ...state.ui, carve: { ...state.ui.carve, polygonSides: next } } }
+      }
+      // The next polygon starts with the sides last chosen.
+      const ui = sides === state.ui.carve.polygonSides ? state.ui : { ...state.ui, carve: { ...state.ui.carve, polygonSides: sides } }
+      // Spokes follow a polygon by their index, so a new count of corners makes its spokes again, in the same step,
+      // whenever its circles or spokes have guides.
+      const guides = stepped.reduce((list, after) => respokeGuides(list, after), state.vectorDocument.guides)
+      const kept = new Set(guides.map((guide) => guide.id))
+      const targets = state.selection.targets.filter((target) => target.type !== 'guide' || kept.has(target.guideId))
+      const selection = targets.length === state.selection.targets.length ? undefined : { ...state.selection, targets }
+      const label = delta > 0 ? 'Add a side' : 'Take a side off'
+      return { ...commitDocument(state, label, { objects, guides }, selection), ...(ui === state.ui ? {} : { ui }) }
     }),
 
   dropSpark: (spark) =>

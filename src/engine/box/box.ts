@@ -60,9 +60,14 @@ export interface HandleLayout {
   radiusInset: number
   /** Below this length of a padded side, the box around a selection hides that side's square. */
   minBoxSide: number
+  /** How near a recipe's centre its rounding dot may come, so a press on the middle moves the shape. */
+  centreClear: number
 }
 
-export const DEFAULT_HANDLE_LAYOUT: HandleLayout = { pad: 12, rotateOffset: 22, minEdgeHandleSize: 30, radiusInset: 10, minBoxSide: 48 }
+export const DEFAULT_HANDLE_LAYOUT: HandleLayout = { pad: 12, rotateOffset: 22, minEdgeHandleSize: 30, radiusInset: 10, minBoxSide: 48, centreClear: 16 }
+
+/** How near a recipe's centre its rounding dot may come under a finger, in CSS pixels: twice a pointer's. */
+export const TOUCH_CENTRE_CLEAR = 32
 
 /** A box that may be turned. `rotation` is in degrees, clockwise on screen, about `center`. */
 export interface OrientedBox {

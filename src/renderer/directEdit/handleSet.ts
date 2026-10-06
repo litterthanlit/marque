@@ -5,6 +5,7 @@ import {
   DEFAULT_HANDLE_LAYOUT,
   intersectBounds,
   shapeBoundsInFrame,
+  TOUCH_CENTRE_CLEAR,
   unionBounds,
   type CarveHandle,
   type HandleLayout,
@@ -12,7 +13,7 @@ import {
 } from '../../engine/box/box.ts'
 import { carveHandles } from '../../engine/carve/edit.ts'
 import { carveOutline, outlineBounds } from '../../engine/carve/outline.ts'
-import { isGroove, type CarveSpec } from '../../engine/carve/spec.ts'
+import type { CarveSpec } from '../../engine/carve/spec.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
 import { emptyBounds, type Bounds, type Vec } from '../../engine/path/bezier.ts'
 import type { EditableShape } from '../../engine/path/editPath.ts'
@@ -34,15 +35,59 @@ export interface HandleSet {
   uniform: boolean
 }
 
-/** The handle layout at the current zoom: sizes stay constant on screen. */
-export function scaledHandleLayout(unitsPerPx: number): HandleLayout {
+/**
+ * The handle layout at the current zoom: sizes stay constant on screen. Under
+ * a finger a rounding dot keeps twice as far from its recipe's centre.
+ */
+export function scaledHandleLayout(unitsPerPx: number, touch = false): HandleLayout {
   return {
     pad: DEFAULT_HANDLE_LAYOUT.pad * unitsPerPx,
     rotateOffset: DEFAULT_HANDLE_LAYOUT.rotateOffset * unitsPerPx,
     minEdgeHandleSize: DEFAULT_HANDLE_LAYOUT.minEdgeHandleSize * unitsPerPx,
     radiusInset: DEFAULT_HANDLE_LAYOUT.radiusInset * unitsPerPx,
     minBoxSide: DEFAULT_HANDLE_LAYOUT.minBoxSide * unitsPerPx,
+    centreClear: (touch ? TOUCH_CENTRE_CLEAR : DEFAULT_HANDLE_LAYOUT.centreClear) * unitsPerPx,
   }
+}
+
+let lastTouch = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches
+
+/**
+ * Was the last pointer on the canvas a finger? Handles are laid out for it,
+ * so the canvas, its tests and the bar agree on where a dot is. It starts
+ * from the device's main pointer.
+ */
+export const canvasPointer = {
+  touch(): boolean {
+    return lastTouch
+  },
+  note(touch: boolean): void {
+    lastTouch = touch
+  },
+}
+
+let dotless = ''
+const dotlessListeners = new Set<() => void>()
+
+/**
+ * The selected recipes whose rounding dot is hidden, too small on screen to
+ * keep it clear of their centre, as ids joined by spaces: the selection bar
+ * offers a Corner control for them instead.
+ */
+export const hiddenRadiusDots = {
+  get(): string {
+    return dotless
+  },
+  set(ids: readonly string[]): void {
+    const next = ids.join(' ')
+    if (next === dotless) return
+    dotless = next
+    for (const listener of dotlessListeners) listener()
+  },
+  subscribe(listener: () => void): () => void {
+    dotlessListeners.add(listener)
+    return () => dotlessListeners.delete(listener)
+  },
 }
 
 /**
@@ -120,18 +165,25 @@ export type LiveHandles = 'all' | 'recipe' | 'none'
  * slab or punch (a bent one too), the middle of a groove's ends.
  */
 export function recipeFrame(spec: CarveSpec): OrientedBox {
-  if (isGroove(spec)) {
-    const along: Vec = { x: spec.to.x - spec.from.x, y: spec.to.y - spec.from.y }
-    return {
-      center: { x: (spec.from.x + spec.to.x) / 2, y: (spec.from.y + spec.to.y) / 2 },
-      width: Math.hypot(along.x, along.y),
-      height: spec.width,
-      rotation: (Math.atan2(along.y, along.x) * 180) / Math.PI,
+  switch (spec.kind) {
+    case 'channel':
+    case 'slice': {
+      const along: Vec = { x: spec.to.x - spec.from.x, y: spec.to.y - spec.from.y }
+      return {
+        center: { x: (spec.from.x + spec.to.x) / 2, y: (spec.from.y + spec.to.y) / 2 },
+        width: Math.hypot(along.x, along.y),
+        height: spec.width,
+        rotation: (Math.atan2(along.y, along.x) * 180) / Math.PI,
+      }
     }
+    case 'punch':
+    case 'polygon':
+      return { center: spec.center, width: spec.radius * 2, height: spec.radius * 2, rotation: spec.rotation }
+    case 'slab':
+      return { center: spec.center, width: spec.width, height: spec.height, rotation: spec.rotation }
+    default:
+      return spec satisfies never
   }
-  const width = spec.kind === 'punch' ? spec.radius * 2 : spec.width
-  const height = spec.kind === 'punch' ? spec.radius * 2 : spec.height
-  return { center: spec.center, width, height, rotation: spec.rotation }
 }
 
 /**

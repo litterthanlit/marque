@@ -8,9 +8,11 @@ interface SliderControlProps {
   max: number
   step: number
   onChange: (value: number) => void
+  /** How the value reads beside the label, where it says more than the number. */
+  format?: (value: number) => string
 }
 
-export function SliderControl({ label, value, min, max, step, onChange }: SliderControlProps) {
+export function SliderControl({ label, value, min, max, step, onChange, format }: SliderControlProps) {
   const [draftValue, setDraftValue] = useState(value)
 
   useEffect(() => {
@@ -22,7 +24,7 @@ export function SliderControl({ label, value, min, max, step, onChange }: Slider
       <div className="flex items-center justify-between">
         <span className="text-xs text-sidebar-text">{label}</span>
         <span className="text-[10px] text-sidebar-muted font-mono tabular-nums">
-          {Number.isInteger(step) ? draftValue : draftValue.toFixed(2)}
+          {format ? format(draftValue) : Number.isInteger(step) ? draftValue : draftValue.toFixed(2)}
         </span>
       </div>
       <Slider.Root

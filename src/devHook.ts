@@ -5,13 +5,13 @@
  */
 import { useLogoStore } from './store/logoStore.ts'
 import { bakedEditablePath, bakedEditableShape } from './engine/illustrator/layerPath.ts'
-import { grooveSpine } from './engine/carve/outline.ts'
+import { carveOutline, grooveSpine } from './engine/carve/outline.ts'
 import { isGroove } from './engine/carve/spec.ts'
 import { cubicPoint, cubicTangent, type Vec } from './engine/path/bezier.ts'
 import { composeVectorMarkCached } from './engine/vector/export.ts'
 import { DESIGN_SPAN } from './renderer/viewFit.ts'
 import { CURSORS } from './renderer/directEdit/cursors.ts'
-import { scaledHandleLayout, selectionHandles } from './renderer/directEdit/handleSet.ts'
+import { canvasPointer, scaledHandleLayout, selectionHandles } from './renderer/directEdit/handleSet.ts'
 import { guideAnchor } from './engine/vector/guides.ts'
 
 function canvasFrame() {
@@ -37,12 +37,12 @@ function createDevHook() {
     /**
      * Client-space positions of the selection's handles, as the canvas
      * computes them: a recipe's own, or the box around a free shape or
-     * several layers.
+     * several layers, laid out for the pointer last used on the canvas.
      */
     handles() {
       const frame = canvasFrame()
       if (!frame) return []
-      const set = selectionHandles(useLogoStore.getState().illustrator, scaledHandleLayout(1 / frame.unit), bakedEditableShape)
+      const set = selectionHandles(useLogoStore.getState().illustrator, scaledHandleLayout(1 / frame.unit, canvasPointer.touch()), bakedEditableShape)
       return (set?.list ?? []).map((h) => ({ id: h.id, ...frame.toClient(h.at) }))
     },
 
@@ -71,6 +71,18 @@ function createDevHook() {
       const frame = canvasFrame()
       if (!frame) return []
       return useLogoStore.getState().vectorDocument.guides.map((guide) => ({ id: guide.id, ...frame.toClient(guideAnchor(guide.shape, near)) }))
+    },
+
+    /**
+     * The corner circles of a layer's recipe, as the construction look draws
+     * them: each centre in client space, and its radius in client pixels.
+     */
+    cornerCircles(layerId: string) {
+      const spec = layerById(layerId)?.carve
+      const frame = canvasFrame()
+      if (!spec || !frame) return []
+      const outline = carveOutline(spec).frame
+      return outline.kind === 'box' ? outline.cornerCircles.map((circle) => ({ ...frame.toClient(circle.c), r: circle.r * frame.unit })) : []
     },
 
     /** A point on a channel's or slice's spine and the unit normal there, in client space. */

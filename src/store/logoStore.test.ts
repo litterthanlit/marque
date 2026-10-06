@@ -87,6 +87,159 @@ describe('recipes in the store', () => {
   })
 })
 
+describe('polygons in the store', () => {
+  beforeEach(() => reset())
+
+  it('the slab row adds a hexagon with the sides last chosen, and the punch cuts one', () => {
+    useLogoStore.getState().addSlab('polygon')
+    expect(layers()[0].carve).toEqual({ v: 1, kind: 'polygon', center: { x: 0, y: 0 }, sides: 6, radius: 200, rotation: 0, cornerRadius: 0 })
+    expect(layers()[0].name).toBe('Polygon · 6')
+    useLogoStore.getState().setCarveSettings({ polygonSides: 8 })
+    useLogoStore.getState().addSlab('polygon')
+    expect(layers()[1].carve).toMatchObject({ kind: 'polygon', sides: 8, radius: 100 })
+    useLogoStore.getState().addCarveCut({ kind: 'polygon', center: { x: 10, y: 0 }, radius: 50, sides: 5 })
+    expect(layers()[2].operation).toBe('subtract')
+    expect(layers()[2].carve).toMatchObject({ kind: 'polygon', sides: 5, radius: 50 })
+  })
+
+  it('[ and ] take a side off the selected polygons and add one, one undo step each, from 3 to 12, and leave other shapes', () => {
+    const store = useLogoStore.getState()
+    store.addSlab('polygon')
+    store.addSlab('rounded')
+    store.addCarveCut({ kind: 'polygon', center: { x: 10, y: 0 }, radius: 50, sides: 4 })
+    const [hexagon, slab, square] = layers()
+    useLogoStore.getState().setSelection([hexagon.id, slab.id, square.id])
+    const depth = undoDepth()
+    const slabObject = objects()[1]
+
+    useLogoStore.getState().stepPolygonSides(1)
+    expect(layers().map((layer) => (layer.carve?.kind === 'polygon' ? layer.carve.sides : null))).toEqual([7, null, 5])
+    expect(layers().map((layer) => layer.name)).toEqual(['Polygon · 7', 'Slab', 'Polygon · 5'])
+    expect(objects()[1]).toBe(slabObject)
+    expect(undoDepth()).toBe(depth + 1)
+    expect(useLogoStore.getState().ui.carve.polygonSides).toBe(5)
+
+    useLogoStore.getState().stepPolygonSides(-1)
+    expect(undoDepth()).toBe(depth + 2)
+    useLogoStore.getState().undoVectorCommand()
+    useLogoStore.getState().undoVectorCommand()
+    expect(layers().map((layer) => (layer.carve?.kind === 'polygon' ? layer.carve.sides : null))).toEqual([6, null, 4])
+
+    useLogoStore.getState().setSelection([square.id])
+    for (let i = 0; i < 5; i++) useLogoStore.getState().stepPolygonSides(-1)
+    expect((layers()[2].carve as { sides: number }).sides).toBe(3)
+    // Only the step that took a side off is an undo step: at 3 it goes no further.
+    expect(undoDepth()).toBe(depth + 1)
+  })
+
+  it('[ and ] step the sides of the next polygon when no polygon is selected, with no undo step, and keep a name the polygon was given', () => {
+    useLogoStore.getState().addSlab('rounded')
+    const depth = undoDepth()
+    const slab = objects()[0]
+    useLogoStore.getState().stepPolygonSides(1)
+    expect(undoDepth()).toBe(depth)
+    expect(objects()[0]).toBe(slab)
+    expect(useLogoStore.getState().ui.carve.polygonSides).toBe(7)
+    useLogoStore.getState().addSlab('polygon')
+    expect(layers()[1].carve).toMatchObject({ kind: 'polygon', sides: 7 })
+    useLogoStore.getState().setSelection([])
+    for (let i = 0; i < 12; i++) useLogoStore.getState().stepPolygonSides(-1)
+    expect(useLogoStore.getState().ui.carve.polygonSides).toBe(3)
+    for (let i = 0; i < 12; i++) useLogoStore.getState().stepPolygonSides(1)
+    expect(useLogoStore.getState().ui.carve.polygonSides).toBe(12)
+    expect(undoDepth()).toBe(depth + 1)
+    useLogoStore.getState().setCarveSettings({ polygonSides: 6 })
+    useLogoStore.getState().addSlab('polygon')
+    const id = layers()[2].id
+    useLogoStore.getState().updateIllustratorLayer(id, { name: 'Nut' })
+    useLogoStore.getState().setSelection([id])
+    useLogoStore.getState().stepPolygonSides(1)
+    expect(layers()[2].name).toBe('Nut')
+  })
+
+  it("[ and ] make a polygon's spokes again for its new count of corners, in the same undo step, none left behind", () => {
+    const store = () => useLogoStore.getState()
+    const guides = () => store().vectorDocument.guides
+    store().addSlab('polygon')
+    const hexagon = layers()[0]
+    store().addConstructionGuides()
+    const spokes = () => guides().filter((guide) => guide.link?.role.startsWith('axis-'))
+    const angles = () => spokes().map((guide) => (guide.shape.kind === 'line' ? Math.round(guide.shape.angle) : null))
+    expect(spokes().map((guide) => guide.link!.role)).toEqual(['axis-1', 'axis-2'])
+    store().setGuidesStyle(spokes().map((guide) => guide.id), 'solid')
+    const before = guides()
+    const depth = undoDepth()
+
+    // A heptagon has a spoke through each corner, the top one being the upright centre line.
+    store().setSelection([hexagon.id])
+    store().stepPolygonSides(1)
+    expect(undoDepth()).toBe(depth + 1)
+    expect(spokes().map((guide) => guide.link!.role)).toEqual(['axis-1', 'axis-2', 'axis-3', 'axis-4', 'axis-5', 'axis-6'])
+    expect(spokes().every((guide) => guide.link!.of === hexagon.id && guide.style === 'solid')).toBe(true)
+    expect(guides().filter((guide) => !guide.link)).toEqual([])
+    expect(guides().filter((guide) => guide.link?.role === 'centre-y')).toHaveLength(1)
+    // An octagon's level spoke is the level centre line, offered once.
+    store().stepPolygonSides(1)
+    expect(angles().sort((a, b) => a! - b!)).toEqual([45, 135])
+    // Back to a pentagon and up again to a hexagon: four spokes, then two, and none detached.
+    store().stepPolygonSides(-1)
+    store().stepPolygonSides(-1)
+    store().stepPolygonSides(-1)
+    expect(spokes()).toHaveLength(4)
+    store().stepPolygonSides(1)
+    expect(spokes().map((guide) => guide.link!.role)).toEqual(['axis-1', 'axis-2'])
+    expect(angles()).toEqual([150, 30])
+    expect(guides().filter((guide) => !guide.link)).toEqual([])
+
+    expect(undoDepth()).toBe(depth + 6)
+    for (let i = 0; i < 6; i++) store().undoVectorCommand()
+    expect(guides()).toBe(before)
+  })
+
+  it("[ and ] keep a polygon's spokes through a square, whose spokes are its centre lines, one undo step each", () => {
+    const store = () => useLogoStore.getState()
+    const guides = () => store().vectorDocument.guides
+    store().addSlab('polygon')
+    const hexagon = layers()[0]
+    store().addConstructionGuides()
+    // Spokes made again take the look of the polygon's other construction guides.
+    store().setGuidesStyle(guides().map((guide) => guide.id), 'dashed')
+    store().setSelection([hexagon.id])
+    const spokes = () => guides().filter((guide) => guide.link?.role.startsWith('axis-'))
+    // Every spoke the polygon has, but those on its centre lines, each through its corners and named in order.
+    const expected = () =>
+      constructionLines(objects()[0] as PathObject)
+        .filter((line) => line.role.startsWith('axis-'))
+        .map(({ role, shape, name }) => ({ role, shape, name }))
+    const actual = () => spokes().map((guide) => ({ role: guide.link!.role, shape: guide.shape, name: guide.name }))
+    const history = [guides()]
+    const seen: Array<{ sides: number; roles: string[] }> = []
+    for (const delta of [-1, -1, -1, 1, 1, 1] as const) {
+      store().stepPolygonSides(delta)
+      expect(actual()).toEqual(expected())
+      expect(spokes().every((guide) => guide.link!.of === hexagon.id && guide.style === 'dashed')).toBe(true)
+      expect(guides().filter((guide) => !guide.link)).toEqual([])
+      seen.push({ sides: (layers()[0].carve as { sides: number }).sides, roles: spokes().map((guide) => guide.link!.role) })
+      history.push(guides())
+    }
+    expect(seen).toEqual([
+      { sides: 5, roles: ['axis-1', 'axis-2', 'axis-3', 'axis-4'] },
+      { sides: 4, roles: [] },
+      { sides: 3, roles: ['axis-1', 'axis-2'] },
+      { sides: 4, roles: [] },
+      { sides: 5, roles: ['axis-1', 'axis-2', 'axis-3', 'axis-4'] },
+      { sides: 6, roles: ['axis-1', 'axis-2'] },
+    ])
+    expect(spokes().map((guide) => (guide.shape.kind === 'line' ? Math.round(guide.shape.angle) : null))).toEqual([150, 30])
+    expect(spokes().map((guide) => guide.name)).toEqual(['Spoke 1', 'Spoke 2'])
+    // Each undo takes back one step, guides and all.
+    for (let i = history.length - 2; i >= 0; i--) {
+      store().undoVectorCommand()
+      expect(guides()).toBe(history[i])
+    }
+  })
+})
+
 describe('history', () => {
   beforeEach(() => reset())
 

@@ -1,15 +1,17 @@
-import { useMemo } from 'react'
+import { useMemo, useSyncExternalStore } from 'react'
 import { tangentCircles, useLogoStore } from '../../store/logoStore.ts'
-import { describeCarve } from '../../engine/carve/spec.ts'
+import { describeCarve, MAX_SIDES, MIN_SIDES, polygonApothem, type CarveSpec } from '../../engine/carve/spec.ts'
 import { editableShapeOf } from '../../engine/illustrator/layerPath.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
 import { closedContourOf, describeGuide } from '../../engine/vector/guides.ts'
 import type { Guide, VectorObject } from '../../engine/vector/types.ts'
-import { selectionBox } from '../../renderer/directEdit/handleSet.ts'
+import { hiddenRadiusDots, selectionBox } from '../../renderer/directEdit/handleSet.ts'
 import { hud } from '../../renderer/directEdit/hud.ts'
 import { cn } from '../../lib/utils.ts'
-import { Divider, EditorButton, FLOATING_SURFACE, Segmented } from './controls.tsx'
+import { SliderControl } from '../controls/SliderControl.tsx'
+import { Divider, EditorButton, FLOATING_SURFACE, Segmented, Stepper } from './controls.tsx'
 import { layerNumber } from './layerNumber.ts'
+import { steppedPolygonSides } from './tools.ts'
 import { Popover } from './Popover.tsx'
 import { GUIDE_STYLE_OPTIONS } from './ToolPill.tsx'
 
@@ -34,7 +36,8 @@ const FREE_SHAPE_HINT =
  * own numbers; a free shape or several layers by the box their handles sit
  * around, turned or not, so the size and angle read at rest too, on touch
  * where nothing hovers. Hidden and locked layers take no part, as on the
- * canvas: a recipe that is the only one left reads as that recipe.
+ * canvas: a recipe that is the only one left reads as that recipe. Where the
+ * Sides stepper shows beside it, a polygon's sides are not read twice.
  */
 function describeSelection(
   doc: IllustratorDocument,
@@ -45,7 +48,10 @@ function describeSelection(
   const members = usable.length ? usable : selected
   const alone = members.length === 1 ? members[0] : null
   if (alone?.carve) {
-    const [kind, ...numbers] = describeCarve(alone.carve).split(' · ')
+    const stepped = steppedPolygonSides(selected).length > 0
+    const [kind, ...numbers] = describeCarve(alone.carve)
+      .split(' · ')
+      .filter((part) => !(stepped && / sides$/.test(part)))
     return { name: kind, numbers: numbers.join(' · ') || null }
   }
   const name = alone ? alone.name : `${members.length} layers`
@@ -131,6 +137,9 @@ function LayerBar() {
         {selectedLayer?.pin && <PinnedTo target={selectedLayer.pin} />}
         {selectedLayer && <Holds id={selectedLayer.id} />}
 
+        <PolygonSides layers={selectedLayers} />
+        {selectedLayer && <CornerRadius layer={selectedLayer} />}
+
         {selectedLayer && (
           <Segmented
             label="Add or cut"
@@ -188,6 +197,74 @@ function LayerBar() {
           </EditorButton>
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * The sides of the selected polygons, a side more or fewer a press, one undo
+ * step each, as [ and ] do: on touch the only way. Nothing unless the
+ * selection holds a polygon; other shapes in it stay as they are. The Punch
+ * tool's own Sides is the next punch's; this one is always the selection's.
+ */
+function PolygonSides({ layers }: { layers: IllustratorLayer[] }) {
+  const stepPolygonSides = useLogoStore((s) => s.stepPolygonSides)
+  const sides = steppedPolygonSides(layers)
+  if (!sides.length) return null
+  const same = sides.every((count) => count === sides[0]) ? sides[0] : null
+  return (
+    <Stepper
+      label="Sides"
+      name="Sides of the selected polygons"
+      value={same}
+      min={MIN_SIDES}
+      max={MAX_SIDES}
+      lessLabel="Take a side off ([)"
+      moreLabel="Add a side (])"
+      title="Sides ([ and ])"
+      onStep={stepPolygonSides}
+    />
+  )
+}
+
+/** The largest corner radius a recipe draws: a polygon's apothem, half a slab's shorter side. */
+function cornerLimit(carve: CarveSpec): number | null {
+  if (carve.kind === 'polygon') return polygonApothem(carve)
+  if (carve.kind === 'slab') return Math.min(carve.width, carve.height) / 2
+  return null
+}
+
+/**
+ * The corner radius of a slab or polygon too small on screen for its rounding
+ * dot, which would cover its middle: in whole units, from sharp to as round
+ * as it goes. One undo step a release.
+ */
+function CornerRadius({ layer }: { layer: IllustratorLayer }) {
+  const commitLayerEdits = useLogoStore((s) => s.commitLayerEdits)
+  const dotless = useSyncExternalStore(hiddenRadiusDots.subscribe, hiddenRadiusDots.get)
+  const carve = layer.carve
+  const limit = carve ? cornerLimit(carve) : null
+  if (!carve || limit === null || !layer.visible || layer.locked || !dotless.split(' ').includes(layer.id)) return null
+  const now = carve.kind === 'polygon' ? carve.cornerRadius : carve.kind === 'slab' ? carve.radius : 0
+  // The last step is as round as it goes, a whole number or not.
+  const top = Math.ceil(limit - 1e-9)
+  const exact = (value: number) => Math.min(value, limit)
+  return (
+    <div className="w-36 px-1.5" title="Its rounding dot would cover its middle at this size: round its corners here, or zoom in">
+      <SliderControl
+        label="Corner"
+        value={Math.min(Math.round(now), top)}
+        min={0}
+        max={top}
+        step={1}
+        format={(value) => String(Math.round(exact(value)))}
+        onChange={(value) => {
+          const next = exact(value)
+          if (Math.abs(next - now) < 1e-9) return
+          const edited: CarveSpec = carve.kind === 'polygon' ? { ...carve, cornerRadius: next } : carve.kind === 'slab' ? { ...carve, radius: next } : carve
+          commitLayerEdits({ label: 'Round corners', edits: [{ layerId: layer.id, carve: edited }], select: [layer.id] })
+        }}
+      />
     </div>
   )
 }

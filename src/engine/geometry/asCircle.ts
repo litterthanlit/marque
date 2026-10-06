@@ -14,7 +14,7 @@ export type CircleSource = Pick<PathObject, 'contours'> & { carve?: CarveSpec }
 /**
  * An object read as a circle, or null. A circle slab (an unbent slab, square,
  * whose corner radius is at least half its width) and an unbent circle punch
- * are circles by their recipe. Any other object is one when it is a single
+ * are circles by their recipe; a polygon never is. Any other object is one when it is a single
  * closed contour whose anchors and curve midpoints all lie within
  * max(0.05, 0.001·r) of one circle: that covers spark circles, which carry no
  * recipe.
@@ -35,6 +35,9 @@ function recipeCircle(spec: CarveSpec): Circle | null {
         : null
     case 'punch':
       return spec.shape === 'circle' ? { c: spec.center, r: spec.radius } : null
+    case 'polygon':
+      // A polygon is not a circle, even rounded as far as it goes: it keeps its sides, and [ and ] change them.
+      return null
     case 'channel':
     case 'slice':
       return null

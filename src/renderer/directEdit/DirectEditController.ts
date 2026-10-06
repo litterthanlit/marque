@@ -33,6 +33,7 @@ import {
   carveUnderAffine,
   dragCarveHandle,
   isSideBent,
+  RADIUS_DOT_RATE,
   rotateCarveAbout,
   scaleCarveAbout,
   straightenCarve,
@@ -83,12 +84,12 @@ import { asCircle, type Circle } from '../../engine/geometry/asCircle.ts'
 import { roundPrimitives, tangentAtAngle, tangentThrough } from '../../engine/geometry/tangent.ts'
 import { PIN_SLACK, recipeCentre, shapeCentre } from '../../engine/vector/pins.ts'
 import { boxGeometryFor, carveOutline, grooveSpine, type SideRef } from '../../engine/carve/outline.ts'
-import { bentEdgeCount, isGroove, type CarveSpec, type SlabSpec } from '../../engine/carve/spec.ts'
+import { bentEdgeCount, isGroove, polygonApothem, polygonCornerRadius, type CarveSpec, type SlabSpec } from '../../engine/carve/spec.ts'
 import { bakedEditableShape } from '../../engine/illustrator/layerPath.ts'
 import { createComposeSession, type ComposeSession } from '../../engine/illustrator/composeSession.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
 import { HISTORY_MERGE_MS, type AnchorRef, type HistoryMergeKind, type LayerEdit, type LayerEditCommit } from '../../store/logoStore.ts'
-import { getInkItem, hideGuides, hideLayerOutlines, setInkPathData, setSurvivalVisible } from '../IllustratorRenderer.ts'
+import { drawLiveConstructionMarks, getInkItem, hideGuides, hideLayerOutlines, setInkPathData, setSurvivalVisible } from '../IllustratorRenderer.ts'
 import type { Guide } from '../../engine/vector/types.ts'
 import { constructionShape, guideAnchor, lineReading, lineShape, moveGuideShape, sameGuideShape, type GuideShape } from '../../engine/vector/guides.ts'
 import { detachGuide } from '../../engine/vector/follow.ts'
@@ -101,6 +102,9 @@ import { hud } from './hud.ts'
 import { EMPTY_ZONE, GUIDE_PX, findZone, freeCurve, zoneKey, type HitContext, type Zone } from './hitZones.ts'
 import {
   boxHandleList,
+  canvasPointer,
+  hiddenRadiusDots,
+  recipeFrame,
   scaledHandleLayout,
   selectionBox,
   selectionHandles,
@@ -322,35 +326,58 @@ interface BoxPlan {
 
 /** The same recipe with every bend removed: drawn dashed behind a bent shape. */
 function unbent(spec: CarveSpec): CarveSpec {
-  if (isGroove(spec)) {
-    const next = { ...spec }
-    delete next.bend
-    return next
+  switch (spec.kind) {
+    case 'channel':
+    case 'slice': {
+      const next = { ...spec }
+      delete next.bend
+      return next
+    }
+    case 'slab':
+    case 'punch': {
+      const next = { ...spec }
+      delete next.sides
+      delete next.corners
+      return next
+    }
+    case 'polygon':
+      return spec
+    default:
+      return spec satisfies never
   }
-  const next = { ...spec }
-  delete next.sides
-  delete next.corners
-  return next
 }
 
 const r0 = (v: number) => Math.round(v)
 const r2 = (v: number) => Math.round(v * 100) / 100 || 0
 
-/** The number that matters while dragging a handle, shown next to the pointer. */
-function handleReadout(spec: CarveSpec, handle: CarveHandle): string {
-  if (spec.kind === 'slab') {
-    if (handle.kind === 'radius') return `corner ${r0(Math.min(spec.radius, spec.width / 2, spec.height / 2))}`
-    if (handle.kind === 'rotate') return `${r0(spec.rotation)}°`
-    return `${r0(spec.width)} × ${r0(spec.height)}`
+/**
+ * The number that matters while dragging a handle, shown next to the
+ * pointer. A polygon's corner scaled with Shift scales its rounding too, so
+ * both read.
+ */
+function handleReadout(spec: CarveSpec, handle: CarveHandle, shift = false): string {
+  switch (spec.kind) {
+    case 'slab':
+      if (handle.kind === 'radius') return `corner ${r0(Math.min(spec.radius, spec.width / 2, spec.height / 2))}`
+      if (handle.kind === 'rotate') return `${r0(spec.rotation)}°`
+      return `${r0(spec.width)} × ${r0(spec.height)}`
+    case 'punch':
+      if (handle.kind === 'rotate') return `${r0(spec.rotation)}°`
+      return `${r0(spec.radius * 2)} across`
+    case 'polygon':
+      if (handle.kind === 'radius') return `corner ${r0(polygonCornerRadius(spec))}`
+      if (handle.kind === 'rotate') return `${r0(spec.rotation)}°`
+      return shift ? `r ${r0(spec.radius)} · corner ${r0(polygonCornerRadius(spec))}` : `r ${r0(spec.radius)}`
+    case 'channel':
+    case 'slice': {
+      if (handle.kind === 'width') return `${r0(spec.width)} wide`
+      const len = Math.hypot(spec.to.x - spec.from.x, spec.to.y - spec.from.y)
+      const angle = (Math.atan2(spec.to.y - spec.from.y, spec.to.x - spec.from.x) * 180) / Math.PI
+      return `${r0(len)} long · ${r0(angle)}°`
+    }
+    default:
+      return spec satisfies never
   }
-  if (spec.kind === 'punch') {
-    if (handle.kind === 'rotate') return `${r0(spec.rotation)}°`
-    return `${r0(spec.radius * 2)} across`
-  }
-  if (handle.kind === 'width') return `${r0(spec.width)} wide`
-  const len = Math.hypot(spec.to.x - spec.from.x, spec.to.y - spec.from.y)
-  const angle = (Math.atan2(spec.to.y - spec.from.y, spec.to.x - spec.from.x) * 180) / Math.PI
-  return `${r0(len)} long · ${r0(angle)}°`
 }
 
 function handleLabel(handle: CarveHandle): string {
@@ -370,32 +397,62 @@ function handleLabel(handle: CarveHandle): string {
 
 /** The number that matters while bending: how deep the bend is, or how full a corner. */
 function bendReadout(spec: CarveSpec, side: SideRef): string {
-  if (side.type === 'corner' && !isGroove(spec)) {
-    const fullness = spec.corners?.[side.id]
-    return fullness ? `fullness ${r0(((fullness.k1 + fullness.k2) / 2) * 100)}%` : 'round'
+  switch (spec.kind) {
+    case 'channel':
+    case 'slice':
+      return isSideBent(spec, side) ? `depth ${r0(maxChordDeviation(grooveSpine(spec)))}` : 'straight'
+    case 'polygon':
+      return 'straight'
+    case 'slab':
+    case 'punch': {
+      if (side.type === 'corner') {
+        const fullness = spec.corners?.[side.id]
+        return fullness ? `fullness ${r0(((fullness.k1 + fullness.k2) / 2) * 100)}%` : 'round'
+      }
+      if (!isSideBent(spec, side)) return 'straight'
+      if (side.type === 'line') {
+        const info = boxGeometryFor(spec).sides[side.id]
+        return info ? `depth ${r0(maxChordDeviation(info.cubic))}` : ''
+      }
+      return ''
+    }
+    default:
+      return spec satisfies never
   }
-  if (!isSideBent(spec, side)) return 'straight'
-  if (isGroove(spec)) return `depth ${r0(maxChordDeviation(grooveSpine(spec)))}`
-  if (side.type === 'line') {
-    const info = boxGeometryFor(spec).sides[side.id]
-    return info ? `depth ${r0(maxChordDeviation(info.cubic))}` : ''
-  }
-  return ''
 }
 
 function bendLabel(spec: CarveSpec, side: SideRef): string {
-  if (isGroove(spec)) return spec.kind === 'channel' ? 'Bend channel' : 'Bend slice'
-  return side.type === 'corner' ? 'Shape corner' : 'Bend edge'
+  switch (spec.kind) {
+    case 'channel':
+      return 'Bend channel'
+    case 'slice':
+      return 'Bend slice'
+    case 'slab':
+    case 'punch':
+    case 'polygon':
+      return side.type === 'corner' ? 'Shape corner' : 'Bend edge'
+    default:
+      return spec satisfies never
+  }
 }
 
 /** The point of a recipe that a handle drags: a box corner or side middle, or a groove end. */
 function handleGeometry(spec: CarveSpec, id: HandleId): Vec | null {
-  if (isGroove(spec)) return id === 'from' ? spec.from : id === 'to' ? spec.to : null
-  const f = handleFraction(id)
-  if (!f) return null
-  const hw = spec.kind === 'punch' ? spec.radius : spec.width / 2
-  const hh = spec.kind === 'punch' ? spec.radius : spec.height / 2
-  return add(spec.center, rotate({ x: f.x * hw, y: f.y * hh }, spec.rotation))
+  switch (spec.kind) {
+    case 'channel':
+    case 'slice':
+      return id === 'from' ? spec.from : id === 'to' ? spec.to : null
+    case 'slab':
+    case 'punch':
+    case 'polygon': {
+      const f = handleFraction(id)
+      if (!f) return null
+      const frame = recipeFrame(spec)
+      return add(spec.center, rotate({ x: (f.x * frame.width) / 2, y: (f.y * frame.height) / 2 }, spec.rotation))
+    }
+    default:
+      return spec satisfies never
+  }
 }
 
 /** Which axes a handle's geometry can move along, in layer space; null when it moves at an angle. */
@@ -436,6 +493,9 @@ interface KeyBurst {
   at: number
   layers: IllustratorLayer[]
 }
+
+/** The sizes in use that a rounding can be: none larger than `limit`, where it would be drawn smaller than stored. */
+const drawable = (radii: readonly number[], limit: number): number[] => radii.filter((r) => r <= limit + 1e-9)
 
 const usable = (layer: IllustratorLayer | undefined): boolean => Boolean(layer && layer.visible && !layer.locked)
 
@@ -589,6 +649,7 @@ export class DirectEditController {
     this.unregisterKeys()
     window.clearTimeout(this.keyChipTimer)
     this.destroyed = true
+    hiddenRadiusDots.set([])
     hud.clear()
     resetOverlay(this.scope)
     this.scope.view.update()
@@ -599,6 +660,7 @@ export class DirectEditController {
   pointerDown(p: Vec, mods: Modifiers, touch: boolean): void {
     // A new gesture: "unpinned" held from the last edit goes, so it never covers what this one shows.
     hud.letGo()
+    this.notePointer(touch)
     this.resting = { p, touch }
     let ctx = this.context(touch)
     let zone = findZone(ctx, p)
@@ -646,7 +708,18 @@ export class DirectEditController {
       }
       return
     }
+    this.notePointer(touch)
     this.updateHover(p, touch)
+  }
+
+  /**
+   * A finger or a pointer: handles are laid out for the one last used, so a
+   * rounding dot keeps a finger's room from its recipe's centre.
+   */
+  private notePointer(touch: boolean): void {
+    if (canvasPointer.touch() === touch) return
+    canvasPointer.note(touch)
+    if (!this.session) this.drawOverlay()
   }
 
   pointerUp(): void {
@@ -725,7 +798,7 @@ export class DirectEditController {
   }
 
   private handleLayout(): HandleLayout {
-    return scaledHandleLayout(this.unitsPerPx())
+    return scaledHandleLayout(this.unitsPerPx(), canvasPointer.touch())
   }
 
   /** The selection's handles: a single recipe's own, or a box around a free shape or several layers. */
@@ -1006,6 +1079,7 @@ export class DirectEditController {
   toolPointer(p: Vec, mods: Modifiers, touch = false): void {
     this.toolMods = mods
     this.toolTouch = touch
+    this.notePointer(touch)
     this.placeHud(p, touch)
   }
 
@@ -1046,15 +1120,15 @@ export class DirectEditController {
    * (a round punch, a circle guide) takes the size of another circle or
    * punch, or just touches an edge, a guide or another circle. Any other
    * punch, whose sides are not where a circle of its radius would be, takes
-   * only the radius of another punch.
+   * only the radius of another punch, and a polygon only another polygon's.
    */
-  snapToolRadius(center: Vec, radius: number, round = true): number {
+  snapToolRadius(center: Vec, radius: number, like: 'circle' | 'punch' | 'polygon' = 'circle'): number {
     let snapped = radius
     this.toolSnap('end', (index, doc) => {
       const sizes = this.sizesFor(doc, new Set())
       const tolerance = this.snapTolerance(this.toolTouch)
-      if (!round) {
-        const same = snapValue(radius, sizes.punchRadii, tolerance)
+      if (like !== 'circle') {
+        const same = snapValue(radius, like === 'polygon' ? sizes.polygonRadii : sizes.punchRadii, tolerance)
         if (same === null) return NO_SNAP
         snapped = same
         return { ...NO_SNAP, label: 'same size' }
@@ -1677,7 +1751,7 @@ export class DirectEditController {
         const carves = new Map([[layerId, current]])
         letGo.update(this.unpinning(carves, editedIds))
         this.showInk(compose, new Map([[layerId, carveOutline(current).pathData]]), carves)
-        hud.set({ chip: handleReadout(current, handle) })
+        hud.set({ chip: handleReadout(current, handle, mods.shift) })
         this.drawOverlay()
       },
       commit: () => {
@@ -1929,33 +2003,52 @@ export class DirectEditController {
       return sized ?? (snap.label ? pointed() : none)
     }
 
-    if (handle.kind === 'scale' && raw.kind === 'punch') {
-      const all = sizes()
-      if (raw.shape !== 'circle' || bentEdgeCount(raw)) {
-        const same = snapValue(raw.radius, all.punchRadii, tolerance)
-        return same === null ? none : { spec: { ...raw, radius: same }, snap: { ...NO_SNAP, label: 'same size' } }
-      }
-      const found = this.snapCircleSize(index, [...all.punchRadii, ...all.circleRadii], { c: raw.center, r: raw.radius }, raw.center, tolerance)
-      return found ? { spec: { ...raw, radius: found.radius }, snap: found.snap } : none
-    }
-
-    if (handle.kind === 'radius' && raw.kind === 'slab') {
-      const same = snapValue(raw.radius, sizes().radii, tolerance)
-      return same === null ? none : { spec: { ...raw, radius: same }, snap: { ...NO_SNAP, label: 'same size' } }
-    }
-
-    if (handle.kind === 'width' && isGroove(raw)) {
-      const same = snapValue(raw.width, sizes().widths, tolerance)
-      return same === null ? none : { spec: { ...raw, width: same }, snap: { ...NO_SNAP, label: 'same size' } }
-    }
-
-    if (handle.kind === 'rotate' && !isGroove(raw) && !isGroove(start) && !mods.shift) {
+    if (handle.kind === 'rotate') {
+      if (isGroove(raw) || isGroove(start) || mods.shift) return none
       const rotation = settleAngle(raw.rotation, distance(pointer, start.center), tolerance)
       if (rotation === null) return none
       // The chip already reads the angle: no label repeats it.
       return { spec: { ...raw, rotation }, snap: NO_SNAP }
     }
-    return none
+
+    const same = (value: number, among: number[], write: (value: number) => CarveSpec) => {
+      const found = snapValue(value, among, tolerance)
+      return found === null ? none : { spec: write(found), snap: { ...NO_SNAP, label: 'same size' } }
+    }
+    switch (raw.kind) {
+      case 'punch': {
+        if (handle.kind !== 'scale') return none
+        const all = sizes()
+        if (raw.shape !== 'circle' || bentEdgeCount(raw)) return same(raw.radius, all.punchRadii, (radius) => ({ ...raw, radius }))
+        const found = this.snapCircleSize(index, [...all.punchRadii, ...all.circleRadii], { c: raw.center, r: raw.radius }, raw.center, tolerance)
+        return found ? { spec: { ...raw, radius: found.radius }, snap: found.snap } : none
+      }
+      case 'polygon':
+        // A polygon takes another's radius by its corners (with Shift, its rounding scaled along), and a corner radius in use by its dot.
+        if (handle.kind === 'scale') {
+          const rounding = (radius: number) => (mods.shift ? raw.cornerRadius * (radius / raw.radius) : raw.cornerRadius)
+          return same(raw.radius, sizes().polygonRadii, (radius) => ({ ...raw, radius, cornerRadius: rounding(radius) }))
+        }
+        if (handle.kind === 'radius') {
+          // The dot all the way in, to within the snap's reach of where it stops: fully round, not a whole number short.
+          const apothem = polygonApothem(raw)
+          if (((apothem - raw.cornerRadius) * RADIUS_DOT_RATE) / Math.cos(Math.PI / raw.sides) <= tolerance) {
+            return { spec: { ...raw, cornerRadius: apothem }, snap: { ...NO_SNAP, label: 'fully round' } }
+          }
+          // Only a corner radius the polygon can draw: no larger than its apothem.
+          return same(raw.cornerRadius, drawable(sizes().radii, apothem), (cornerRadius) => ({ ...raw, cornerRadius }))
+        }
+        return none
+      case 'slab':
+        // Nor a slab: no larger than half its shorter side.
+        if (handle.kind !== 'radius') return none
+        return same(raw.radius, drawable(sizes().radii, Math.min(raw.width, raw.height) / 2), (radius) => ({ ...raw, radius }))
+      case 'channel':
+      case 'slice':
+        return handle.kind === 'width' ? same(raw.width, sizes().widths, (width) => ({ ...raw, width })) : none
+      default:
+        return raw satisfies never
+    }
   }
 
   /**
@@ -2397,6 +2490,23 @@ export class DirectEditController {
   }
 
   /**
+   * The recipes of the layers a gesture reshapes, as they are now: from the
+   * preview once it has one, else as they were. A layer the preview has
+   * made free has none.
+   */
+  private liveCarves(edited: ReadonlySet<string>): CarveSpec[] {
+    const preview = this.preview
+    const carves: CarveSpec[] = []
+    for (const id of edited) {
+      const layer = this.layer(id)
+      if (!layer?.visible) continue
+      const carve = preview?.paths.has(id) ? preview.carves.get(id) : layer.carve
+      if (carve) carves.push(carve)
+    }
+    return carves
+  }
+
+  /**
    * While a gesture reshapes some layers, the construction guides that
    * follow them are drawn where the follow pass will put them, from the live
    * frame; the drawn ones hide meanwhile. Returns the guides drawn so.
@@ -2462,6 +2572,14 @@ export class DirectEditController {
 
   /* ─── Overlay ─── */
 
+  /** The one selected slab or polygon, when it is too small on screen for its rounding dot to keep clear of its centre. */
+  private dotlessRecipes(selected: readonly string[]): string[] {
+    if (selected.length !== 1) return []
+    const carve = this.layer(selected[0])?.carve
+    if (carve?.kind !== 'slab' && carve?.kind !== 'polygon') return []
+    return carveHandles(carve, this.handleLayout()).some((handle) => handle.kind === 'radius') ? [] : [selected[0]]
+  }
+
   private drawOverlay(): void {
     if (this.destroyed) return
     const doc = this.host.getDoc()
@@ -2473,6 +2591,7 @@ export class DirectEditController {
     hideLayerOutlines(this.items, edited)
     const ids = new Set(doc.layers.map((candidate) => candidate.id))
     const selected = doc.selectedLayerIds.filter((id) => ids.has(id))
+    if (!editing) hiddenRadiusDots.set(this.dotlessRecipes(selected))
 
     if (this.hover.kind === 'body' && !selected.includes(this.hover.layerId) && !edited.has(this.hover.layerId)) {
       const item = this.items.get(this.hover.layerId)
@@ -2503,6 +2622,7 @@ export class DirectEditController {
     }
 
     if (editing) {
+      drawLiveConstructionMarks(this.scope, layer, this.liveCarves(edited), this.center())
       editing.drawOverlay(layer)
     } else if (this.live !== 'none') {
       const set = this.handleSet(doc)

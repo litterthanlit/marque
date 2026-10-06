@@ -15,9 +15,11 @@ import {
   type Cubic,
   type Vec,
 } from '../path/bezier.ts'
-import { carveOutline, outlineBounds } from '../carve/outline.ts'
-import { isGroove, type CarveSpec } from '../carve/spec.ts'
+import { KAPPA } from '../path/arc.ts'
+import { carveOutline, outlineBounds, polygonParts } from '../carve/outline.ts'
+import { polygonApothem, type CarveSpec } from '../carve/spec.ts'
 import { asCircle, fitCircle, type Circle, type CircleSource } from '../geometry/asCircle.ts'
+import { recipeCentre } from './pins.ts'
 import type { ConstructionRole, Contour, Guide, PathObject } from './types.ts'
 
 /**
@@ -33,7 +35,11 @@ export type GuideStyle = Guide['style']
 export interface ConstructionLine {
   role: ConstructionRole
   shape: GuideShape
-  /** What a guide made from it is called: where its line lies on screen, "Top" or "Centre ↕", whatever the shape's turn. */
+  /**
+   * What a guide made from it is called: where its line lies on screen, "Top"
+   * or "Centre ↕", whatever the shape's turn. Spokes are "Spoke 1", "Spoke 2"
+   * in order among those the shape offers.
+   */
   name: string
 }
 
@@ -219,6 +225,7 @@ function sourceFrame(source: ConstructionSource): SourceFrame | null {
   switch (spec.kind) {
     case 'slab':
     case 'punch':
+    case 'polygon':
       // Measured unturned, about its own centre.
       return about(spec.center, outlineBounds(carveOutline({ ...spec, rotation: 0 })), spec.rotation)
     case 'channel':
@@ -264,6 +271,9 @@ function recipeVertices(spec: CarveSpec): Vec[] | null {
       const big = spec.radius * 1.25
       return [0, 120, 240].map((deg) => add(spec.center, rotate(rotate({ x: 0, y: -big }, deg), spec.rotation)))
     }
+    case 'polygon':
+      // The corners of the sharp polygon, whatever its rounding.
+      return polygonParts(spec).vertices
     case 'channel':
     case 'slice':
       return null
@@ -284,6 +294,9 @@ function recipeCircles(spec: CarveSpec): { circum: Circle; in: Circle | null } |
       if (spec.shape === 'circle') return null
       if (spec.shape === 'square') return { circum: { c: spec.center, r: spec.radius * Math.SQRT2 }, in: { c: spec.center, r: spec.radius } }
       return { circum: { c: spec.center, r: spec.radius * 1.25 }, in: { c: spec.center, r: spec.radius * 0.625 } }
+    case 'polygon':
+      // The sharp polygon's: through its corners, and touching its sides.
+      return { circum: { c: spec.center, r: spec.radius }, in: { c: spec.center, r: polygonApothem(spec) } }
     case 'channel':
     case 'slice':
       return null
@@ -332,10 +345,9 @@ function insideContours(contours: readonly Contour[], p: Vec): boolean {
 
 /** The spokes of a recipe with corners: a line from the centre through each corner, once for opposite corners. */
 function spokeAngles(spec: CarveSpec): number[] {
-  if (isGroove(spec)) return []
   const vertices = recipeVertices(spec)
   if (!vertices) return []
-  const centre = spec.center
+  const centre = recipeCentre(spec)
   const angles: number[] = []
   for (const v of vertices) {
     const off = sub(v, centre)
@@ -394,7 +406,9 @@ export function constructionLines(source: ConstructionSource): ConstructionLine[
     if (!line || lines.some((each) => coincide(each.shape, line.shape))) continue
     lines.push(line)
   }
-  return lines
+  // Spokes are numbered in order among those offered, with no gaps.
+  let k = 0
+  return lines.map((line) => (isSpoke(line.role) ? { ...line, name: spokeName(k++) } : line))
 }
 
 /** The guide a construction role gives on a shape, or null when the shape no longer has it. */
@@ -500,7 +514,7 @@ export function roleName(role: ConstructionRole): string {
     case 'incircle':
       return 'Incircle'
     default:
-      return `Axis ${Number(role.slice('axis-'.length)) + 1}`
+      return spokeName(Number(role.slice('axis-'.length)))
   }
 }
 
@@ -536,6 +550,61 @@ export function makeGuide(shape: GuideShape, style: GuideStyle, link?: Guide['li
   const guide: Guide = { id: crypto.randomUUID(), name: called, visible: true, locked: false, style, shape }
   if (link) guide.link = link
   return guide
+}
+
+const isSpoke = (role: ConstructionRole): boolean => role.startsWith('axis-')
+
+/** A role of the set about a shape's centre: its circles and its spokes. */
+const isRadial = (role: ConstructionRole): boolean => role === 'circumcircle' || role === 'incircle' || isSpoke(role)
+
+/** The name of the `k`th spoke a shape has, counting from 0 among those it has guides or lines for. */
+function spokeName(k: number): string {
+  return `Spoke ${k + 1}`
+}
+
+/** Every spoke a shape has, each through a pair of its corners, whether or not it lies on another of its lines. */
+function spokeLines(source: ConstructionSource): ConstructionLine[] {
+  if (!source.carve) return []
+  return spokeAngles(source.carve).flatMap((_, i) => constructionLine(source, `axis-${i}`) ?? [])
+}
+
+/**
+ * The guides with a shape's spokes made again, after its corners changed in
+ * number as a polygon's do when it gains or loses a side. Spokes follow by
+ * their index, so a new count needs the whole set: a spoke the shape still
+ * has keeps its guide, moved through its corner; one it has lost goes; a new
+ * one comes in the look of the first, where the first was. A spoke that lies
+ * on one of the shape's centre-line guides, as a square's two do, is left
+ * out, and comes back when a later count sets it apart again.
+ *
+ * The spokes are made whenever a guide of the shape's circles or spokes
+ * follows it, so a hexagon stepped down through a square, which has no spoke
+ * of its own, gets them back. A shape with none of those is given none, and
+ * the same array comes back. `shape` is the shape as it is now.
+ */
+export function respokeGuides(guides: Guide[], shape: ConstructionSource & Pick<PathObject, 'id'>): Guide[] {
+  const ofShape = (guide: Guide) => guide.link?.kind === 'construction' && guide.link.of === shape.id
+  const linked = (guide: Guide) => ofShape(guide) && isSpoke(guide.link!.role)
+  const radial = guides.filter((guide) => ofShape(guide) && isRadial(guide.link!.role))
+  if (radial.length === 0) return guides
+  const centres = guides.filter((guide) => ofShape(guide) && (guide.link!.role === 'centre-x' || guide.link!.role === 'centre-y'))
+  const first = guides.findIndex(linked)
+  const old = new Map(guides.filter(linked).map((guide) => [guide.link!.role, guide]))
+  // The look of its first spoke, or else of its first circle.
+  const template = first < 0 ? radial[0] : guides[first]
+  const spokes = spokeLines(shape)
+    .filter((line) => !centres.some((guide) => coincide(guide.shape, line.shape)))
+    .map(({ role, shape: line }, k) => {
+      const name = spokeName(k)
+      const kept = old.get(role)
+      if (kept) return sameGuideShape(kept.shape, line) && kept.name === name ? kept : { ...kept, shape: line, name }
+      const made = makeGuide(line, template.style, { kind: 'construction', of: shape.id, role }, name)
+      return { ...made, visible: template.visible, locked: template.locked }
+    })
+  const rest = guides.filter((guide) => !linked(guide))
+  // With no spoke guide to take the place of, they go after the shape's last guide.
+  const at = first < 0 ? rest.map(ofShape).lastIndexOf(true) + 1 : guides.slice(0, first).filter((guide) => !linked(guide)).length
+  return [...rest.slice(0, at), ...spokes, ...rest.slice(at)]
 }
 
 /**
@@ -612,7 +681,7 @@ export function guideAnchor(shape: GuideShape, near: Vec): Vec {
 
 /** A circle as a closed contour of four quarter arcs, for drawing it as a path. */
 export function circleContour(c: Vec, r: number): Contour {
-  const k = 0.5522847498307936 * r
+  const k = KAPPA * r
   const points = [0, 90, 180, 270].map((deg) => ({ at: add(c, rotate({ x: r, y: 0 }, deg)), tangent: rotate({ x: 0, y: k }, deg) }))
   return {
     closed: true,

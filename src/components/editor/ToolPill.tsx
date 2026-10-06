@@ -1,11 +1,11 @@
 import { useSyncExternalStore } from 'react'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { pinnedGhosts } from '../../renderer/tools/GuideTool.ts'
-import { PUNCH_SHAPES, SLAB_KINDS } from '../../engine/carve/geometry.ts'
-import type { SlabKind } from '../../engine/carve/spec.ts'
+import { PUNCH_SHAPES, SLAB_KINDS, type SlabEntry } from '../../engine/carve/geometry.ts'
+import { clampSides, MAX_SIDES, MIN_SIDES } from '../../engine/carve/spec.ts'
 import { cn } from '../../lib/utils.ts'
 import { SliderControl } from '../controls/SliderControl.tsx'
-import { Divider, EditorButton, FLOATING_SURFACE, Segmented, SwitchButton } from './controls.tsx'
+import { Divider, EditorButton, FLOATING_SURFACE, Segmented, Stepper, SwitchButton } from './controls.tsx'
 import { EDITOR_TOOLS } from './tools.ts'
 
 const PUNCH_SHAPE_OPTIONS = PUNCH_SHAPES.map((shape) => ({ value: shape.id, label: shape.label }))
@@ -67,13 +67,30 @@ export function ToolPill() {
         </div>
 
         {activeTool === 'punch' && (
-          <div className="flex justify-center border-t border-border p-1.5">
+          <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 border-t border-border p-1.5">
             <Segmented
               label="Punch shape"
               options={PUNCH_SHAPE_OPTIONS}
               value={carve.punchShape}
               onChange={(punchShape) => setCarveSettings({ punchShape })}
             />
+            {/*
+              Every punch selects its cut, so this stepper is only ever the next punch's: it stays put
+              while cuts come and go. The bar's Sides is always the selected polygon's.
+            */}
+            {carve.punchShape === 'polygon' && (
+              <Stepper
+                label="Sides"
+                name="Sides of the next punch"
+                value={carve.polygonSides}
+                min={MIN_SIDES}
+                max={MAX_SIDES}
+                lessLabel="One side fewer"
+                moreLabel="One side more"
+                title="The sides of the next punch ([ and ] with no polygon selected)"
+                onStep={(delta) => setCarveSettings({ polygonSides: clampSides(carve.polygonSides + delta) })}
+              />
+            )}
           </div>
         )}
         {(activeTool === 'guide' || activeTool === 'pen') && (
@@ -150,6 +167,7 @@ function OptionLabel({ children }: { children: React.ReactNode }) {
 
 function SlabButtons() {
   const addSlab = useLogoStore((s) => s.addSlab)
+  const sides = useLogoStore((s) => s.ui.carve.polygonSides)
   return (
     <div className="flex items-center gap-1" role="group" aria-label="Add a slab">
       <span aria-hidden="true" className="px-1 text-[10px] uppercase tracking-widest text-sidebar-text">
@@ -159,11 +177,11 @@ function SlabButtons() {
         <EditorButton
           key={slab.id}
           aria-label={`Add ${slab.label.toLowerCase()} slab`}
-          title={`Add a ${slab.label.toLowerCase()} slab`}
+          title={slab.id === 'polygon' ? `Add a polygon slab of ${sides} sides ([ and ] change them)` : `Add a ${slab.label.toLowerCase()} slab`}
           onClick={() => addSlab(slab.id)}
-          className="w-8 px-0"
+          className="relative w-8 px-0"
         >
-          <SlabGlyph kind={slab.id} />
+          <SlabGlyph kind={slab.id} sides={sides} />
         </EditorButton>
       ))}
     </div>
@@ -183,17 +201,44 @@ function SnappingSwitch() {
   )
 }
 
-const SLAB_GLYPHS: Record<SlabKind, React.ReactNode> = {
+const SLAB_GLYPHS: Record<Exclude<SlabEntry, 'polygon'>, React.ReactNode> = {
   square: <rect x="2" y="2" width="10" height="10" />,
   rounded: <rect x="2" y="2" width="10" height="10" rx="3" />,
   circle: <circle cx="7" cy="7" r="5" />,
   tall: <rect x="4" y="1" width="6" height="12" />,
 }
 
-function SlabGlyph({ kind }: { kind: SlabKind }) {
+/**
+ * The most sides the polygon glyph draws. With more it would read as a
+ * second circle beside the circle slab's, so it stays a hexagon; the count
+ * is written in the button's corner.
+ */
+const GLYPH_SIDES = 6
+
+/** The next polygon, a corner at the top, as it starts, about as large as the other glyphs. */
+function polygonGlyphPoints(sides: number): string {
+  return Array.from({ length: sides }, (_, i) => {
+    const angle = (2 * Math.PI * i) / sides
+    return `${(7 + 5.5 * Math.sin(angle)).toFixed(2)},${(7 - 5.5 * Math.cos(angle)).toFixed(2)}`
+  }).join(' ')
+}
+
+/**
+ * A slab's glyph, centred in its button like every other. The polygon's
+ * count of sides sits in the button's bottom right corner, out of the
+ * glyph's way, so the glyph never moves as the count changes.
+ */
+function SlabGlyph({ kind, sides }: { kind: SlabEntry; sides: number }) {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
-      {SLAB_GLYPHS[kind]}
-    </svg>
+    <>
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" aria-hidden="true">
+        {kind === 'polygon' ? <polygon points={polygonGlyphPoints(Math.min(sides, GLYPH_SIDES))} /> : SLAB_GLYPHS[kind]}
+      </svg>
+      {kind === 'polygon' && (
+        <span aria-hidden="true" className="absolute bottom-0.5 right-1 text-[9px] font-semibold leading-none tabular-nums">
+          {sides}
+        </span>
+      )}
+    </>
   )
 }

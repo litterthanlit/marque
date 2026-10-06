@@ -111,3 +111,38 @@ export function SwitchButton({ label, checked, onChange, title, className }: Swi
 export function Divider({ className }: { className?: string }) {
   return <span aria-hidden="true" className={cn('h-4 w-px shrink-0 bg-border', className)} />
 }
+
+interface StepperProps {
+  label: string
+  /** What it is read out as, where that says more than the label shown. */
+  name?: string
+  /** The value shown, or null where the selection holds several. */
+  value: number | null
+  min: number
+  max: number
+  onStep: (delta: 1 | -1) => void
+  /** What the buttons do, read out and shown on hover. */
+  lessLabel: string
+  moreLabel: string
+  title?: string
+}
+
+/** A number stepped one at a time: − value +. Reachable by touch, where a key is not. */
+export function Stepper({ label, name, value, min, max, onStep, lessLabel, moreLabel, title }: StepperProps) {
+  return (
+    <div className="flex items-center gap-1" role="group" aria-label={name ?? label} title={title}>
+      <span aria-hidden="true" className="px-1 text-[10px] uppercase tracking-widest text-sidebar-text">
+        {label}
+      </span>
+      <EditorButton aria-label={lessLabel} title={lessLabel} disabled={value !== null && value <= min} onClick={() => onStep(-1)} className="w-8 px-0">
+        −
+      </EditorButton>
+      <output aria-live="polite" className="w-6 text-center text-xs tabular-nums text-fg">
+        {value ?? '–'}
+      </output>
+      <EditorButton aria-label={moreLabel} title={moreLabel} disabled={value !== null && value >= max} onClick={() => onStep(1)} className="w-8 px-0">
+        +
+      </EditorButton>
+    </div>
+  )
+}

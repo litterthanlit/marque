@@ -73,11 +73,71 @@ export interface GrooveSpec {
   bend?: SideBend
 }
 
-export type CarveSpec = SlabSpec | PunchSpec | GrooveSpec
+/**
+ * A regular polygon with every corner rounded alike. Its first corner is at
+ * the top before it turns. A polygon is the same recipe whether it adds or
+ * cuts: the punch's polygon is one too.
+ */
+export interface PolygonSpec {
+  v: 1
+  kind: 'polygon'
+  center: Vec
+  /** How many sides: a whole number from 3 to 12. */
+  sides: number
+  /** Circumradius of the sharp polygon: how far its corners would reach unrounded. */
+  radius: number
+  rotation: number
+  /** Radius of every corner. Clamped to the apothem when generating, never when stored. */
+  cornerRadius: number
+}
+
+export type CarveSpec = SlabSpec | PunchSpec | PolygonSpec | GrooveSpec
+
+export const MIN_SIDES = 3
+export const MAX_SIDES = 12
+/** A new polygon is a hexagon. */
+export const DEFAULT_SIDES = 6
+
+/** A number of sides as a polygon takes it: whole, from 3 to 12. */
+export function clampSides(sides: number): number {
+  return Math.min(MAX_SIDES, Math.max(MIN_SIDES, Math.round(sides)))
+}
+
+/** The distance from a polygon's centre to the middle of a side: R·cos(π/n). */
+export function polygonApothem(spec: Pick<PolygonSpec, 'sides' | 'radius'>): number {
+  return spec.radius * Math.cos(Math.PI / spec.sides)
+}
+
+/**
+ * How far short of its apothem a polygon's corner radius may be stored and
+ * still be fully round: the hundredth that storage rounds to.
+ */
+export const FULL_ROUND_SLACK = 0.01
+
+/**
+ * The corner radius a polygon draws with: at most its apothem, where the
+ * corners of each side meet in its middle and the polygon is a circle. A
+ * radius stored within FULL_ROUND_SLACK of the apothem is the apothem, so a
+ * polygon rounded all the way keeps no flats after storage rounds it down.
+ */
+export function polygonCornerRadius(spec: Pick<PolygonSpec, 'sides' | 'radius' | 'cornerRadius'>): number {
+  const apothem = polygonApothem(spec)
+  return spec.cornerRadius >= apothem - FULL_ROUND_SLACK ? apothem : Math.max(spec.cornerRadius, 0)
+}
+
+/**
+ * A polygon's corner radius once its size is multiplied by `factor`: a fully
+ * round polygon stays fully round, whatever storage rounded its radius to.
+ */
+export function scaledPolygonCorner(spec: Pick<PolygonSpec, 'sides' | 'radius' | 'cornerRadius'>, factor: number): number {
+  const round = polygonCornerRadius(spec) === polygonApothem(spec)
+  return round ? polygonApothem({ sides: spec.sides, radius: spec.radius * factor }) : spec.cornerRadius * factor
+}
 
 /** The shape a carve tool produces while dragging, before it becomes a recipe. */
 export type CutSpec =
   | { kind: 'punch'; shape: PunchShape; center: Vec; radius: number }
+  | { kind: 'polygon'; center: Vec; radius: number; sides: number }
   | { kind: 'channel'; from: Vec; to: Vec; width: number }
   | { kind: 'slice'; from: Vec; to: Vec; width: number }
 
@@ -87,6 +147,9 @@ export const SLAB_PRESETS: Record<SlabKind, { width: number; height: number; rad
   circle: { width: 400, height: 400, radius: 200 },
   tall: { width: 250, height: 430, radius: 125 },
 }
+
+/** The polygon slab: as wide as the circle slab, its corners sharp. */
+export const POLYGON_SLAB_RADIUS = 200
 
 export function slabSpec(preset: SlabKind, center: Vec = { x: 0, y: 0 }, size = 1): SlabSpec {
   const p = SLAB_PRESETS[preset]
@@ -102,24 +165,57 @@ export function slabSpec(preset: SlabKind, center: Vec = { x: 0, y: 0 }, size = 
   }
 }
 
+/** A polygon of `sides`, upright, its corners sharp unless `cornerRadius` says. */
+export function polygonSpec(center: Vec, radius: number, sides = DEFAULT_SIDES, cornerRadius = 0): PolygonSpec {
+  return { v: 1, kind: 'polygon', center: { ...center }, sides: clampSides(sides), radius, rotation: 0, cornerRadius }
+}
+
 export function carveFromCut(cut: CutSpec): CarveSpec {
-  if (cut.kind === 'punch') {
-    return { v: 1, kind: 'punch', shape: cut.shape, center: { ...cut.center }, radius: cut.radius, rotation: 0 }
+  switch (cut.kind) {
+    case 'punch':
+      return { v: 1, kind: 'punch', shape: cut.shape, center: { ...cut.center }, radius: cut.radius, rotation: 0 }
+    case 'polygon':
+      return polygonSpec(cut.center, cut.radius, cut.sides)
+    case 'channel':
+    case 'slice':
+      return { v: 1, kind: cut.kind, from: { ...cut.from }, to: { ...cut.to }, width: cut.width }
+    default:
+      return cut satisfies never
   }
-  return { v: 1, kind: cut.kind, from: { ...cut.from }, to: { ...cut.to }, width: cut.width }
 }
 
 export function carveLayerName(spec: CarveSpec): string {
-  if (spec.kind === 'slab') return 'Slab'
-  if (spec.kind === 'punch') return `Punch · ${spec.shape}`
-  return spec.kind === 'channel' ? 'Channel' : 'Slice'
+  switch (spec.kind) {
+    case 'slab':
+      return 'Slab'
+    case 'punch':
+      return `Punch · ${spec.shape}`
+    case 'polygon':
+      return `Polygon · ${spec.sides}`
+    case 'channel':
+      return 'Channel'
+    case 'slice':
+      return 'Slice'
+    default:
+      return spec satisfies never
+  }
 }
 
 /** Thickness used to scale hit bands: thin things get narrower bend zones. */
 export function carveThickness(spec: CarveSpec): number {
-  if (spec.kind === 'slab') return Math.min(spec.width, spec.height)
-  if (spec.kind === 'punch') return spec.radius * 2
-  return spec.width
+  switch (spec.kind) {
+    case 'slab':
+      return Math.min(spec.width, spec.height)
+    case 'punch':
+      return spec.radius * 2
+    case 'polygon':
+      return 2 * polygonApothem(spec)
+    case 'channel':
+    case 'slice':
+      return spec.width
+    default:
+      return spec satisfies never
+  }
 }
 
 export function isSlab(spec: CarveSpec | undefined | null): spec is SlabSpec {
@@ -179,9 +275,28 @@ function areBendsValid(value: Record<string, unknown>): boolean {
   return true
 }
 
-/** Structural check for recipes read from URLs, saved variations or old builds. */
+/**
+ * Structural check for recipes read from URLs, saved variations or old
+ * builds. A polygon must have a whole number of sides from 3 to 12: any
+ * other count would draw another outline than the one stored, so the recipe
+ * is not trusted and goes, and the shape stays as its path.
+ */
 export function isCarveSpec(value: unknown): value is CarveSpec {
   if (!isRecord(value) || value.v !== 1) return false
+  if (value.kind === 'polygon') {
+    return (
+      isVec(value.center) &&
+      typeof value.sides === 'number' &&
+      Number.isInteger(value.sides) &&
+      value.sides >= MIN_SIDES &&
+      value.sides <= MAX_SIDES &&
+      isFiniteNumber(value.radius) &&
+      value.radius > 0 &&
+      isFiniteNumber(value.rotation) &&
+      isFiniteNumber(value.cornerRadius) &&
+      value.cornerRadius >= 0
+    )
+  }
   if (value.kind === 'slab') {
     return (
       typeof value.preset === 'string' &&
@@ -264,30 +379,56 @@ function roundBends(spec: CarveBends): CarveBends {
  * path generated from the stored recipe.
  */
 export function roundCarveSpec(spec: CarveSpec): CarveSpec {
-  if (spec.kind === 'slab') {
-    return {
-      v: 1,
-      kind: 'slab',
-      preset: spec.preset,
-      center: roundVec(spec.center),
-      width: round2(spec.width),
-      height: round2(spec.height),
-      radius: round2(spec.radius),
-      rotation: round2(spec.rotation),
-      ...roundBends(spec),
-    }
+  switch (spec.kind) {
+    case 'slab':
+      return roundSlab(spec)
+    case 'punch':
+      return roundPunch(spec)
+    case 'polygon':
+      return {
+        v: 1,
+        kind: 'polygon',
+        center: roundVec(spec.center),
+        sides: spec.sides,
+        radius: round2(spec.radius),
+        rotation: round2(spec.rotation),
+        cornerRadius: round2(spec.cornerRadius),
+      }
+    case 'channel':
+    case 'slice':
+      return roundGroove(spec)
+    default:
+      return spec satisfies never
   }
-  if (spec.kind === 'punch') {
-    return {
-      v: 1,
-      kind: 'punch',
-      shape: spec.shape,
-      center: roundVec(spec.center),
-      radius: round2(spec.radius),
-      rotation: round2(spec.rotation),
-      ...roundBends(spec),
-    }
+}
+
+function roundSlab(spec: SlabSpec): SlabSpec {
+  return {
+    v: 1,
+    kind: 'slab',
+    preset: spec.preset,
+    center: roundVec(spec.center),
+    width: round2(spec.width),
+    height: round2(spec.height),
+    radius: round2(spec.radius),
+    rotation: round2(spec.rotation),
+    ...roundBends(spec),
   }
+}
+
+function roundPunch(spec: PunchSpec): PunchSpec {
+  return {
+    v: 1,
+    kind: 'punch',
+    shape: spec.shape,
+    center: roundVec(spec.center),
+    radius: round2(spec.radius),
+    rotation: round2(spec.rotation),
+    ...roundBends(spec),
+  }
+}
+
+function roundGroove(spec: GrooveSpec): GrooveSpec {
   const out: GrooveSpec = {
     v: 1,
     kind: spec.kind,
@@ -304,8 +445,19 @@ export function roundCarveSpec(spec: CarveSpec): CarveSpec {
 
 /** Count of bent sides and reshaped corners, for summaries. */
 export function bentEdgeCount(spec: CarveSpec): number {
-  if (isGroove(spec)) return spec.bend ? 1 : 0
-  return Object.keys(spec.sides ?? {}).length + Object.keys(spec.corners ?? {}).length
+  switch (spec.kind) {
+    case 'slab':
+    case 'punch':
+      return Object.keys(spec.sides ?? {}).length + Object.keys(spec.corners ?? {}).length
+    case 'polygon':
+      // A polygon does not bend: its sides stay straight and its corners round.
+      return 0
+    case 'channel':
+    case 'slice':
+      return spec.bend ? 1 : 0
+    default:
+      return spec satisfies never
+  }
 }
 
 const n0 = (v: number): string => String(Math.round(v))
@@ -314,16 +466,27 @@ const n0 = (v: number): string => String(Math.round(v))
 export function describeCarve(spec: CarveSpec): string {
   const bent = bentEdgeCount(spec)
   const bentText = bent ? ` · ${bent} bent ${bent === 1 ? 'edge' : 'edges'}` : ''
-  if (spec.kind === 'slab') {
-    const radius = Math.min(spec.radius, spec.width / 2, spec.height / 2)
-    const turned = spec.rotation ? ` · ${n0(spec.rotation)}°` : ''
-    return `Slab · ${n0(spec.width)} × ${n0(spec.height)} · corner ${n0(radius)}${turned}${bentText}`
+  switch (spec.kind) {
+    case 'slab': {
+      const radius = Math.min(spec.radius, spec.width / 2, spec.height / 2)
+      const turned = spec.rotation ? ` · ${n0(spec.rotation)}°` : ''
+      return `Slab · ${n0(spec.width)} × ${n0(spec.height)} · corner ${n0(radius)}${turned}${bentText}`
+    }
+    case 'punch': {
+      const turned = spec.rotation ? ` · ${n0(spec.rotation)}°` : ''
+      return `Punch · ${spec.shape} · ${n0(spec.radius * 2)} across${turned}${bentText}`
+    }
+    case 'polygon': {
+      const turned = spec.rotation ? ` · ${n0(spec.rotation)}°` : ''
+      return `Polygon · ${spec.sides} sides · r ${n0(spec.radius)} · corner ${n0(polygonCornerRadius(spec))}${turned}`
+    }
+    case 'channel':
+    case 'slice': {
+      const len = Math.hypot(spec.to.x - spec.from.x, spec.to.y - spec.from.y)
+      const name = spec.kind === 'channel' ? 'Channel' : 'Slice'
+      return `${name} · ${n0(len)} long · ${n0(spec.width)} wide${bentText}`
+    }
+    default:
+      return spec satisfies never
   }
-  if (spec.kind === 'punch') {
-    const turned = spec.rotation ? ` · ${n0(spec.rotation)}°` : ''
-    return `Punch · ${spec.shape} · ${n0(spec.radius * 2)} across${turned}${bentText}`
-  }
-  const len = Math.hypot(spec.to.x - spec.from.x, spec.to.y - spec.from.y)
-  const name = spec.kind === 'channel' ? 'Channel' : 'Slice'
-  return `${name} · ${n0(len)} long · ${n0(spec.width)} wide${bentText}`
 }

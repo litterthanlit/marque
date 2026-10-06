@@ -1,7 +1,7 @@
 import { add, distance, dot, length, normalize, rotate, scale, sub, type Vec } from '../path/bezier.ts'
 import { shapeAnchors, type EditableShape } from '../path/editPath.ts'
-import { carveOutline } from '../carve/outline.ts'
-import { isGroove, type CarveSpec } from '../carve/spec.ts'
+import { carveOutline, polygonParts } from '../carve/outline.ts'
+import { polygonCornerRadius, type CarveSpec, type PolygonSpec, type PunchSpec, type SlabSpec } from '../carve/spec.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../illustrator/types.ts'
 import { asCircle, type Circle } from '../geometry/asCircle.ts'
 import {
@@ -470,19 +470,43 @@ export function snapRadiusTangent(index: SnapIndex, circle: Circle, pivot: Vec, 
 
 /* ─── What a document offers to snap to ─── */
 
-/** Corners, side middles and centre of a recipe; a groove's ends and middle; a circle's quadrants. */
+/**
+ * Corners, side middles and centre of a recipe; a polygon's corners, side
+ * middles and the tangent points of its rounded corners; a groove's ends and
+ * middle; a circle's quadrants.
+ */
 export function carveKeyPoints(spec: CarveSpec, owner?: string): SnapTarget[] {
   const own = owner === undefined ? {} : { owner }
-  if (isGroove(spec)) {
-    return [
-      { p: spec.from, kind: 'point', ...own },
-      { p: spec.to, kind: 'point', ...own },
-      { p: scale(add(spec.from, spec.to), 0.5), kind: 'centre', ...own },
-    ]
+  switch (spec.kind) {
+    case 'channel':
+    case 'slice':
+      return [
+        { p: spec.from, kind: 'point', ...own },
+        { p: spec.to, kind: 'point', ...own },
+        { p: scale(add(spec.from, spec.to), 0.5), kind: 'centre', ...own },
+      ]
+    case 'polygon':
+      return polygonKeyPoints(spec, owner)
+    case 'slab':
+    case 'punch':
+      return boxKeyPoints(spec, owner)
+    default:
+      return spec satisfies never
   }
+}
+
+function polygonKeyPoints(spec: PolygonSpec, owner?: string): SnapTarget[] {
+  const own = owner === undefined ? {} : { owner }
+  const parts = polygonParts(spec)
+  const points = [...parts.vertices, ...parts.midpoints, ...parts.corners.flatMap((corner) => [corner.a, corner.b])]
+  return [{ p: spec.center, kind: 'centre', ...own }, ...points.map((p): SnapTarget => ({ p, kind: 'point', ...own }))]
+}
+
+function boxKeyPoints(spec: SlabSpec | PunchSpec, owner?: string): SnapTarget[] {
+  const own = owner === undefined ? {} : { owner }
   const out: SnapTarget[] = [{ p: spec.center, kind: 'centre', ...own }]
   if (spec.kind === 'punch' && spec.shape === 'triangle') {
-    const plain: CarveSpec = { ...spec }
+    const plain: PunchSpec = { ...spec }
     delete plain.sides
     delete plain.corners
     for (const seg of carveOutline(plain).segs) out.push({ p: seg.p, kind: 'point', ...own })
@@ -712,10 +736,12 @@ function pieceGrid(primitives: readonly Primitive[]): (p: Vec, reach: number) =>
 
 /** Sizes already in use, for "same size". */
 export interface DocumentSizes {
-  /** Slab corner radii. */
+  /** Corner radii of slabs and polygons. */
   radii: number[]
   /** Punch radii, of every shape. */
   punchRadii: number[]
+  /** Polygon radii: how far their sharp corners reach from the centre. */
+  polygonRadii: number[]
   /** Groove widths. */
   widths: number[]
   /** The radius of everything read as a circle: circle slabs and punches, spark circles, circle guides. */
@@ -735,7 +761,7 @@ export function documentSizes(
   freePathOf?: (layer: IllustratorLayer) => EditableShape | null,
   guides: readonly Guide[] = doc.guides ?? [],
 ): DocumentSizes {
-  const sizes: DocumentSizes = { radii: [], punchRadii: [], widths: [], circleRadii: [], slabSides: [] }
+  const sizes: DocumentSizes = { radii: [], punchRadii: [], polygonRadii: [], widths: [], circleRadii: [], slabSides: [] }
   for (const layer of doc.layers) {
     if (!layer.visible || exclude.has(layer.id)) continue
     const spec = layer.carve
@@ -747,11 +773,27 @@ export function documentSizes(
     }
     const circle = asCircle({ carve: spec, contours: [] })
     if (circle) sizes.circleRadii.push(circle.r)
-    if (spec.kind === 'slab') {
-      sizes.radii.push(Math.min(spec.radius, spec.width / 2, spec.height / 2))
-      sizes.slabSides.push(spec.width, spec.height)
-    } else if (spec.kind === 'punch') sizes.punchRadii.push(spec.radius)
-    else sizes.widths.push(spec.width)
+    switch (spec.kind) {
+      case 'slab':
+        sizes.radii.push(Math.min(spec.radius, spec.width / 2, spec.height / 2))
+        sizes.slabSides.push(spec.width, spec.height)
+        break
+      case 'punch':
+        sizes.punchRadii.push(spec.radius)
+        break
+      case 'polygon': {
+        sizes.polygonRadii.push(spec.radius)
+        const corner = polygonCornerRadius(spec)
+        if (corner > 0) sizes.radii.push(corner)
+        break
+      }
+      case 'channel':
+      case 'slice':
+        sizes.widths.push(spec.width)
+        break
+      default:
+        spec satisfies never
+    }
   }
   for (const guide of guides) {
     if (guide.visible && guide.shape.kind === 'circle' && !exclude.has(guide.id)) sizes.circleRadii.push(guide.shape.r)

@@ -1,7 +1,7 @@
 import { expect, test as base, type Locator, type Page } from '@playwright/test'
 import LZString from 'lz-string'
 import type { DevHook } from '../src/devHook.ts'
-import type { CarveSpec, GrooveSpec, PunchSpec, SlabSpec } from '../src/engine/carve/spec.ts'
+import type { CarveSpec, GrooveSpec, PolygonSpec, PunchSpec, SlabSpec } from '../src/engine/carve/spec.ts'
 import { STAGE_1_LINK } from './fixtures/stage1Link.ts'
 
 declare global {
@@ -69,7 +69,7 @@ async function startOver(page: Page) {
   await expect.poll(() => layers(page).then((list) => list.length)).toBe(0)
 }
 
-const addSlab = (page: Page, name: 'Square' | 'Rounded' | 'Circle' | 'Tall') =>
+const addSlab = (page: Page, name: 'Square' | 'Rounded' | 'Circle' | 'Tall' | 'Polygon') =>
   page.getByRole('button', { name: `Add ${name.toLowerCase()} slab` }).click()
 
 const pickTool = (page: Page, name: 'Pen' | 'Punch' | 'Channel' | 'Slice' | 'Guide') =>
@@ -2455,6 +2455,32 @@ test.describe('on a touch screen', () => {
     await expect(addAll).toBeHidden()
     expect(await guides(page)).toEqual([])
   })
+
+  test("a finger on the middle of a small polygon punch moves it: its rounding dot keeps clear of the middle", async ({ page }) => {
+    await openVectorMaker(page)
+    await startOver(page)
+    await addSlab(page, 'Square')
+    const f = await frame(page)
+    await pickTool(page, 'Punch')
+    await page.getByRole('group', { name: 'Punch shape' }).getByRole('button', { name: 'Polygon' }).click()
+    // A tap stamps the punch at its smallest.
+    await page.touchscreen.tap(f.at(60, 40).x, f.at(60, 40).y)
+    const stamped = await polygonOf(page, 1)
+    expect(stamped).toMatchObject({ center: { x: 60, y: 40 }, cornerRadius: 0 })
+    await page.keyboard.press('Escape')
+    await expect.poll(() => selectedIds(page)).toEqual([(await layers(page))[1].id])
+    // Laid out for a finger, its dot keeps 32 CSS pixels from the middle, or is not there and the bar rounds it.
+    const middle = f.at(60, 40)
+    const dot = (await page.evaluate(() => window.__marque.handles())).find((candidate) => candidate.id === 'radius')
+    if (dot) expect(Math.hypot(dot.x - middle.x, dot.y - middle.y)).toBeGreaterThanOrEqual(32 - 0.5)
+    else await expect(selectionBar(page).getByRole('slider', { name: 'Corner' })).toBeVisible()
+    const depth = await undoDepth(page)
+    await touchDrag(page, f.at(60, 40), f.at(100, 80))
+    expect(await undoDepth(page)).toBe(depth + 1)
+    const moved = await polygonOf(page, 1)
+    expect(moved).toMatchObject({ cornerRadius: 0, radius: stamped.radius })
+    expect(Math.hypot(moved.center.x - 100, moved.center.y - 80)).toBeLessThanOrEqual(1.5)
+  })
 })
 
 test('a guide deleted in the middle of its drag stays deleted when the drag ends', async ({ page }) => {
@@ -3227,4 +3253,304 @@ test('under the Guide tool, a short drag adds no line, and a far circle never dr
     const turn = (((line.shape.angle + 14) % 180) + 180) % 180
     expect(Math.min(turn, 180 - turn)).toBeLessThanOrEqual(2)
   }
+})
+
+/* ─── Polygons ─── */
+
+/**
+ * Whether a construction circle shows inside the ink: over a stretch of its
+ * inner side, facing `towards`, any pixel of a neutral grey darker than the
+ * sheet's fill. A dashed circle shows somewhere along any stretch that long.
+ */
+function circleShows(page: Page, circle: { x: number; y: number; r: number }, towards: Point) {
+  return page.evaluate(
+    ({ circle, towards }) => {
+      const canvas = document.querySelector('main canvas') as HTMLCanvasElement
+      const rect = canvas.getBoundingClientRect()
+      const ctx = canvas.getContext('2d')!
+      const facing = Math.atan2(towards.y - circle.y, towards.x - circle.x)
+      for (let i = -30; i <= 30; i++) {
+        const angle = facing + (i * Math.PI) / 90
+        const x = Math.floor(((circle.x + Math.cos(angle) * circle.r - rect.left) * canvas.width) / rect.width)
+        const y = Math.floor(((circle.y + Math.sin(angle) * circle.r - rect.top) * canvas.height) / rect.height)
+        const [r, g, b, a] = ctx.getImageData(x, y, 1, 1).data
+        if (a > 250 && r === g && g === b && r < 0xd8 && r > 0x60) return true
+      }
+      return false
+    },
+    { circle, towards },
+  )
+}
+
+const polygonOf = async (page: Page, index = 0) => (await carves(page))[index] as PolygonSpec
+
+test("ref 1: a Polygon slab rounds by its dot to 60, shows six corner circles only in the construction look, and ] and [ change its sides, one undo step each", async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  await addSlab(page, 'Polygon')
+  const f = await frame(page)
+  expect(await polygonOf(page)).toEqual({ v: 1, kind: 'polygon', center: { x: 0, y: 0 }, sides: 6, radius: 200, rotation: 0, cornerRadius: 0 })
+  expect(await handleIds(page)).toEqual(['nw', 'ne', 'se', 'sw', 'radius', 'rotate'])
+  // The Sides stepper beside it reads the sides: the summary does not say them twice.
+  await expect(selectionSummary(page)).toHaveText('Polygon · r 200 · corner 0')
+  const depth = await undoDepth(page)
+
+  // The dot, pulled towards the middle with Shift, rounds every corner in steps of 5: 60 is 34.6 units in.
+  const dot = await handle(page, 'radius')
+  await page.mouse.move(dot.x, dot.y)
+  await page.keyboard.down('Shift')
+  await page.mouse.down()
+  await page.mouse.move(dot.x, dot.y + 34.6 * f.unit, { steps: 10 })
+  await expect(hudLabel(page, 'corner 60')).toBeVisible()
+  // Before the dot is let go, the circles it sets show where the corners now are.
+  const live = [0, 1, 2, 3, 4, 5].map((k) => {
+    const angle = ((-90 + 60 * k) * Math.PI) / 180
+    const reach = 200 - 60 / Math.cos(Math.PI / 6)
+    return { ...f.at(reach * Math.cos(angle), reach * Math.sin(angle)), r: 60 * f.unit }
+  })
+  for (const circle of live) await expect.poll(() => circleShows(page, circle, f.at(0, 0))).toBe(true)
+  await page.mouse.up()
+  await page.keyboard.up('Shift')
+  expect((await polygonOf(page)).cornerRadius).toBe(60)
+  expect(await undoDepth(page)).toBe(depth + 1)
+
+  // Nothing selected, the pointer away: six grey circles inside the ink, each about 130.7 from the middle.
+  const id = (await layers(page))[0].id
+  await page.keyboard.press('Escape')
+  await pointerAway(page, f)
+  const circles = await page.evaluate((layerId) => window.__marque.cornerCircles(layerId), id)
+  expect(circles).toHaveLength(6)
+  const middle = f.at(0, 0)
+  for (const circle of circles) {
+    expect(Math.hypot(circle.x - middle.x, circle.y - middle.y) / f.unit).toBeCloseTo(200 - 60 / Math.cos(Math.PI / 6), 1)
+    expect(circle.r / f.unit).toBeCloseTo(60, 6)
+  }
+  for (const circle of circles) await expect.poll(() => circleShows(page, circle, middle)).toBe(true)
+
+  // The final look draws the ink alone, and the mark has none of them.
+  await page.keyboard.press('f')
+  for (const circle of circles) await expect.poll(() => circleShows(page, circle, middle)).toBe(false)
+  expect(await isInk(page, { x: circles[0].x, y: circles[0].y + circles[0].r })).toBe(true)
+  await page.keyboard.press('f')
+  for (const circle of circles) await expect.poll(() => circleShows(page, circle, middle)).toBe(true)
+
+  // ] adds a side and [ takes it off, each one undo step; the corners keep their radius.
+  await page.evaluate((layerId) => window.__marque.store.getState().setSelection([layerId]), id)
+  await page.keyboard.press(']')
+  expect(await polygonOf(page)).toMatchObject({ sides: 7, cornerRadius: 60 })
+  await expect(selectionSummary(page)).toHaveText('Polygon · r 200 · corner 60')
+  expect(await undoDepth(page)).toBe(depth + 2)
+  expect(await page.evaluate((layerId) => window.__marque.cornerCircles(layerId).length, id)).toBe(7)
+  await page.keyboard.press('[')
+  expect((await polygonOf(page)).sides).toBe(6)
+  expect(await undoDepth(page)).toBe(depth + 3)
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(async () => (await polygonOf(page)).sides).toBe(7)
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(async () => (await polygonOf(page)).sides).toBe(6)
+  expect((await polygonOf(page)).cornerRadius).toBe(60)
+
+  // The bar's Sides stepper does the same by touch: one undo step a press.
+  const sides = page.getByRole('toolbar', { name: 'Selection' }).getByRole('group', { name: 'Sides' })
+  await expect(sides.locator('output')).toHaveText('6')
+  const before = await undoDepth(page)
+  await sides.getByRole('button', { name: 'Take a side off ([)' }).click()
+  await expect(sides.locator('output')).toHaveText('5')
+  expect(await polygonOf(page)).toMatchObject({ sides: 5, cornerRadius: 60 })
+  expect(await undoDepth(page)).toBe(before + 1)
+})
+
+test('the punch cuts a hexagon into a slab, and its knob turns it in 15° steps with Shift', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await addSlab(page, 'Square')
+  const f = await frame(page)
+  await pickTool(page, 'Punch')
+  await page.getByRole('group', { name: 'Punch shape' }).getByRole('button', { name: 'Polygon' }).click()
+  // With no polygon selected, ] and [ step the sides of the next one, as the punch's stepper shows, and no undo step.
+  const sides = page.getByRole('group', { name: 'Sides of the next punch' })
+  await expect(sides.locator('output')).toHaveText('6')
+  const depth = await undoDepth(page)
+  await page.keyboard.press(']')
+  await expect(sides.locator('output')).toHaveText('7')
+  // Nothing on the canvas shows it, so the HUD says it, and it is read out.
+  await expect(page.locator('main div[aria-hidden="true"]').getByText('Next polygon: 7 sides', { exact: true })).toBeVisible()
+  await expect(page.locator('main p[role="status"]')).toHaveText('Next polygon: 7 sides')
+  await sides.getByRole('button', { name: 'One side fewer' }).click()
+  await expect(sides.locator('output')).toHaveText('6')
+  expect(await undoDepth(page)).toBe(depth)
+  const pill = page.getByRole('group', { name: 'Punch shape' })
+  const pillAt = await pill.boundingBox()
+
+  // From the slab's centre to 80 units straight up: a hexagon with a corner there, pinned to the centre.
+  await drag(page, f.at(0, 0), f.at(0, -80))
+  const [slab, cut] = await layers(page)
+  expect(cut.operation).toBe('subtract')
+  const hexagon = cut.carve as PolygonSpec
+  expect(hexagon).toMatchObject({ kind: 'polygon', sides: 6, center: { x: 0, y: 0 }, rotation: 0, cornerRadius: 0 })
+  expect(Math.abs(hexagon.radius - 80)).toBeLessThanOrEqual(1.5)
+  expect(await undoDepth(page)).toBe(depth + 1)
+  expect(await pinOf(page, cut.id)).toBe(slab.id)
+  // The new cut is selected, but the punch's stepper stays where it was, for the next punch.
+  expect(await pill.boundingBox()).toEqual(pillAt)
+  await sides.getByRole('button', { name: 'One side more' }).click()
+  await expect(sides.locator('output')).toHaveText('7')
+  expect((await polygonOf(page, 1)).sides).toBe(6)
+  expect(await undoDepth(page)).toBe(depth + 1)
+  await sides.getByRole('button', { name: 'One side fewer' }).click()
+  // The bar's Sides is the cut's: it changes the hexagon just punched, one undo step, and the next punch starts from the sides last chosen.
+  const cutSides = selectionBar(page).getByRole('group', { name: 'Sides of the selected polygons' })
+  await expect(cutSides.locator('output')).toHaveText('6')
+  await cutSides.getByRole('button', { name: 'Add a side (])' }).click()
+  expect((await polygonOf(page, 1)).sides).toBe(7)
+  await expect(cutSides.locator('output')).toHaveText('7')
+  await expect(sides.locator('output')).toHaveText('7')
+  expect(await undoDepth(page)).toBe(depth + 2)
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(async () => (await polygonOf(page, 1)).sides).toBe(6)
+  await pointerAway(page, f)
+  // A hole inside the corner at the bottom (the rounding dot sits in the top one) and inside a flat side; ink just past the slanted top side.
+  await expect.poll(() => isEmpty(page, f.at(0, 60))).toBe(true)
+  expect(await isEmpty(page, f.at(64, 0))).toBe(true)
+  expect(await isInk(page, f.at(60, -64))).toBe(true)
+  expect(await isInk(page, f.at(100, 0))).toBe(true)
+
+  // Escape leaves the punch with the hexagon selected; its knob turns it to 45° with Shift.
+  await page.keyboard.press('Escape')
+  await expect.poll(() => selectedIds(page)).toEqual([cut.id])
+  await turnKnob(page, f.at(0, 0), 40, ['Shift'])
+  expect((await polygonOf(page, 1)).rotation).toBe(45)
+  expect(await undoDepth(page)).toBe(depth + 2)
+  await pointerAway(page, f)
+  // Turned 45°, the top corner moves off: the top of the old corner is ink again.
+  await expect.poll(() => isInk(page, f.at(0, -76))).toBe(true)
+})
+
+test("the bar's Sides changes a selected polygon while the pen is part-way through a path, and the path goes on", async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await addSlab(page, 'Polygon')
+  const f = await frame(page)
+  await page.keyboard.press('p')
+  for (const [x, y] of [
+    [-100, -80],
+    [100, -80],
+    [0, 90],
+  ]) {
+    await click(page, f.at(x, y))
+  }
+  // The hexagon stays selected under the pen, with its Sides in the bar.
+  await selectionBar(page).getByRole('group', { name: 'Sides of the selected polygons' }).getByRole('button', { name: 'Add a side (])' }).click()
+  expect((await polygonOf(page)).sides).toBe(7)
+  // Its first point closes the triangle drawn before the step.
+  await click(page, f.at(-100, -80))
+  await expect.poll(() => layers(page).then((list) => list.length)).toBe(2)
+})
+
+test("a polygon's dot takes another shape's corner radius only where the polygon can draw it", async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  await addSlab(page, 'Polygon')
+  await addSlab(page, 'Rounded')
+  // A hexagon of radius 100, its apothem 86.6, beside a slab rounded to 88: too round for the hexagon to take.
+  const id = await page.evaluate(() => {
+    const store = window.__marque.store
+    const [hexagon, slab] = store.getState().illustrator.layers
+    store.getState().commitLayerEdits({
+      label: 'Place',
+      edits: [
+        { layerId: hexagon.id, carve: { v: 1, kind: 'polygon', center: { x: -150, y: 0 }, sides: 6, radius: 100, rotation: 0, cornerRadius: 0 } },
+        { layerId: slab.id, carve: { v: 1, kind: 'slab', preset: 'rounded', center: { x: 150, y: 0 }, width: 200, height: 200, radius: 88, rotation: 0 } },
+      ],
+      select: [hexagon.id],
+    })
+    return hexagon.id
+  })
+  const f = await frame(page)
+  const dot = await handle(page, 'radius')
+  await page.mouse.move(dot.x, dot.y)
+  await page.mouse.down()
+  // As far in as it goes: the corners meet in the middle of each side, fully round, not a whole number short.
+  await page.mouse.move(dot.x, dot.y + 80 * f.unit, { steps: 12 })
+  await expect(hudLabel(page, 'same size')).toHaveCount(0)
+  await expect(hudLabel(page, 'fully round')).toBeVisible()
+  await page.mouse.up()
+  const hexagon = (await layers(page)).find((layer) => layer.id === id)!.carve as PolygonSpec
+  // The apothem, 86.6025…, as storage keeps it.
+  expect(hexagon.cornerRadius).toBe(86.6)
+  await expect(selectionSummary(page)).toHaveText('Polygon · r 100 · corner 87')
+  // Round all the way, its corners' circles would lie on its outline: none are drawn.
+  expect(await page.evaluate((layerId) => window.__marque.cornerCircles(layerId).length, id)).toBe(0)
+
+  // A corner pulled with Shift scales the rounding along, and the chip reads both.
+  await page.evaluate((layerId) => {
+    const store = window.__marque.store
+    store.getState().commitLayerEdits({
+      label: 'Place',
+      edits: [{ layerId, carve: { v: 1, kind: 'polygon', center: { x: -150, y: 0 }, sides: 6, radius: 100, rotation: 0, cornerRadius: 30 } }],
+      select: [layerId],
+    })
+  }, id)
+  const corner = await handle(page, 'ne')
+  await page.mouse.move(corner.x, corner.y)
+  await page.keyboard.down('Shift')
+  await page.mouse.down()
+  await page.mouse.move(corner.x + 30 * f.unit, corner.y - 30 * f.unit, { steps: 8 })
+  await expect(page.locator('main').getByText(/^r \d+ · corner \d+$/)).toBeVisible()
+  await page.mouse.up()
+  await page.keyboard.up('Shift')
+  const scaled = (await layers(page)).find((layer) => layer.id === id)!.carve as PolygonSpec
+  expect(scaled.cornerRadius / scaled.radius).toBeCloseTo(0.3, 2)
+})
+
+test("a polygon too small for its rounding dot to keep clear of its middle has none: a press there moves it, and the bar rounds it", async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  await addSlab(page, 'Polygon')
+  const f = await frame(page)
+  // 25 CSS pixels from the middle to a corner: too near for the dot, which starts 14 in and keeps 16 clear (32 by finger).
+  const radius = 25 / f.unit
+  const id = await page.evaluate((radius) => {
+    const store = window.__marque.store
+    const [hexagon] = store.getState().illustrator.layers
+    store.getState().commitLayerEdits({
+      label: 'Place',
+      edits: [{ layerId: hexagon.id, carve: { v: 1, kind: 'polygon', center: { x: 0, y: 0 }, sides: 6, radius, rotation: 0, cornerRadius: 0 } }],
+      select: [hexagon.id],
+    })
+    return hexagon.id
+  }, radius)
+  await expect.poll(() => handleIds(page)).toEqual(['nw', 'ne', 'se', 'sw', 'rotate'])
+  const depth = await undoDepth(page)
+
+  // Its Corner, in whole units, from sharp to as round as it goes, one undo step a change.
+  const corner = selectionBar(page).getByRole('slider', { name: 'Corner' })
+  await expect(corner).toBeVisible()
+  await corner.focus()
+  await page.keyboard.press('ArrowRight')
+  await expect.poll(async () => (await polygonOf(page)).cornerRadius).toBe(1)
+  expect(await undoDepth(page)).toBe(depth + 1)
+  await page.keyboard.press('End')
+  const apothem = radius * Math.cos(Math.PI / 6)
+  await expect.poll(async () => (await polygonOf(page)).cornerRadius).toBeCloseTo(apothem, 1)
+  expect(await page.evaluate((layerId) => window.__marque.cornerCircles(layerId).length, id)).toBe(0)
+
+  // A press on the middle moves it (snapping off, so it lands where it is let go).
+  const before = await undoDepth(page)
+  await drag(page, f.at(0, 0), f.at(40, 30), ['ControlOrMeta'])
+  expect(await undoDepth(page)).toBe(before + 1)
+  const moved = await polygonOf(page)
+  expect(Math.hypot(moved.center.x - 40, moved.center.y - 30)).toBeLessThanOrEqual(1.5)
+
+  // Larger, it has its dot again, and the bar's Corner goes.
+  await page.evaluate((layerId) => {
+    const store = window.__marque.store
+    store.getState().commitLayerEdits({
+      label: 'Place',
+      edits: [{ layerId, carve: { v: 1, kind: 'polygon', center: { x: 0, y: 0 }, sides: 6, radius: 200, rotation: 0, cornerRadius: 0 } }],
+      select: [layerId],
+    })
+  }, id)
+  await expect.poll(() => handleIds(page)).toContain('radius')
+  await expect(corner).toHaveCount(0)
 })

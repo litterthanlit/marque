@@ -1,4 +1,4 @@
-import type { CarveTool as CarveToolKind, CutSpec, PunchShape, Vec } from '../../engine/carve/geometry.ts'
+import type { CarveTool as CarveToolKind, CutSpec, PunchToolShape, Vec } from '../../engine/carve/geometry.ts'
 import { cutPathData, isMeaningfulCut } from '../../engine/carve/geometry.ts'
 
 interface CarveCallbacks {
@@ -8,15 +8,17 @@ interface CarveCallbacks {
   onPreview: (spec: CutSpec | null) => void
   /** Snap a point being placed (or about to be, on hover); `from` is the other end of a channel or slice. */
   snapPoint?: (p: Vec, from: Vec | null, role: 'hover' | 'start' | 'end') => Vec
-  /** Snap a punch's radius around its centre; `round` for a circle punch, which can snap to touch. */
-  snapRadius?: (center: Vec, radius: number, round: boolean) => number
+  /** Snap a punch's radius around its centre: a circle punch can snap to touch, the others take a size in use. */
+  snapRadius?: (center: Vec, radius: number, like: 'circle' | 'punch' | 'polygon') => number
   /** The press ended (cut, cancelled or not): snap hints can go. */
   onGestureEnd?: () => void
 }
 
 interface CarveOptions {
   kind: CarveToolKind
-  punchShape: PunchShape
+  punchShape: PunchToolShape
+  /** How many sides the punch's polygon has, read as the punch is drawn. */
+  polygonSides: () => number
   cutWidth: number
 }
 
@@ -57,13 +59,13 @@ export class CarveTool {
 
   private specFor(start: Vec, current: Vec): CutSpec {
     if (this.options.kind === 'punch') {
-      const radius = Math.hypot(current.x - start.x, current.y - start.y)
-      return {
-        kind: 'punch',
-        shape: this.options.punchShape,
-        center: start,
-        radius: round2(this.callbacks.snapRadius?.(start, radius, this.options.punchShape === 'circle') ?? radius),
-      }
+      const raw = Math.hypot(current.x - start.x, current.y - start.y)
+      const shape = this.options.punchShape
+      const like = shape === 'circle' ? 'circle' : shape === 'polygon' ? 'polygon' : 'punch'
+      const radius = round2(this.callbacks.snapRadius?.(start, raw, like) ?? raw)
+      // A polygon reaches the pointer with its corners, upright.
+      if (shape === 'polygon') return { kind: 'polygon', center: start, radius, sides: this.options.polygonSides() }
+      return { kind: 'punch', shape, center: start, radius }
     }
     let end = current
     if (this.shift) {
@@ -94,7 +96,7 @@ export class CarveTool {
   onMouseUp(point: paper.Point) {
     if (!this.start) return
     let spec = this.specFor(this.start, this.toLocal(point))
-    if (spec.kind === 'punch' && !isMeaningfulCut(spec)) spec = { ...spec, radius: DEFAULT_PUNCH_RADIUS }
+    if ((spec.kind === 'punch' || spec.kind === 'polygon') && !isMeaningfulCut(spec)) spec = { ...spec, radius: DEFAULT_PUNCH_RADIUS }
     this.reset()
     this.callbacks.onPreview(null)
     this.callbacks.onGestureEnd?.()

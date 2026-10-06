@@ -19,8 +19,8 @@ import {
   type Cubic,
   type Vec,
 } from '../path/bezier.ts'
-import { carveOutline, KAPPA } from '../carve/outline.ts'
-import type { CarveSpec } from '../carve/spec.ts'
+import { carveOutline, KAPPA, polygonParts } from '../carve/outline.ts'
+import type { CarveSpec, PolygonSpec } from '../carve/spec.ts'
 import type { Contour, Guide } from '../vector/types.ts'
 import { asCircle, type CircleSource } from './asCircle.ts'
 
@@ -74,11 +74,39 @@ export function outlinePrimitives(object: PrimitiveSource): readonly Primitive[]
   return primitives
 }
 
-/** The pieces of a recipe's outline. */
+/**
+ * The pieces of a recipe's outline. A polygon is read from its own numbers:
+ * its sides are segments and its rounded corners arcs of their circles, so a
+ * corner that turns less than a quarter is exact too.
+ */
 export function recipePrimitives(spec: CarveSpec, owner: string): Primitive[] {
-  const circle = asCircle({ carve: spec, contours: [] })
-  if (circle) return [{ kind: 'circle', c: circle.c, r: circle.r, owner }]
-  return curvesPrimitives(carveOutline(spec).curves, owner)
+  switch (spec.kind) {
+    case 'polygon':
+      return polygonPrimitives(spec, owner)
+    case 'slab':
+    case 'punch':
+    case 'channel':
+    case 'slice': {
+      const circle = asCircle({ carve: spec, contours: [] })
+      if (circle) return [{ kind: 'circle', c: circle.c, r: circle.r, owner }]
+      return curvesPrimitives(carveOutline(spec).curves, owner)
+    }
+    default:
+      return spec satisfies never
+  }
+}
+
+/** A polygon's corner arcs and sides, in order round it. */
+function polygonPrimitives(spec: PolygonSpec, owner: string): Primitive[] {
+  const parts = polygonParts(spec)
+  if (!parts.corners.length) return parts.sides.map(([a, b]): Primitive => ({ kind: 'segment', a, b, owner }))
+  const out: Primitive[] = []
+  parts.corners.forEach((corner, k) => {
+    out.push({ kind: 'arc', c: corner.c, r: parts.radius, start: corner.start, end: corner.start + corner.sweep, owner })
+    const next = parts.corners[(k + 1) % parts.corners.length]
+    if (distance(corner.b, next.a) > 1e-6) out.push({ kind: 'segment', a: corner.b, b: next.a, owner })
+  })
+  return out
 }
 
 /** The pieces of some contours: a single closed one that reads as a circle is that circle. */

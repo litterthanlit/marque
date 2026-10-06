@@ -87,7 +87,7 @@ describe('reading a version 2 document', () => {
     const outline = segsToContour(carveOutline(spec).segs)
     const document = repaired(
       doc([
-        path('unknown', { carve: { v: 1, kind: 'polygon', sides: 6 } as never, contours: [outline] }),
+        path('unknown', { carve: { v: 1, kind: 'star', points: 5 } as never, contours: [outline] }),
         path('stale', { carve: { ...spec, width: 10 }, contours: [outline] }),
         path('two', { carve: spec, contours: [outline, square] }),
       ]),

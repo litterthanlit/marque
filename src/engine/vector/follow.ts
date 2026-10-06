@@ -103,14 +103,19 @@ function followConstructionGuides({ lists, byId, changed, freshGuides }: FollowC
   return touched ? { ...lists, guides } : lists
 }
 
-/** One guide read again from its source: rebuilt where its line moved, and named for where it now lies; detached; or the same guide. */
+/**
+ * One guide read again from its source: rebuilt where its line moved, and
+ * named for where it now lies; detached; or the same guide. A spoke keeps its
+ * name, which counts it among its shape's spokes, not by where it lies.
+ */
 function followGuide(guide: Guide, byId: Map<string, VectorObject>): Guide {
   const link = guide.link
   if (!link) return guide
   const source = byId.get(link.of)
   const line = source?.type === 'path' ? constructionLine(source as PathObject, link.role) : null
   if (!line) return detachGuide(guide)
-  return sameGuideShape(line.shape, guide.shape) ? guide : { ...guide, shape: line.shape, name: line.name }
+  if (sameGuideShape(line.shape, guide.shape)) return guide
+  return { ...guide, shape: line.shape, name: link.role.startsWith('axis-') ? guide.name : line.name }
 }
 
 /** A guide that no longer follows anything: the same line, a plain guide. */

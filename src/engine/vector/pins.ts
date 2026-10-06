@@ -1,6 +1,6 @@
 import { add, distance, rotate, scale, sub, type Vec } from '../path/bezier.ts'
 import { carveOutline } from '../carve/outline.ts'
-import { isGroove, roundCarveSpec, type CarveSpec } from '../carve/spec.ts'
+import { roundCarveSpec, type CarveSpec } from '../carve/spec.ts'
 import { translateCarve } from '../carve/edit.ts'
 import { segsToContour } from '../carve/sync.ts'
 import { asCircle, type CircleSource } from '../geometry/asCircle.ts'
@@ -14,9 +14,19 @@ import type { PathObject, VectorObject } from './types.ts'
  * centre can hold one.
  */
 
-/** The centre of a recipe: a slab's or punch's own, a groove's middle. */
+/** The centre of a recipe: a slab's, punch's or polygon's own, a groove's middle. */
 export function recipeCentre(spec: CarveSpec): Vec {
-  return isGroove(spec) ? scale(add(spec.from, spec.to), 0.5) : spec.center
+  switch (spec.kind) {
+    case 'slab':
+    case 'punch':
+    case 'polygon':
+      return spec.center
+    case 'channel':
+    case 'slice':
+      return scale(add(spec.from, spec.to), 0.5)
+    default:
+      return spec satisfies never
+  }
 }
 
 /**

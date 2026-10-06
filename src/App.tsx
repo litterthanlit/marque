@@ -4,7 +4,10 @@ import { useUrlState } from './hooks/useUrlState.ts'
 import { useLogoStore } from './store/logoStore.ts'
 import { dispatchEditorKey, isBareKey, isEditorInteracting } from './renderer/directEdit/keyboard.ts'
 import { hud } from './renderer/directEdit/hud.ts'
-import { isShuffleKey, toolForKey } from './components/editor/tools.ts'
+import { isShuffleKey, sidesKeyStep, steppedPolygonSides, toolForKey } from './components/editor/tools.ts'
+
+/** How long the HUD shows the next polygon's sides after [ or ]. */
+const NEXT_SIDES_MS = 1500
 
 function App() {
   useUrlState()
@@ -91,6 +94,22 @@ function App() {
         if (isShuffleKey(e)) {
           e.preventDefault()
           useLogoStore.getState().shuffleSparks()
+          return
+        }
+        // [ and ] wait for a drag to end, and leave the pen alone.
+        const step = sidesKeyStep(e)
+        if (step) {
+          e.preventDefault()
+          const { ui, illustrator, stepPolygonSides } = useLogoStore.getState()
+          if (isEditorInteracting() || ui.activeTool === 'pen') return
+          stepPolygonSides(step)
+          // With no polygon selected the keys set the next one's sides, which nothing on the canvas shows: say so.
+          const selected = illustrator.layers.filter((layer) => illustrator.selectedLayerIds.includes(layer.id))
+          if (!steppedPolygonSides(selected).length) {
+            const said = `Next polygon: ${useLogoStore.getState().ui.carve.polygonSides} sides`
+            hud.hold(said, NEXT_SIDES_MS)
+            hud.announce(said)
+          }
           return
         }
       }

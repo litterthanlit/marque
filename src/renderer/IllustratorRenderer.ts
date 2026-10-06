@@ -3,8 +3,11 @@ import { composeIllustratorMark, getLayerPathItem } from '../engine/illustrator/
 import type { SurvivalResult } from '../engine/carve/survival.ts'
 import type { CanvasLook } from '../store/logoStore.ts'
 import type { Guide } from '../engine/vector/types.ts'
+import type { IllustratorLayer } from '../engine/illustrator/types.ts'
+import { carveOutline } from '../engine/carve/outline.ts'
+import type { CarveSpec } from '../engine/carve/spec.ts'
 import { unitsPerCssPixel } from './viewFit.ts'
-import { guidePathItem, styleGuideItem, visibleLayerRect } from './guideItems.ts'
+import { guidePathItem, guideWidth, styleGuideItem, visibleLayerRect } from './guideItems.ts'
 
 interface IllustratorRenderOptions {
   fillColor: string
@@ -20,6 +23,8 @@ const INK_ITEM_NAME = '__illustrator_ink'
 const OUTLINE_ITEM_NAME = '__illustrator_outline'
 const SURVIVAL_ITEM_NAME = '__survival'
 const GUIDES_ITEM_NAME = '__guides'
+const MARKS_ITEM_NAME = '__construction_marks'
+const CENTRES_ITEM_NAME = '__construction_centres'
 // Hit areas must have a fill to be hit-tested, but the fill should not be seen.
 const HIT_AREA_ALPHA = 0.001
 
@@ -30,6 +35,10 @@ export const CONSTRUCTION = {
   outline: { color: '#222222', width: 1.25 },
   add: { color: '#808080', width: 0.75, dash: [] as number[] },
   subtract: { color: '#444444', width: 1.25, dash: [1.25, 2.75] },
+  /** A corner's circle: the faintest line on the sheet, lighter than any guide. */
+  cornerCircle: { color: '#c8c8c8', width: 0.75 },
+  /** A centre: a ring that knocks out the lines under it, around a dot, in widths across. */
+  centre: { color: '#444444', ring: 7, knockOut: 5, dot: 2 },
 }
 
 /** What a shape still being drawn previews in: the ink, or the construction sheet's line colour. */
@@ -98,7 +107,9 @@ export function renderIllustratorOnScope(
     outline.strokeColor = new scope.Color(CONSTRUCTION.outline.color)
     outline.locked = true
     ink.parent.addChild(outline)
+    renderConstructionMarks(scope, doc.layers, outline)
     renderGuides(scope, options.guides ?? null)
+    renderCentreMarks(scope, doc.layers, outline)
     scaleConstructionLines(scope)
   }
 
@@ -124,6 +135,113 @@ export function scaleConstructionLines(scope: paper.PaperScope): void {
     const style = (item.data as { guideStyle?: Guide['style'] }).guideStyle
     if (style) styleGuideItem(scope, item, style, u)
   }
+  for (const name of [MARKS_ITEM_NAME, CENTRES_ITEM_NAME]) {
+    const marks = scope.project.getItem({ name })
+    for (const group of marks?.children ?? []) scaleMarks(group, u)
+  }
+}
+
+/** Give a group of construction marks their widths at `u` units to the CSS pixel. */
+function scaleMarks(group: paper.Item, u: number): void {
+  for (const item of group.children ?? []) {
+    const mark = item.data as { cornerCircle?: true; centreWidth?: number }
+    // Never under one device pixel, as guides.
+    if (mark.cornerCircle) item.strokeWidth = guideWidth('solid') * u
+    if (mark.centreWidth) item.strokeWidth = mark.centreWidth * u
+  }
+}
+
+/**
+ * The circles of a polygon's rounded corners: solid hairlines in the
+ * lightest grey on the sheet, so they never read as a guide or an edge.
+ * Above the ink and the layers' own lines, below the guides and the mark's
+ * outline. Only the construction look draws them; they never reach the ink,
+ * the export or anything composed.
+ */
+function renderConstructionMarks(scope: paper.PaperScope, layers: readonly IllustratorLayer[], outline: paper.Item): void {
+  const group = new scope.Group({ insert: false })
+  group.name = MARKS_ITEM_NAME
+  group.locked = true
+  group.insertBelow(outline)
+  for (const layer of layers) {
+    const marks = layer.visible && layer.carve ? cornerCircleMarks(scope, layer.carve, scope.view.center) : null
+    if (!marks) continue
+    marks.data = { marksOf: layer.id }
+    group.addChild(marks)
+  }
+}
+
+/** A recipe's corner circles as a group of hairlines, about `center`, or null when its corners have none. */
+function cornerCircleMarks(scope: paper.PaperScope, spec: CarveSpec, center: { x: number; y: number }): paper.Group | null {
+  const frame = carveOutline(spec).frame
+  if (frame.kind !== 'box' || !frame.cornerCircles.length) return null
+  const marks = new scope.Group({ insert: false })
+  for (const circle of frame.cornerCircles) {
+    const item = new scope.Path.Circle({ center: new scope.Point(circle.c.x + center.x, circle.c.y + center.y), radius: circle.r, insert: false })
+    item.fillColor = null
+    item.strokeColor = new scope.Color(CONSTRUCTION.cornerCircle.color)
+    item.data = { cornerCircle: true }
+    marks.addChild(item)
+  }
+  return marks
+}
+
+/**
+ * A ringed dot at each polygon's centre, as the sheets mark one: above the
+ * guides, whose spokes and centre lines all cross there, so the ring's white
+ * knocks them out; below the mark's outline. Only the construction look
+ * draws them.
+ */
+function renderCentreMarks(scope: paper.PaperScope, layers: readonly IllustratorLayer[], outline: paper.Item): void {
+  const group = new scope.Group({ insert: false })
+  group.name = CENTRES_ITEM_NAME
+  group.locked = true
+  group.insertBelow(outline)
+  for (const layer of layers) {
+    const marks = layer.visible && layer.carve ? centreMark(scope, layer.carve, scope.view.center) : null
+    if (!marks) continue
+    marks.data = { marksOf: layer.id }
+    group.addChild(marks)
+  }
+}
+
+/**
+ * A polygon's ringed centre dot, about `center`, or null for other recipes.
+ * Each part is a round cap on a line too short to see, so it scales by its
+ * width alone.
+ */
+function centreMark(scope: paper.PaperScope, spec: CarveSpec, center: { x: number; y: number }): paper.Group | null {
+  if (spec.kind !== 'polygon') return null
+  const { color, ring, knockOut, dot } = CONSTRUCTION.centre
+  const marks = new scope.Group({ insert: false })
+  const at = new scope.Point(spec.center.x + center.x, spec.center.y + center.y)
+  for (const [width, stroke] of [[ring, color], [knockOut, '#ffffff'], [dot, color]] as const) {
+    const item = new scope.Path.Line({ from: at, to: at.add(new scope.Point(0.001, 0)), insert: false })
+    item.strokeColor = new scope.Color(stroke)
+    item.strokeCap = 'round'
+    item.data = { centreWidth: width }
+    marks.addChild(item)
+  }
+  return marks
+}
+
+/**
+ * The construction marks of recipes a gesture is reshaping, drawn from
+ * their live specs into `overlay`, as the sheet draws them: their own marks
+ * hide meanwhile (see `hideLayerOutlines`), and would lag behind. Only in the
+ * construction look; in the final look this does nothing.
+ */
+export function drawLiveConstructionMarks(scope: paper.PaperScope, overlay: paper.Layer, specs: Iterable<CarveSpec>, center: { x: number; y: number }): void {
+  if (!scope.project.getItem({ name: OUTLINE_ITEM_NAME })) return
+  const u = unitsPerCssPixel(scope)
+  for (const spec of specs) {
+    for (const marks of [cornerCircleMarks(scope, spec, center), centreMark(scope, spec, center)]) {
+      if (!marks) continue
+      marks.locked = true
+      scaleMarks(marks, u)
+      overlay.addChild(marks)
+    }
+  }
 }
 
 /**
@@ -146,7 +264,8 @@ export function renderGuides(scope: paper.PaperScope, guides: readonly Guide[] |
     group = new scope.Group({ insert: false })
     group.name = GUIDES_ITEM_NAME
     group.locked = true
-    group.insertBelow(outline)
+    // Below the centres' rings, which knock the guides out.
+    group.insertBelow(scope.project.getItem({ name: CENTRES_ITEM_NAME }) ?? outline)
   }
   group.removeChildren()
   const center = scope.view.center
@@ -179,6 +298,15 @@ export function hideGuides(scope: paper.PaperScope, hidden: ReadonlySet<string>)
  */
 export function hideLayerOutlines(items: Map<string, paper.Item>, hidden: Set<string>): void {
   for (const [id, item] of items) item.opacity = hidden.has(id) ? 0 : 1
+  // A layer's construction marks would lag behind as well.
+  const first = items.values().next().value
+  for (const name of [MARKS_ITEM_NAME, CENTRES_ITEM_NAME]) {
+    const marks = first?.project?.getItem({ name })
+    for (const group of marks?.children ?? []) {
+      const id = (group.data as { marksOf?: string }).marksOf
+      group.opacity = id && hidden.has(id) ? 0 : 1
+    }
+  }
 }
 
 /** Replace the drawn mark (layer-space path data) without a full re-render. */

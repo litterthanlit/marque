@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { carveOutline } from '../carve/outline.ts'
-import { slabSpec, type CarveSpec } from '../carve/spec.ts'
+import { slabSpec, type CarveSpec, type PolygonSpec } from '../carve/spec.ts'
 import { segsToContour } from '../carve/sync.ts'
-import { circleContour, clipLine, closedContourOf, constructionLines, constructionShape, guideRows, lineAngle, moveGuideShape, nearestOnGuide, sameGuideShape, tangentFrame } from './guides.ts'
+import { circleContour, clipLine, closedContourOf, constructionLines, constructionShape, guideRows, lineAngle, makeGuide, moveGuideShape, nearestOnGuide, respokeGuides, sameGuideShape, tangentFrame } from './guides.ts'
 import type { ConstructionRole, Contour, Guide } from './types.ts'
 
 const recipe = (carve: CarveSpec) => ({ carve, contours: [segsToContour(carveOutline(carve).segs)] })
@@ -38,8 +38,8 @@ describe('construction lines of a shape', () => {
     const lines = constructionLines(triangle)
     expect(lines).toHaveLength(10)
     expect(lines.map((line) => line.role).filter((role) => role.startsWith('axis'))).toEqual(['axis-1', 'axis-2'])
-    // Each spoke is named by its own corner, so a name stays with its line as the triangle turns.
-    expect(lines.filter((line) => line.role.startsWith('axis')).map((line) => line.name)).toEqual(['Axis 2', 'Axis 3'])
+    // Spokes are counted among those offered, with no gaps, and keep their names as the triangle turns.
+    expect(lines.filter((line) => line.role.startsWith('axis')).map((line) => line.name)).toEqual(['Spoke 1', 'Spoke 2'])
     for (const [i, line] of lines.entries()) {
       for (const other of lines.slice(i + 1)) expect(sameGuideShape(line.shape, other.shape)).toBe(false)
     }
@@ -51,8 +51,8 @@ describe('construction lines of a shape', () => {
         .filter((line) => line.role.startsWith('axis'))
         .map((line) => [line.role, line.name])
       expect(spokes).toEqual([
-        ['axis-1', 'Axis 2'],
-        ['axis-2', 'Axis 3'],
+        ['axis-1', 'Spoke 1'],
+        ['axis-2', 'Spoke 2'],
       ])
     }
     expect(constructionShape(triangle, 'circumcircle')).toEqual({ kind: 'circle', c: { x: 0, y: 0 }, r: 100 })
@@ -273,6 +273,66 @@ describe('construction lines of a shape', () => {
     const slice = recipe({ v: 1, kind: 'slice', from: { x: -50, y: 0 }, to: { x: 50, y: 0 }, width: 20 })
     expect(roles(slice)).toEqual(['centre-x', 'centre-y', 'top', 'right', 'bottom', 'left'])
     expect(constructionShape(slice, 'right')).toEqual({ kind: 'line', p: { x: 60, y: 0 }, angle: 90 })
+  })
+})
+
+describe("a polygon's spokes through a new count of sides", () => {
+  const polygon = (sides: number, rotation = 0) => ({
+    id: 'p',
+    ...recipe({ v: 1, kind: 'polygon', center: { x: 40, y: -30 }, sides, radius: 200, rotation, cornerRadius: 30 } satisfies PolygonSpec),
+  })
+  const construction = (source: ReturnType<typeof polygon>): Guide[] =>
+    constructionLines(source).map(({ role, shape, name }) => makeGuide(shape, 'dashed', { kind: 'construction', of: source.id, role }, name))
+  const spokeRoles = (guides: Guide[]) => guides.filter((guide) => guide.link?.role.startsWith('axis-')).map((guide) => guide.link!.role)
+  /** Steps through the counts, one at a time, as [ and ] do. */
+  const walk = (guides: Guide[], counts: number[], rotation = 0) => counts.slice(1).reduce((list, sides) => respokeGuides(list, polygon(sides, rotation)), guides)
+
+  it("gives a square no spoke guides, its spokes being its centre lines, and gives them back when it gains or loses a side, at any turn", () => {
+    for (const rotation of [0, 17]) {
+      const hexagon = construction(polygon(6, rotation))
+      const square = walk(hexagon, [6, 5, 4], rotation)
+      expect(spokeRoles(square)).toEqual([])
+      expect(spokeRoles(walk(hexagon, [6, 5, 4, 3], rotation))).toEqual(['axis-1', 'axis-2'])
+      const back = walk(hexagon, [6, 5, 4, 3, 4, 5, 6], rotation)
+      expect(spokeRoles(back)).toEqual(['axis-1', 'axis-2'])
+      for (const role of ['axis-1', 'axis-2'] as const) {
+        const guide = back.find((each) => each.link?.role === role)!
+        expect(sameGuideShape(guide.shape, constructionShape(polygon(6, rotation), role)!)).toBe(true)
+        expect(guide.style).toBe('dashed')
+      }
+      // The spokes come in after the shape's last guide when there are none to take the place of.
+      expect(back.slice(-2).map((guide) => guide.link!.role)).toEqual(['axis-1', 'axis-2'])
+    }
+  })
+
+  it('gives a heptagon its upright spoke when its upright centre line was taken off', () => {
+    const hexagon = construction(polygon(6)).filter((guide) => guide.link?.role !== 'centre-x')
+    expect(spokeRoles(walk(hexagon, [6, 7]))).toEqual(['axis-0', 'axis-1', 'axis-2', 'axis-3', 'axis-4', 'axis-5', 'axis-6'])
+    expect(spokeRoles(walk(construction(polygon(6)), [6, 7]))).toEqual(['axis-1', 'axis-2', 'axis-3', 'axis-4', 'axis-5', 'axis-6'])
+  })
+
+  it('makes the spokes again from a circle of the polygon when its spokes were taken off, in the look of that circle', () => {
+    const circles = construction(polygon(6))
+      .filter((guide) => !guide.link?.role.startsWith('axis-'))
+      .map((guide) => (guide.link?.role === 'incircle' ? { ...guide, style: 'solid' as const, locked: true } : guide))
+      .filter((guide) => guide.link?.role !== 'circumcircle')
+    const heptagon = respokeGuides(circles, polygon(7))
+    expect(spokeRoles(heptagon)).toEqual(['axis-1', 'axis-2', 'axis-3', 'axis-4', 'axis-5', 'axis-6'])
+    expect(heptagon.filter((guide) => guide.link?.role.startsWith('axis-')).every((guide) => guide.style === 'solid' && guide.locked)).toBe(true)
+  })
+
+  it('gives no spokes to a polygon whose circles and spokes were all taken off, nor to one with no guides', () => {
+    const plain = construction(polygon(6)).filter((guide) => !/^(axis-|circumcircle|incircle)/.test(guide.link?.role ?? ''))
+    expect(respokeGuides(plain, polygon(7))).toBe(plain)
+    const none: Guide[] = []
+    expect(respokeGuides(none, polygon(5))).toBe(none)
+  })
+
+  it('names the spokes in order among those it keeps, with no gaps', () => {
+    const names = (guides: Guide[]) => guides.filter((guide) => guide.link?.role.startsWith('axis-')).map((guide) => guide.name)
+    expect(names(construction(polygon(6)))).toEqual(['Spoke 1', 'Spoke 2'])
+    expect(names(walk(construction(polygon(6)), [6, 7, 8]))).toEqual(['Spoke 1', 'Spoke 2'])
+    expect(names(walk(construction(polygon(6)), [6, 7]))).toEqual(['Spoke 1', 'Spoke 2', 'Spoke 3', 'Spoke 4', 'Spoke 5', 'Spoke 6'])
   })
 })
 
