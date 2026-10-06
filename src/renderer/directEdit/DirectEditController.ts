@@ -33,6 +33,7 @@ import {
   scaleCarveAbout,
   straightenCarve,
   translateCarve,
+  wholeCarveDrag,
   type CarveGrab,
   type CarveHandle,
   type HandleId,
@@ -41,15 +42,13 @@ import {
 import {
   boxHandlePoint,
   evenFactorTo,
+  evenScaleFloor,
   handleFraction,
   IDENTITY_AFFINE,
   isCornerHandle,
   resizeBox,
   rotateBox,
   rotationAbout,
-  affineOf,
-  applyAffine,
-  evenScaleFloor,
   scaleBoxBy,
   scalesEvenly,
   scalingAbout,
@@ -80,7 +79,7 @@ import { bentEdgeCount, isGroove, type CarveSpec } from '../../engine/carve/spec
 import { bakedEditablePath } from '../../engine/illustrator/layerPath.ts'
 import { createComposeSession, type ComposeSession } from '../../engine/illustrator/composeSession.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
-import type { LayerEdit, LayerEditCommit } from '../../store/logoStore.ts'
+import { HISTORY_MERGE_MS, type HistoryMergeKind, type LayerEdit, type LayerEditCommit } from '../../store/logoStore.ts'
 import { getInkItem, hideLayerOutlines, setInkPathData, setSurvivalVisible } from '../IllustratorRenderer.ts'
 import { carriedCuts } from './carry.ts'
 import { CURSORS, resizeCursor } from './cursors.ts'
@@ -94,7 +93,7 @@ import {
   type HandleSet,
   type LiveHandles,
 } from './handleSet.ts'
-import { canvasOwnsArrowKeys, registerEditorKeys, registerPendingEdits, setEditorInteracting } from './keyboard.ts'
+import { canvasOwnsArrowKeys, registerEditorKeys, setEditorInteracting } from './keyboard.ts'
 import {
   drawAnchors,
   drawCarveHandles,
@@ -150,6 +149,8 @@ type EdgeZone = Extract<Zone, { kind: 'edge' }>
 /** A point about to be added where an edge was clicked, unless a double-click straightens it instead. */
 interface PendingPoint {
   layerId: string
+  /** The layer as it was clicked: if anything changes it first, the point is not added. */
+  layer: IllustratorLayer
   curveIndex: number
   t: number
   point: Vec
@@ -171,38 +172,31 @@ interface MovePlan {
 
 /**
  * How a box gesture moves its members: free shapes take `affine`; recipes
- * scale evenly by `factor` about `pivot`, then turn by `turn` about the box
- * centre, which is what `affine` does too.
+ * scale evenly by `factor` about `pivot`, or turn by `turn` about `center`,
+ * which is what `affine` does too.
  */
 interface BoxMove {
   affine: Affine
   pivot: Vec
   factor: number
   turn: number
+  center: Vec
 }
 
-/** A turn of a box about its centre. */
-function turnMove(box: OrientedBox, turn: number): BoxMove {
-  return { affine: Math.abs(turn) > 1e-9 ? rotationAbout(box.center, turn) : IDENTITY_AFFINE, pivot: box.center, factor: 1, turn }
+/** A turn about a point: a box's centre, or where a burst of Alt+arrows turns. */
+function turnMove(center: Vec, turn: number): BoxMove {
+  return { affine: Math.abs(turn) > 1e-9 ? rotationAbout(center, turn) : IDENTITY_AFFINE, pivot: center, factor: 1, turn, center }
 }
 
-/** Alt+arrows: an even scale about the box centre, then a turn about it. */
-function keyMove(box: OrientedBox, turn: number, factor: number): BoxMove {
-  const scaling = scalingAbout(box.center, factor)
-  const turning = rotationAbout(box.center, turn)
-  const same = Math.abs(turn) <= 1e-9 && Math.abs(factor - 1) <= 1e-9
-  return {
-    affine: same ? IDENTITY_AFFINE : affineOf((p) => applyAffine(turning, applyAffine(scaling, p))),
-    pivot: box.center,
-    factor,
-    turn,
-  }
+/** An even scale about a box's centre. */
+function scaleMove(center: Vec, factor: number): BoxMove {
+  return { affine: Math.abs(factor - 1) > 1e-9 ? scalingAbout(center, factor) : IDENTITY_AFFINE, pivot: center, factor, turn: 0, center }
 }
 
 /** A resize: an even one scales recipes too, by the factor of its width. */
 function resizeMove(resized: BoxResize): BoxMove {
   const same = Math.abs(resized.sx - 1) <= 1e-9 && Math.abs(resized.sy - 1) <= 1e-9
-  return { affine: same ? IDENTITY_AFFINE : resized.affine, pivot: resized.pivot, factor: resized.sx, turn: 0 }
+  return { affine: same ? IDENTITY_AFFINE : resized.affine, pivot: resized.pivot, factor: resized.sx, turn: 0, center: resized.pivot }
 }
 
 /** Where a layer that an edit carries starts: its recipe, or its free path and how far its frame is turned. */
@@ -230,13 +224,59 @@ function movedEdit(layerId: string, start: MovedStart, next: Moved, turn: number
   return Math.abs(turn) > 1e-9 ? { layerId, pathData, frameRotation: normalizeDegrees(start.frame + turn) } : { layerId, pathData }
 }
 
-/** Hit areas that follow a preview: carry them by a layer-space map, or put them back. */
-interface FollowingItems {
-  map(m: Affine): void
-  restore(): void
+/** Where the layers of a move start: the ones moved, then the cuts they carry. */
+interface MoveStarts {
+  starts: Map<string, { carve?: CarveSpec; path?: EditablePath }>
+  carried: string[]
 }
 
-/** The members of a box, moved together by one map: by a drag, or by a burst of keys. */
+/** The commit that moves layers by `d`, leaving the moved ones (not the cuts they carry) selected. */
+function moveCommit({ starts }: MoveStarts, ids: string[], d: Vec): LayerEditCommit {
+  return {
+    label: starts.size > 1 ? 'Move shapes' : 'Move',
+    edits: [...starts.entries()].map(([layerId, start]) =>
+      start.carve
+        ? { layerId, carve: translateCarve(start.carve, d) }
+        : { layerId, pathData: editablePathToPathData(translatePath(start.path!, d)) },
+    ),
+    select: ids,
+    anchor: null,
+  }
+}
+
+/** The members of a box, and the cuts they carry along. */
+interface BoxMembers {
+  members: Map<string, MovedStart>
+  carried: Map<string, MovedStart>
+}
+
+/**
+ * Every layer a box move changes, and where it goes. Recipes among the
+ * members take only the even scale or the turn, so they stay recipes; a
+ * carried recipe takes the similarity nearest the map.
+ */
+function boxMoved({ members, carried }: BoxMembers, move: BoxMove): Array<{ id: string; from: MovedStart; next: Moved; carried: boolean }> {
+  const member = (start: MovedStart): Moved => {
+    if (!start.carve) return { path: transformPath(start.path!, move.affine) }
+    const scaled = move.factor === 1 ? start.carve : scaleCarveAbout(start.carve, move.pivot, move.factor)
+    return { carve: move.turn ? rotateCarveAbout(scaled, move.center, move.turn) : scaled }
+  }
+  return [
+    ...[...members].map(([id, from]) => ({ id, from, next: member(from), carried: false })),
+    ...[...carried].map(([id, from]) => ({ id, from, next: underAffine(from, move.affine), carried: true })),
+  ]
+}
+
+function boxEdits(moved: BoxMembers, move: BoxMove): LayerEdit[] {
+  return boxMoved(moved, move).map(({ id, from, next }) => movedEdit(id, from, next, move.turn))
+}
+
+/** The label of a box move's undo step. */
+function boxLabel(turned: boolean, several: boolean): string {
+  return turned ? (several ? 'Rotate shapes' : 'Rotate') : several ? 'Resize shapes' : 'Resize'
+}
+
+/** The members of a box, moved together by one map while a handle is dragged. */
 interface BoxPlan {
   editedIds: Set<string>
   ids: string[]
@@ -339,25 +379,34 @@ function otherAnchors(path: EditablePath, except: number): SnapTarget[] {
   return path.segs.filter((_, i) => i !== except).map((seg) => ({ p: seg.p, kind: 'point' as const }))
 }
 
-/** A burst of Alt+arrows: the turn and scale so far, about the box at its start, and the layers it started from. */
-interface KeyTransform {
-  plan: BoxPlan
-  box: OrientedBox
-  turn: number
-  percent: number
-  timer: number
+/**
+ * The last burst of arrow keys: what kind, on which layers, the cuts it
+ * carries, when its last key came and the layers it left. A burst picks its
+ * cuts once, as a drag does, so a hole goes the whole way or stays put. A
+ * turn also keeps the point it turns about and how far the box has turned.
+ */
+interface KeyBurst {
+  kind: HistoryMergeKind
+  ids: string
+  carried: string[]
+  turn: { center: Vec; rotation: number } | null
+  at: number
   layers: IllustratorLayer[]
 }
 
+const usable = (layer: IllustratorLayer | undefined): boolean => Boolean(layer && layer.visible && !layer.locked)
+
 const DOUBLE_CLICK_MS = 300
 const DOUBLE_CLICK_PX = 6
-const NUDGE_COMMIT_MS = 450
+/** How long the size or angle that Alt with the arrow keys reached stays by the box. */
+const KEY_CHIP_MS = 1000
 
 /**
  * Direct editing for Vector Maker: one mode, where what you press decides what
- * happens. Bodies move, points move, handles reshape, and (in later phases)
- * edges bend. Nothing is written to the store until the pointer is released,
- * so every gesture is exactly one undo step.
+ * happens. Bodies move, points move, handles reshape, and edges bend.
+ * Nothing is written to the store until the pointer is released, so every
+ * gesture is exactly one undo step. Keys write at once, every press; the
+ * store joins a burst of them into one undo step.
  */
 export class DirectEditController {
   private readonly scope: paper.PaperScope
@@ -369,10 +418,12 @@ export class DirectEditController {
   private session: Session | null = null
   private lastDown: { time: number; point: Vec; key: string } | null = null
   private readonly freePaths = new WeakMap<IllustratorLayer, EditablePath | null>()
-  /** A burst of arrow keys: the move so far, and the layers it started from. */
-  private nudge: { plan: MovePlan; d: Vec; timer: number; layers: IllustratorLayer[] } | null = null
-  /** A burst of Alt+arrows: the turn and scale so far, about the box at its start. */
-  private keyTransform: KeyTransform | null = null
+  private keyBurst: KeyBurst | null = null
+  private keyChipTimer = 0
+  /** The layers the key chip's number is about: once they change by anything else, such as an undo, it goes. */
+  private keyChipLayers: readonly IllustratorLayer[] | null = null
+  /** Where the pointer rests over the canvas, so hover can be found again once a key or a drag moves what is under it. */
+  private resting: { p: Vec; touch: boolean } | null = null
   private pendingPoint: PendingPoint | null = null
   /** A handle's number is showing by the resting pointer. */
   private readoutShown = false
@@ -385,7 +436,6 @@ export class DirectEditController {
   /** Which handles take presses: fewer while a tool is active, so its presses reach it. */
   private live: LiveHandles = 'all'
   private readonly unregisterKeys: () => void
-  private readonly unregisterPending: () => void
   private destroyed = false
 
   constructor(scope: paper.PaperScope, canvas: HTMLCanvasElement, host: DirectEditHost) {
@@ -393,16 +443,6 @@ export class DirectEditController {
     this.canvas = canvas
     this.host = host
     this.unregisterKeys = registerEditorKeys((event) => this.onKey(event))
-    this.unregisterPending = registerPendingEdits(() => {
-      this.flushNudge(true)
-      this.flushKeyTransform(true)
-      this.flushPendingPoint()
-      // An undo or redo follows: whatever was read out last no longer holds.
-      hud.silence()
-      // Undo may follow at once and bring back the very layers drawn before,
-      // which renders nothing anew: draw the selection again once it has run.
-      queueMicrotask(() => this.drawOverlay())
-    })
   }
 
   /** Called after every render with the fresh hit areas. */
@@ -412,27 +452,13 @@ export class DirectEditController {
       const gone = [...this.session.editedIds].some((id) => !this.items.has(id))
       if (gone) this.cancel()
     }
-    this.resumeBursts()
+    if (this.keyChipLayers && this.keyChipLayers !== this.host.getDoc().layers) this.dropKeyChip()
+    // A key or a drag may have moved a shape out from under the resting pointer, or under it.
+    // A tool shows its own cursor and hover, so only the editor's own mode looks again.
+    // While a key's number shows, it keeps the place of a handle's number at the pointer.
+    const resting = this.resting
+    if (resting && !this.press && !this.session && this.live === 'all') this.updateHover(resting.p, resting.touch, !this.keyChipLayers)
     this.drawOverlay()
-  }
-
-  /**
-   * A render in the middle of a burst of keys draws the document, which
-   * leaves the burst out: show its preview again. If the document changed
-   * under the burst (an edit from elsewhere), commit the burst now instead.
-   */
-  private resumeBursts() {
-    const layers = this.host.getDoc().layers
-    const nudge = this.nudge
-    if (nudge) {
-      if (nudge.layers === layers) nudge.plan.preview(nudge.d)
-      else this.flushNudge(true)
-    }
-    const t = this.keyTransform
-    if (t) {
-      if (t.layers === layers) this.previewKeyTransform(t)
-      else this.flushKeyTransform(true)
-    }
   }
 
   get isInteracting(): boolean {
@@ -453,12 +479,10 @@ export class DirectEditController {
   }
 
   destroy(): void {
-    this.flushNudge()
-    this.flushKeyTransform()
     this.dropPendingPoint()
     this.cancel()
     this.unregisterKeys()
-    this.unregisterPending()
+    window.clearTimeout(this.keyChipTimer)
     this.destroyed = true
     hud.clear()
     resetOverlay(this.scope)
@@ -468,10 +492,7 @@ export class DirectEditController {
   /* ─── Pointer ─── */
 
   pointerDown(p: Vec, mods: Modifiers, touch: boolean): void {
-    // A burst of keys lands first. Its ink and hit areas already show it, so
-    // the press meets every shape where it is drawn.
-    this.flushNudge()
-    this.flushKeyTransform()
+    this.resting = { p, touch }
     let ctx = this.context(touch)
     let zone = findZone(ctx, p)
     const key = zoneKey(zone)
@@ -495,6 +516,8 @@ export class DirectEditController {
   }
 
   pointerMove(p: Vec, mods: Modifiers, touch: boolean): void {
+    // Kept during a drag too, so hover is found where the pointer ends up once it commits.
+    this.resting = { p, touch }
     if (this.session) {
       this.session.update(p, mods)
       this.placeHud(p, touch)
@@ -622,14 +645,15 @@ export class DirectEditController {
     }
   }
 
-  private updateHover(p: Vec, touch: boolean) {
+  private updateHover(p: Vec, touch: boolean, readout = true) {
+    this.resting = { p, touch }
     const zone = findZone(this.context(touch), p)
     if (zoneKey(zone) !== zoneKey(this.hover)) {
       this.hover = zone
       this.drawOverlay()
     }
     this.setCursor(this.cursorFor(zone))
-    this.showRestingReadout(zone, p, touch)
+    if (readout) this.showRestingReadout(zone, p, touch)
   }
 
   /**
@@ -814,6 +838,7 @@ export class DirectEditController {
   /** The pointer left the canvas: nothing is hovered any more. */
   pointerLeave(): void {
     if (this.press || this.session) return
+    this.resting = null
     this.hover = EMPTY_ZONE
     if (this.readoutShown) {
       this.readoutShown = false
@@ -916,8 +941,11 @@ export class DirectEditController {
   private schedulePendingPoint(zone: EdgeZone) {
     if (!zone.free) return
     this.dropPendingPoint()
+    const layer = this.layer(zone.layerId)
+    if (!layer) return
     this.pendingPoint = {
       layerId: zone.layerId,
+      layer,
       curveIndex: zone.free.curveIndex,
       t: zone.free.t,
       point: zone.point,
@@ -939,8 +967,9 @@ export class DirectEditController {
     if (!pending) return
     this.pendingPoint = null
     window.clearTimeout(pending.timer)
+    // The shape changed first, by an undo from the toolbar say: where the click was no longer holds.
     const layer = this.layer(pending.layerId)
-    const path = layer ? this.freePathOf(layer) : null
+    const path = layer === pending.layer ? this.freePathOf(layer) : null
     if (!layer || !path || pending.curveIndex >= path.segs.length) {
       this.drawOverlay()
       return
@@ -979,36 +1008,39 @@ export class DirectEditController {
 
   /** Layers a body drag moves: the selection if the pressed shape is in it, else just that shape. */
   private movingIds(doc: IllustratorDocument, pressedId: string): string[] {
-    const usable = (id: string) => {
-      const layer = doc.layers.find((candidate) => candidate.id === id)
-      return Boolean(layer && layer.visible && !layer.locked)
+    return doc.selectedLayerIds.includes(pressedId) ? this.usableSelection(doc) : [pressedId]
+  }
+
+  /** The selected layers that take part in an edit: hidden and locked ones stay selected but stay put. */
+  private usableSelection(doc: IllustratorDocument): string[] {
+    return doc.selectedLayerIds.filter((id) => usable(this.layer(id)))
+  }
+
+  /** Where some layers start, and the cuts they carry (with `carry`): those given in `picked`, or else found now. */
+  private moveStarts(doc: IllustratorDocument, ids: string[], carry: boolean, picked?: readonly string[]): MoveStarts {
+    const addIds = ids.filter((id) => this.layer(id)?.operation === 'add')
+    const carried = !carry || !addIds.length ? [] : picked ? [...picked] : carriedCuts(doc, addIds, this.items, ids)
+    const starts = new Map<string, { carve?: CarveSpec; path?: EditablePath }>()
+    for (const id of [...ids, ...carried]) {
+      const layer = this.layer(id)
+      if (!layer) continue
+      if (layer.carve) starts.set(id, { carve: layer.carve })
+      else {
+        const path = this.freePathOf(layer)
+        if (path) starts.set(id, { path })
+      }
     }
-    return doc.selectedLayerIds.includes(pressedId) ? doc.selectedLayerIds.filter(usable) : [pressedId]
+    return { starts, carried }
   }
 
   private movePlan(ids: string[], carry: boolean): MovePlan | null {
     const doc = this.host.getDoc()
     if (!ids.length) return null
-    const addIds = ids.filter((id) => doc.layers.find((layer) => layer.id === id)?.operation === 'add')
-    const carried = carry ? carriedCuts(doc, addIds, this.items) : []
-    const moving = [...ids, ...carried]
-    const starts = new Map<string, { carve?: CarveSpec; path?: EditablePath }>()
-    for (const id of moving) {
-      const layer = doc.layers.find((candidate) => candidate.id === id)
-      if (!layer) continue
-      if (layer.carve) starts.set(id, { carve: layer.carve })
-      else {
-        const path = bakedEditablePath(layer)
-        if (path) starts.set(id, { path })
-      }
-    }
+    const moved = this.moveStarts(doc, ids, carry)
+    const { starts, carried } = moved
     if (!starts.size) return null
     const compose = createComposeSession(doc, starts.keys())
-    const items = this.followingItems(starts.keys())
-    const restore = () => {
-      items.restore()
-      setInkPathData(this.scope, this.host.getInkPathData())
-    }
+    const restore = () => setInkPathData(this.scope, this.host.getInkPathData())
     const pathFor = (id: string, d: Vec): string => {
       const start = starts.get(id)!
       return start.carve ? carveOutline(translateCarve(start.carve, d)).pathData : editablePathToPathData(translatePath(start.path!, d))
@@ -1031,7 +1063,6 @@ export class DirectEditController {
         const replacements = new Map<string, string | null>()
         for (const id of starts.keys()) replacements.set(id, pathFor(id, d))
         this.showInk(compose, replacements)
-        items.map({ ...IDENTITY_AFFINE, e: d.x, f: d.y })
         this.drawOverlay()
       },
       commit: (d) => {
@@ -1039,16 +1070,7 @@ export class DirectEditController {
           restore()
           return
         }
-        this.host.commitLayerEdits({
-          label: starts.size > 1 ? 'Move shapes' : 'Move',
-          edits: [...starts.entries()].map(([layerId, start]) =>
-            start.carve
-              ? { layerId, carve: translateCarve(start.carve, d) }
-              : { layerId, pathData: editablePathToPathData(translatePath(start.path!, d)) },
-          ),
-          select: ids,
-          anchor: null,
-        })
+        this.host.commitLayerEdits(moveCommit(moved, ids, d))
       },
       cancel: restore,
       drawOverlay: (layer) => {
@@ -1072,46 +1094,39 @@ export class DirectEditController {
   }
 
   /**
-   * Hit areas that follow a preview, so a press or a hover in the middle of
-   * a burst of keys meets each shape where it is drawn. Areas are known by
-   * identity: a render mid-burst brings fresh ones, still where the
-   * document has them, and those are carried from there.
+   * Where the members of a box start, and the cuts they carry (with
+   * `carry`): those given in `picked`, or else found now. Null when none can move.
    */
-  private followingItems(ids: Iterable<string>): FollowingItems {
-    const list = [...ids]
-    const applied = new Map<string, { item: paper.PathItem; m: paper.Matrix }>()
-    const carry = (id: string, next: paper.Matrix) => {
-      const item = this.items.get(id)
-      if (!item) return
-      const was = applied.get(id)
-      const undo = was?.item === item ? was.m.inverted() : null
-      item.transform(undo ? next.appended(undo) : next)
-      applied.set(id, { item, m: next })
+  private boxMembers(doc: IllustratorDocument, ids: string[], carry: boolean, picked?: readonly string[]): BoxMembers | null {
+    const members = new Map<string, MovedStart>()
+    for (const id of ids) {
+      const layer = this.layer(id)
+      if (!layer || layer.locked) continue
+      if (layer.carve) {
+        members.set(id, { carve: layer.carve, frame: 0 })
+        continue
+      }
+      const path = this.freePathOf(layer)
+      if (path) members.set(id, { path, frame: layer.frameRotation ?? 0 })
     }
-    return {
-      map: (m) => {
-        // The same map in project space, where the hit areas are.
-        const c = this.center()
-        const next = new this.scope.Matrix(m.a, m.b, m.c, m.d, m.e + c.x - (m.a * c.x + m.c * c.y), m.f + c.y - (m.b * c.x + m.d * c.y))
-        for (const id of list) carry(id, next)
-      },
-      restore: () => {
-        for (const [id, was] of applied) {
-          if (this.items.get(id) === was.item) carry(id, new this.scope.Matrix())
-        }
-        applied.clear()
-      },
-    }
+    if (!members.size) return null
+    const carried = carry ? this.carriedStarts(doc, members.keys(), new Set(members.keys()), picked) : new Map<string, MovedStart>()
+    return { members, carried }
   }
 
-  /** Where the cuts that some shapes carry start, leaving out layers the edit moves anyway. */
-  private carriedStarts(doc: IllustratorDocument, shapeIds: Iterable<string>, moving: Set<string>): Map<string, MovedStart> {
+  /** Where the cuts that some shapes carry start, leaving out layers the edit moves anyway: `picked`, or else found now. */
+  private carriedStarts(
+    doc: IllustratorDocument,
+    shapeIds: Iterable<string>,
+    moving: Set<string>,
+    picked?: readonly string[],
+  ): Map<string, MovedStart> {
     const addIds = [...shapeIds].filter((id) => this.layer(id)?.operation === 'add')
     const starts = new Map<string, MovedStart>()
     if (!addIds.length) return starts
-    for (const id of carriedCuts(doc, addIds, this.items)) {
+    for (const id of picked ?? carriedCuts(doc, addIds, this.items, moving)) {
       const layer = this.layer(id)
-      if (!layer || moving.has(id)) continue
+      if (!layer) continue
       if (layer.carve) starts.set(id, { carve: layer.carve, frame: 0 })
       else {
         const path = this.freePathOf(layer)
@@ -1183,6 +1198,8 @@ export class DirectEditController {
           const snapped = this.snapHandle(index, doc, exclude, start, current, handle, startLocal, pointer, mods, press.touch)
           current = snapped.spec
           snap = snapped.snap
+          // As on a box: with nothing to snap to, whole numbers, so the number shown is the number stored.
+          if (!snap.label) current = wholeCarveDrag(start, current, handle.id, mods)
         }
         this.showSnap(snap)
         this.showInk(compose, new Map([[layerId, carveOutline(current).pathData]]))
@@ -1210,42 +1227,17 @@ export class DirectEditController {
    */
   private boxPlan(ids: string[], box: OrientedBox, uniform: boolean): BoxPlan | null {
     const doc = this.host.getDoc()
-    const members = new Map<string, MovedStart>()
-    for (const id of ids) {
-      const layer = this.layer(id)
-      if (!layer || layer.locked) continue
-      if (layer.carve) {
-        members.set(id, { carve: layer.carve, frame: 0 })
-        continue
-      }
-      const path = this.freePathOf(layer)
-      if (path) members.set(id, { path, frame: layer.frameRotation ?? 0 })
-    }
-    if (!members.size) return null
-    const carried = this.carriedStarts(doc, members.keys(), new Set(members.keys()))
-    const editedIds = new Set([...members.keys(), ...carried.keys()])
+    const moved = this.boxMembers(doc, ids, true)
+    if (!moved) return null
+    const { members } = moved
+    const editedIds = new Set([...members.keys(), ...moved.carried.keys()])
     const compose = createComposeSession(doc, editedIds)
-    const items = this.followingItems(editedIds)
     const center = this.center()
-    let move: BoxMove = { affine: IDENTITY_AFFINE, pivot: box.center, factor: 1, turn: 0 }
+    let move: BoxMove = turnMove(box.center, 0)
     let current = box
     let hot: HandleId | null = null
-
-    const edited = (start: MovedStart): Moved => {
-      if (start.carve) {
-        const scaled = move.factor === 1 ? start.carve : scaleCarveAbout(start.carve, move.pivot, move.factor)
-        return { carve: move.turn ? rotateCarveAbout(scaled, box.center, move.turn) : scaled }
-      }
-      return { path: transformPath(start.path!, move.affine) }
-    }
-    const everyEdit = (): Array<{ id: string; from: MovedStart; next: Moved; carried: boolean }> => [
-      ...[...members].map(([id, from]) => ({ id, from, next: edited(from), carried: false })),
-      ...[...carried].map(([id, from]) => ({ id, from, next: underAffine(from, move.affine), carried: true })),
-    ]
-    const restore = () => {
-      items.restore()
-      setInkPathData(this.scope, this.host.getInkPathData())
-    }
+    const everyEdit = () => boxMoved(moved, move)
+    const restore = () => setInkPathData(this.scope, this.host.getInkPathData())
 
     return {
       editedIds,
@@ -1257,7 +1249,6 @@ export class DirectEditController {
         const replacements = new Map<string, string | null>()
         for (const { id, next: moved } of everyEdit()) replacements.set(id, movedPathData(moved))
         this.showInk(compose, replacements)
-        items.map(move.affine)
         this.drawOverlay()
       },
       commit: (label) => {
@@ -1266,7 +1257,7 @@ export class DirectEditController {
           restore()
           return
         }
-        this.host.commitLayerEdits({ label, edits: everyEdit().map(({ id, from, next }) => movedEdit(id, from, next, move.turn)) })
+        this.host.commitLayerEdits({ label, edits: boxEdits(moved, move) })
       },
       cancel: restore,
       drawOverlay: (overlay) => {
@@ -1319,7 +1310,7 @@ export class DirectEditController {
           const turn = normalizeDegrees(rotation - box.rotation)
           hud.set({ chip: `${r0(rotation)}°` })
           this.showSnap(null)
-          plan.preview(turnMove(box, turn), { ...box, rotation }, handle.id)
+          plan.preview(turnMove(box.center, turn), { ...box, rotation }, handle.id)
           return
         }
         let resized = resizeBox(box, handle.id, startLocal, pointer, mods, evenly)
@@ -1337,12 +1328,9 @@ export class DirectEditController {
         this.showSnap(snap)
         plan.preview(resizeMove(resized), resized.box, handle.id)
       },
-      commit: () => {
-        const several = plan.ids.length > 1
-        // A turned box around several layers comes back upright on release:
-        // it is measured afresh around them, and they keep no shared frame.
-        plan.commit(rotating ? (several ? 'Rotate shapes' : 'Rotate') : several ? 'Resize shapes' : 'Resize')
-      },
+      // A turned box around several layers comes back upright on release:
+      // it is measured afresh around them, and they keep no shared frame.
+      commit: () => plan.commit(boxLabel(rotating, plan.ids.length > 1)),
       cancel: () => plan.cancel(),
       drawOverlay: (overlay) => plan.drawOverlay(overlay),
     }
@@ -1501,6 +1489,7 @@ export class DirectEditController {
 
   /** Hover while a tool is active: only handles react. Returns the cursor to show, if any. */
   toolHover(p: Vec, touch: boolean): string | null {
+    this.resting = null
     if (this.live === 'none') return null
     const zone = this.toolHandle(p, touch)
     const hot = zone ?? EMPTY_ZONE
@@ -1688,7 +1677,7 @@ export class DirectEditController {
     this.scope.activate()
     setOverlayScale(this.unitsPerPx())
     const layer = resetOverlay(this.scope)
-    const editing = this.session ?? this.nudge?.plan ?? this.keyTransform?.plan ?? null
+    const editing = this.session
     const edited = editing?.editedIds ?? new Set<string>()
     hideLayerOutlines(this.items, edited)
     const ids = new Set(doc.layers.map((candidate) => candidate.id))
@@ -1795,11 +1784,11 @@ export class DirectEditController {
     }
     const step = arrows[event.key]
     if (step && !event.metaKey && !event.ctrlKey) {
-      if (!canvasOwnsArrowKeys() || !doc.selectedLayerIds.length || this.session) return false
+      if (!canvasOwnsArrowKeys() || !doc.selectedLayerIds.length || this.session || this.press) return false
       if (event.altKey) {
-        // Left and right turn by 1° (15° with Shift); up and down scale by 1% (10%).
-        if (step.x) this.transformBy(step.x * (event.shiftKey ? 15 : 1), 0)
-        else this.transformBy(0, -step.y * (event.shiftKey ? 10 : 1))
+        // Left and right turn by 1° (15° with Shift); up and down grow or shrink the longer side by 1 unit (10).
+        if (step.x) this.turnBy(step.x * (event.shiftKey ? 15 : 1))
+        else this.growBy(-step.y * (event.shiftKey ? 10 : 1))
         return true
       }
       const amount = event.shiftKey ? 10 : 1
@@ -1810,103 +1799,126 @@ export class DirectEditController {
   }
 
   /**
-   * Alt+arrows turn or scale the selection about its box's centre, evenly,
-   * so recipes stay recipes. Like a nudge, a burst previews at once and
-   * commits once. A nudge still pending lands first, so the ink never
-   * shows one burst without the other.
+   * The box Alt with the arrow keys turns and scales, and what it moves. A
+   * recipe alone turns and scales as its own knob and handles do, so the
+   * cuts in it stay where they are; any other box carries its cuts, as a
+   * drag of its handles does: those its burst picked at its first key.
    */
-  private transformBy(turn: number, percent: number) {
-    this.flushNudge()
-    if (!this.keyTransform) {
-      const doc = this.host.getDoc()
-      const around = selectionBox(doc, (layer) => this.freePathOf(layer))
-      const plan = around ? this.boxPlan(around.ids, around.box, around.uniform) : null
-      if (!around || !plan) return
-      this.keyTransform = { plan, box: around.box, turn: 0, percent: 100, timer: 0, layers: doc.layers }
-    }
-    const t = this.keyTransform
-    t.turn = normalizeDegrees(t.turn + turn)
-    t.percent = Math.max(t.percent + percent, evenScaleFloor(t.box) * 100)
-    const next = this.previewKeyTransform(t)
-    // The number that changed, by the box's top right corner.
-    const corners = (['nw', 'ne', 'se', 'sw'] as const).map((id) => add(boxHandlePoint(next, id)!, this.center()))
-    this.placeHud({ x: Math.max(...corners.map((c) => c.x)), y: Math.min(...corners.map((c) => c.y)) })
-    hud.set({ label: null, chip: turn ? `${r0(next.rotation)}°` : `${r0(next.width)} × ${r0(next.height)}` })
+  private keyBox(
+    doc: IllustratorDocument,
+    kind: HistoryMergeKind,
+  ): { box: OrientedBox; moved: BoxMembers; going: KeyBurst | null } | null {
+    const around = selectionBox(doc, (layer) => this.freePathOf(layer))
+    if (!around) return null
+    const lone = around.ids.length === 1 && Boolean(this.layer(around.ids[0])?.carve)
+    const going = this.burstGoing(doc, kind)
+    const moved = this.boxMembers(doc, around.ids, !lone, going?.carried)
+    return moved && { box: around.box, moved, going }
+  }
+
+  /**
+   * The burst a key of `kind` goes on with: the last one, if it was of the
+   * same kind on the same selection, nothing else has changed the layers
+   * since, and its last key came within the time the store joins a burst
+   * into one undo step.
+   */
+  private burstGoing(doc: IllustratorDocument, kind: HistoryMergeKind): KeyBurst | null {
+    const last = this.keyBurst
+    const going =
+      last?.kind === kind &&
+      last.ids === doc.selectedLayerIds.join(' ') &&
+      last.layers === doc.layers &&
+      Date.now() - last.at < HISTORY_MERGE_MS
+    return going ? last : null
+  }
+
+  /** Note the burst a key just wrote to, so the next key of it goes on from there. */
+  private noteBurst(kind: HistoryMergeKind, carried: string[], turn: KeyBurst['turn'] = null) {
+    const doc = this.host.getDoc()
+    this.keyBurst = { kind, ids: doc.selectedLayerIds.join(' '), carried, turn, at: Date.now(), layers: doc.layers }
+  }
+
+  /**
+   * Alt with Left or Right: turn the selection about its box's centre, so
+   * the box lands on a whole degree. Each key is written at once, and the
+   * store joins a burst into one undo step. The keys of a burst turn about
+   * the point the first one did, though the box around several layers is
+   * measured upright again after each, and read out how far the box has
+   * turned since it began.
+   */
+  private turnBy(step: number) {
+    const target = this.keyBox(this.host.getDoc(), 'key-turn')
+    if (!target) return
+    const { moved, going } = target
+    const center = going?.turn ? going.turn.center : target.box.center
+    const was = going?.turn ? going.turn.rotation : target.box.rotation
+    const rotation = normalizeDegrees(Math.round(was + step))
+    const move = turnMove(center, normalizeDegrees(rotation - was))
+    this.host.commitLayerEdits({ label: boxLabel(true, moved.members.size > 1), edits: boxEdits(moved, move), merge: 'key-turn' })
+    this.noteBurst('key-turn', [...moved.carried.keys()], { center, rotation })
+    this.showKeyChip(`${r0(rotation)}°`)
     // Each key reads out where the selection now is, never how far the burst has gone.
-    hud.announce(turn ? `Turned to ${r0(next.rotation)}°` : `Size ${r0(next.width)} × ${r0(next.height)}`)
-    window.clearTimeout(t.timer)
-    t.timer = window.setTimeout(() => this.flushKeyTransform(), NUDGE_COMMIT_MS)
+    hud.announce(`Turned to ${r0(rotation)}°`)
   }
 
   /**
-   * The box a burst of Alt+arrows has reached, and the map there. A turn
-   * lands on a whole degree, so the angle read out is the angle stored.
+   * Alt with Up or Down: scale the selection evenly about its box's centre,
+   * so the box's longer side grows or shrinks by `step` units and a whole
+   * size stays whole. Written at once; a burst is one undo step.
    */
-  private keyStep(t: KeyTransform): { move: BoxMove; next: OrientedBox } {
-    const box = t.box
-    const turn = Math.abs(t.turn) > 1e-9 ? normalizeDegrees(Math.round(box.rotation + t.turn) - box.rotation) : 0
-    const factor = t.percent / 100
-    return {
-      move: keyMove(box, turn, factor),
-      next: { ...box, width: box.width * factor, height: box.height * factor, rotation: normalizeDegrees(box.rotation + turn) },
-    }
+  private growBy(step: number) {
+    const target = this.keyBox(this.host.getDoc(), 'key-scale')
+    if (!target) return
+    const { box, moved } = target
+    const longer = Math.max(box.width, box.height)
+    if (longer <= 1e-6) return
+    // Paths are stored to a thousandth, so a whole side turned in its frame may read a hair off.
+    const whole = Math.abs(longer - Math.round(longer)) < 0.01 ? Math.round(longer) : longer
+    const factor = Math.max((whole + step) / longer, evenScaleFloor(box))
+    const move = scaleMove(box.center, factor)
+    this.host.commitLayerEdits({ label: boxLabel(false, moved.members.size > 1), edits: boxEdits(moved, move), merge: 'key-scale' })
+    this.noteBurst('key-scale', [...moved.carried.keys()])
+    const size = `${r0(box.width * factor)} × ${r0(box.height * factor)}`
+    this.showKeyChip(size)
+    hud.announce(`Size ${size}`)
   }
 
-  private previewKeyTransform(t: KeyTransform): OrientedBox {
-    const { move, next } = this.keyStep(t)
-    t.plan.preview(move, next, null)
-    return next
+  /** The number a key reached, by the top right corner of the selection's box as it is now drawn, for a moment. */
+  private showKeyChip(chip: string) {
+    const around = selectionBox(this.host.getDoc(), (layer) => this.freePathOf(layer))
+    if (!around) return
+    const corners = (['nw', 'ne', 'se', 'sw'] as const).map((id) => add(boxHandlePoint(around.box, id)!, this.center()))
+    this.placeHud({ x: Math.max(...corners.map((c) => c.x)), y: Math.min(...corners.map((c) => c.y)) })
+    this.readoutShown = false
+    hud.set({ label: null, chip })
+    this.keyChipLayers = this.host.getDoc().layers
+    window.clearTimeout(this.keyChipTimer)
+    // Only the chip waits: the edit is already written.
+    this.keyChipTimer = window.setTimeout(() => this.dropKeyChip(), KEY_CHIP_MS)
   }
 
-  /**
-   * Commit a burst of Alt+arrows. The ink and hit areas already show the
-   * burst, so a press straight after meets the shapes where they are drawn.
-   * When an undo may follow at once (`restore`), they go back to the
-   * document first: the undo can restore the very layers drawn before,
-   * which renders nothing anew, and the ink must not keep the burst.
-   */
-  private flushKeyTransform(restore = false) {
-    const t = this.keyTransform
-    if (!t) return
-    this.keyTransform = null
-    window.clearTimeout(t.timer)
+  /** The key's number goes; a press that is not yet a drag shows none of its own, so it goes then too. */
+  private dropKeyChip() {
+    window.clearTimeout(this.keyChipTimer)
+    this.keyChipLayers = null
+    if (this.session || this.readoutShown) return
     hud.clear()
-    const turned = Math.abs(t.turn) > 1e-9
-    const several = t.plan.ids.length > 1
-    if (restore) t.plan.cancel()
-    t.plan.commit(turned ? (several ? 'Rotate shapes' : 'Rotate') : several ? 'Resize shapes' : 'Resize')
-    this.drawOverlay()
+    // A pointer resting on a handle reads out that handle's number again.
+    const resting = this.resting
+    if (resting && !this.press && this.live === 'all') this.showRestingReadout(this.hover, resting.p, resting.touch)
   }
 
-  /** Arrow keys preview immediately and commit once per burst. A pending Alt+arrow burst lands first. */
+  /** Arrow keys move the selection, and the cuts it carries, at once: every key is written, and a burst is one undo step. */
   private nudgeBy(d: Vec) {
-    this.flushKeyTransform()
-    if (!this.nudge) {
-      const doc = this.host.getDoc()
-      const plan = this.movePlan(
-        doc.selectedLayerIds.filter((id) => {
-          const layer = doc.layers.find((candidate) => candidate.id === id)
-          return Boolean(layer && layer.visible && !layer.locked)
-        }),
-        true,
-      )
-      if (!plan) return
-      this.nudge = { plan, d: { x: 0, y: 0 }, timer: 0, layers: doc.layers }
-    }
-    const nudge = this.nudge
-    nudge.d = add(nudge.d, d)
-    nudge.plan.preview(nudge.d)
-    window.clearTimeout(nudge.timer)
-    nudge.timer = window.setTimeout(() => this.flushNudge(), NUDGE_COMMIT_MS)
-  }
-
-  /** Commit a burst of nudges, putting the ink and hit areas back first when an undo may follow (see `flushKeyTransform`). */
-  private flushNudge(restore = false) {
-    const nudge = this.nudge
-    if (!nudge) return
-    this.nudge = null
-    window.clearTimeout(nudge.timer)
-    if (restore) nudge.plan.cancel()
-    nudge.plan.commit(nudge.d)
+    const doc = this.host.getDoc()
+    const ids = this.usableSelection(doc)
+    if (!ids.length) return
+    const moved = this.moveStarts(doc, ids, true, this.burstGoing(doc, 'nudge')?.carried)
+    if (!moved.starts.size) return
+    // A selected point stays selected: its shape moves whole, so it is still the same point.
+    const point = doc.pointSelection
+    const keepPoint = point && ids.length === 1 && point.layerId === ids[0]
+    this.host.commitLayerEdits({ ...moveCommit(moved, ids, d), ...(keepPoint ? { anchor: undefined } : {}), merge: 'nudge' })
+    this.noteBurst('nudge', moved.carried)
   }
 }

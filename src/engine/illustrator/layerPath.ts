@@ -4,7 +4,7 @@ import { add, boundsCenter, rotate, scale, sub } from '../path/bezier.ts'
 import type { EditablePath } from '../path/editPath.ts'
 import type { VectorPath } from '../vector/types.ts'
 import { getLayerPathItem } from './compose.ts'
-import type { IllustratorLayer, IllustratorTransform, MarkData } from './types.ts'
+import type { IllustratorLayer, IllustratorTransform } from './types.ts'
 
 let scope: paper.PaperScope | null = null
 
@@ -64,24 +64,4 @@ export function bakedObjectPath(path: VectorPath, transform: IllustratorTransfor
   if (dx === 0 && dy === 0 && factor === 1 && rotation === 0) return editable
   const pivot = boundsCenter(pathBoundsInFrame(editable))
   return transformPath(editable, affineOf((p) => add(add(pivot, rotate(scale(sub(p, pivot), factor), rotation)), { x: dx, y: dy })))
-}
-
-function drawnItems(s: paper.PaperScope, layers: IllustratorLayer[]): Array<{ layer: IllustratorLayer; item: paper.PathItem }> {
-  s.project.clear()
-  return layers.flatMap((layer) => {
-    const item = getLayerPathItem(s, layer, true)
-    return item ? [{ layer, item }] : []
-  })
-}
-
-function boundsOf(drawn: Array<{ item: paper.PathItem }>): paper.Rectangle | null {
-  return drawn.reduce<paper.Rectangle | null>((box, { item }) => (box ? box.unite(item.bounds) : item.bounds), null)
-}
-
-/** The box around the layers together, as they are drawn. Null when none of them has a path. */
-export function layersBounds(layers: IllustratorLayer[]): MarkData['viewBox'] | null {
-  const s = getScope()
-  const box = boundsOf(drawnItems(s, layers))
-  s.project.clear()
-  return box && { x: box.x, y: box.y, width: box.width, height: box.height }
 }

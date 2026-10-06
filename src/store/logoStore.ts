@@ -76,7 +76,12 @@ export interface LayerEditCommit {
   select?: string[]
   /** Selected anchor on the single selected layer, or null to clear it. */
   anchor?: { layerId: string; segmentIndex: number } | null
+  /** A key edit that joins the one just before it into one undo step: see `HISTORY_MERGE_MS`. */
+  merge?: HistoryMergeKind
 }
+
+/** Key edits that run together into one undo step: arrow nudges, and turns and scales with Alt. */
+export type HistoryMergeKind = 'nudge' | 'key-turn' | 'key-scale'
 
 export type EditorTool = 'pen' | 'punch' | 'channel' | 'slice'
 
@@ -96,6 +101,8 @@ export interface HistoryStep {
   selectionAfter: VectorSelection
   /** Set when the edit replaced the whole document (Start over, opening a saved mark): its name, id and source. */
   documents?: { before: VectorDocument; after: VectorDocument }
+  /** Set on a key edit: what it was and on which layers, and when the last edit joined it. */
+  merge?: { key: string; at: number }
 }
 
 export interface CarveSettings {
@@ -225,7 +232,8 @@ export const useLogoStore = create<LogoStore>()((set) => ({
       if (!step) return {}
       return {
         ...restoreStep(state, step.documents?.after, step.after, step.selectionAfter),
-        vectorUndoStack: [...state.vectorUndoStack, step],
+        // A redone step is finished: the next key starts a step of its own.
+        vectorUndoStack: [...state.vectorUndoStack, withoutMerge(step)],
         vectorRedoStack: state.vectorRedoStack.slice(0, -1),
       }
     }),
@@ -456,12 +464,21 @@ function capHistory<T>(stack: T[]): T[] {
   return stack.length > MAX_VECTOR_HISTORY ? stack.slice(stack.length - MAX_VECTOR_HISTORY) : stack
 }
 
+/** How soon after the last key edit the next one of the same kind, on the same layers, joins its undo step. */
+export const HISTORY_MERGE_MS = 1000
+
 /**
  * The one way an edit reaches the document. When every object is the same as
  * before, the edit is no step: only a new selection, if one is given, is
  * applied. Otherwise one history step records both objects arrays and both
  * selections, and redo is cleared. `document` replaces the whole document
  * (its id, name and source) along with the objects.
+ *
+ * A key edit with a `merge` key joins the newest step instead when that step
+ * has the same key, its last edit came less than `HISTORY_MERGE_MS` ago,
+ * nothing was undone since and the document is still as it left it: the step
+ * keeps its label and where it started, and takes the new end. So a burst of
+ * arrow keys is one undo step, yet every key is written at once.
  */
 function commitObjects(
   state: LogoStore,
@@ -469,6 +486,7 @@ function commitObjects(
   objects: VectorObject[],
   selection?: VectorSelection,
   document?: VectorDocument,
+  merge?: string,
 ): Partial<LogoStore> {
   const current = state.vectorDocument
   if (!document && sameObjects(current.objects, objects)) {
@@ -476,16 +494,28 @@ function commitObjects(
   }
   freezeInDevelopment(current.objects, objects)
   const selectionAfter = selection ?? current.selection
-  const step: HistoryStep = {
-    id: crypto.randomUUID(),
-    label,
-    timestamp: Date.now(),
-    before: current.objects,
-    after: objects,
-    selectionBefore: current.selection,
-    selectionAfter,
-    ...(document ? { documents: { before: current, after: document } } : {}),
-  }
+  const now = Date.now()
+  const last = state.vectorUndoStack.at(-1)
+  const joins =
+    merge !== undefined &&
+    !document &&
+    last?.merge?.key === merge &&
+    now - last.merge.at < HISTORY_MERGE_MS &&
+    state.vectorRedoStack.length === 0 &&
+    last.after === current.objects
+  const step: HistoryStep = joins
+    ? { ...last, after: objects, selectionAfter, merge: { key: merge, at: now } }
+    : {
+        id: crypto.randomUUID(),
+        label,
+        timestamp: now,
+        before: current.objects,
+        after: objects,
+        selectionBefore: current.selection,
+        selectionAfter,
+        ...(document ? { documents: { before: current, after: document } } : {}),
+        ...(merge !== undefined ? { merge: { key: merge, at: now } } : {}),
+      }
   const vectorDocument: VectorDocument = {
     ...(document ?? current),
     objects,
@@ -495,9 +525,15 @@ function commitObjects(
   return {
     vectorDocument,
     illustrator: vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator),
-    vectorUndoStack: capHistory([...state.vectorUndoStack, step]),
+    vectorUndoStack: joins ? [...state.vectorUndoStack.slice(0, -1), step] : capHistory([...state.vectorUndoStack, step]),
     vectorRedoStack: [],
   }
+}
+
+function withoutMerge(step: HistoryStep): HistoryStep {
+  if (!step.merge) return step
+  const { merge: _merge, ...rest } = step
+  return rest
 }
 
 function sameObjects(a: VectorObject[], b: VectorObject[]): boolean {
@@ -596,7 +632,10 @@ function applyLayerEdits(state: LogoStore, commit: LayerEditCommit): Partial<Log
       : commit.anchor
         ? { layerId: commit.anchor.layerId, segmentIndex: commit.anchor.segmentIndex, handle: 'anchor' }
         : null
-  return commitObjects(state, commit.label, objects, pointSelectionToVectorSelection(pointSelection, selectedLayerIds))
+  const selection = pointSelectionToVectorSelection(pointSelection, selectedLayerIds)
+  // The same kind of key edit on other layers is an edit of its own.
+  const merge = commit.merge && `${commit.merge} ${selection.targets.map((target) => target.objectId).join(' ')}`
+  return commitObjects(state, commit.label, objects, selection, undefined, merge)
 }
 
 /**

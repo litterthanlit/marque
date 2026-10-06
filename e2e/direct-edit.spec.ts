@@ -34,6 +34,8 @@ const test = base.extend<{ errors: string[] }>({
 const layersButton = (page: Page) => page.getByRole('button', { name: 'Layers', exact: true })
 const layersDrawer = (page: Page) => page.getByRole('complementary', { name: 'Layers' })
 const selectionBar = (page: Page) => page.getByRole('toolbar', { name: 'Selection' })
+/** The bar's words for the selection: what it is, then its numbers. */
+const selectionSummary = (page: Page) => selectionBar(page).locator('p').first()
 
 async function openLayers(page: Page): Promise<Locator> {
   const drawer = layersDrawer(page)
@@ -332,6 +334,17 @@ test('a slab resizes, rounds, turns, bends and straightens right on the canvas',
   await page.keyboard.press('ControlOrMeta+z')
   await expect.poll(async () => ((await carves(page))[0] as SlabSpec).rotation).toBe(0)
 
+  // Without Shift it turns freely, to a whole degree: the angle the readout shows is the angle stored.
+  // Long enough after the last press on the knob not to count as a double-click.
+  await page.waitForTimeout(400)
+  const free = Math.atan2(knob.y - pivot.y, knob.x - pivot.x) + (37.4 * Math.PI) / 180
+  await drag(page, knob, { x: pivot.x + Math.cos(free) * reach, y: pivot.y + Math.sin(free) * reach })
+  const freeTurn = ((await carves(page))[0] as SlabSpec).rotation
+  expect(Number.isInteger(freeTurn)).toBe(true)
+  expect(Math.abs(freeTurn - 37)).toBeLessThanOrEqual(1)
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(async () => ((await carves(page))[0] as SlabSpec).rotation).toBe(0)
+
   // Drag the top edge up, 30% along: the ink follows the pointer.
   slab = (await carves(page))[0] as SlabSpec
   const left = slab.center.x - slab.width / 2
@@ -513,39 +526,176 @@ test('a drag lands once wherever it is released; holes travel with their slab un
   await expect.poll(() => layers(page).then((list) => list.length)).toBe(0)
 })
 
-test('undo straight after an arrow nudge takes the nudge back, and the nudge does not land later', async ({ page }) => {
+test('an arrow nudge is written at once, and undo straight after a burst of them takes the whole burst back', async ({ page }) => {
   await openVectorMaker(page)
   await startOver(page)
   await addSlab(page, 'Square')
   const f = await frame(page)
   const [slab] = (await carves(page)) as SlabSpec[]
-  // A drag first, so there is an older step that a late nudge could write over.
+  // A drag first, so there is an older step that the burst must not reach into.
   const body = f.at(slab.center.x - 100, slab.center.y - 100)
   await drag(page, body, { x: body.x + 40 * f.unit, y: body.y })
   const [moved] = (await carves(page)) as SlabSpec[]
   expect(moved.center.x).toBeGreaterThan(slab.center.x + 20)
   const depth = await undoDepth(page)
 
-  // The nudge waits 450 ms to commit; undo comes before that.
+  // One nudge is in the document as soon as the key is down.
   await page.keyboard.press('ArrowRight')
+  expect(((await carves(page))[0] as SlabSpec).center.x).toBeCloseTo(moved.center.x + 1, 6)
+  expect(await undoDepth(page)).toBe(depth + 1)
   await page.keyboard.press('ControlOrMeta+z')
-  await page.waitForTimeout(700)
-
   expect(await carves(page)).toEqual([moved])
   expect(await undoDepth(page)).toBe(depth)
   expect(await page.evaluate(() => window.__marque.store.getState().vectorRedoStack.length)).toBe(1)
-  // The canvas shows what undo restored, not the nudged slab.
+  // Nothing lands later, and the canvas shows what undo restored, not the nudged slab.
+  await page.waitForTimeout(700)
+  expect(await carves(page)).toEqual([moved])
   await pointerAway(page, f)
   expect(await inkMismatches(page)).toEqual([])
 
-  // A longer burst, undone at once, the same.
+  // A longer burst is one undo step, written key by key: undo takes all of it back.
   await page.keyboard.press('Shift+ArrowRight')
   await page.keyboard.press('Shift+ArrowRight')
   await page.keyboard.press('Shift+ArrowRight')
+  expect(((await carves(page))[0] as SlabSpec).center.x).toBeCloseTo(moved.center.x + 30, 6)
+  expect(await undoDepth(page)).toBe(depth + 1)
   await page.keyboard.press('ControlOrMeta+z')
-  await page.waitForTimeout(700)
   expect(await carves(page)).toEqual([moved])
+  expect(await undoDepth(page)).toBe(depth)
   expect(await inkMismatches(page)).toEqual([])
+
+  // A pause of a second ends a burst: the next key is a step of its own.
+  await page.keyboard.press('ArrowDown')
+  await page.waitForTimeout(1100)
+  await page.keyboard.press('ArrowDown')
+  expect(await undoDepth(page)).toBe(depth + 2)
+})
+
+test('a point deleted straight after a nudge stays deleted', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await page.evaluate(() => {
+    window.__marque.store.getState().addPenShape('M-100,-50L100,-50L100,50L-100,50Z')
+    const { illustrator, setSelection } = window.__marque.store.getState()
+    const id = illustrator.layers[0].id
+    setSelection([id], { layerId: id, segmentIndex: 0 })
+  })
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  const depth = await undoDepth(page)
+
+  // The shape moves whole, so its point stays selected; Delete then removes the point, not the shape.
+  await page.keyboard.press('Shift+ArrowRight')
+  await page.keyboard.press('Delete')
+  const [points] = await anchors(page)
+  expect(points.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) }))).toEqual([
+    { x: 110, y: -50 },
+    { x: 110, y: 50 },
+    { x: -90, y: 50 },
+  ])
+  expect(await undoDepth(page)).toBe(depth + 2)
+  // Nothing written later brings it back.
+  await page.waitForTimeout(700)
+  expect((await anchors(page))[0]).toHaveLength(3)
+  await page.keyboard.press('ControlOrMeta+z')
+  expect((await anchors(page))[0]).toHaveLength(4)
+})
+
+test('a burst of keys picks the holes it carries once, as a drag does', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  /** Two pen squares and a punch, the punch on top; the first square is selected. Returns the punch's centre. */
+  const setUp = (shapes: string[], cut: { x: number; y: number; radius: number }) =>
+    page.evaluate(
+      ([paths, punch]) => {
+        const store = window.__marque.store
+        store.getState().startOver()
+        for (const path of paths) store.getState().addPenShape(path)
+        store.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: punch.x, y: punch.y }, radius: punch.radius })
+        const { illustrator, setSelection } = store.getState()
+        setSelection([illustrator.layers[0].id])
+        ;(document.activeElement as HTMLElement | null)?.blur()
+      },
+      [shapes, cut] as const,
+    )
+  const punch = async () => (await carves(page)).find((spec) => spec?.kind === 'punch') as PunchSpec
+  const press = async (key: string, times: number) => {
+    for (let i = 0; i < times; i++) await page.keyboard.press(key)
+  }
+
+  // A hole in the square goes the whole way, though halfway it touches the square next door.
+  await setUp(['M-250,-50L-150,-50L-150,50L-250,50Z', 'M-120,-50L0,-50L0,50L-120,50Z'], { x: -160, y: 0, radius: 20 })
+  let depth = await undoDepth(page)
+  await press('Shift+ArrowRight', 5)
+  expect(await undoDepth(page)).toBe(depth + 1)
+  expect((await punch()).center.x).toBeCloseTo(-110, 6)
+  await page.keyboard.press('ControlOrMeta+z')
+  expect((await punch()).center.x).toBeCloseTo(-160, 6)
+
+  // A stray hole the square reaches partway is not picked up: the square slides under it.
+  await setUp(['M-200,-50L-100,-50L-100,50L-200,50Z'], { x: 0, y: 0, radius: 20 })
+  depth = await undoDepth(page)
+  await press('Shift+ArrowRight', 12)
+  expect(await undoDepth(page)).toBe(depth + 1)
+  expect((await punch()).center).toEqual({ x: 0, y: 0 })
+
+  // Turned with Alt, a hole in a bar goes the whole quarter turn, past a square it touches on the way.
+  await setUp(['M-100,-20L100,-20L100,20L-100,20Z', 'M-30,60L30,60L30,120L-30,120Z'], { x: 85, y: 0, radius: 12 })
+  depth = await undoDepth(page)
+  await press('Alt+Shift+ArrowRight', 6)
+  expect(await undoDepth(page)).toBe(depth + 1)
+  const turned = await punch()
+  expect(turned.center.x).toBeCloseTo(0, 1)
+  expect(turned.center.y).toBeCloseTo(85, 1)
+})
+
+test("a key's number stays only for a moment, and takes the place of a handle's number under the pointer", async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  const f = await frame(page)
+  await page.evaluate(() => {
+    window.__marque.store.getState().addPenShape('M-100,-50L100,-50L100,50L-100,50Z')
+    ;(document.activeElement as HTMLElement | null)?.blur()
+  })
+
+  // A click that comes while the number shows, held past its moment, takes it away.
+  await page.keyboard.press('Alt+Shift+ArrowUp')
+  await expect(hudLabel(page, '210 × 105')).toBeVisible()
+  const body = f.at(-60, 0)
+  await page.mouse.move(body.x, body.y)
+  await page.mouse.down()
+  await page.waitForTimeout(1300)
+  await page.mouse.up()
+  await expect(hudLabel(page, '210 × 105')).toHaveCount(0)
+  await pointerAway(page, f)
+  await expect(hudLabel(page, '210 × 105')).toHaveCount(0)
+
+  // With the pointer resting on a side handle, a turn reads out its angle there, not the size,
+  // and once its moment is over the handle's own number comes back.
+  await page.keyboard.press('ControlOrMeta+z')
+  const east = await handle(page, 'e')
+  await page.mouse.move(east.x, east.y)
+  await expect(hudLabel(page, '200 × 100')).toBeVisible()
+  await page.keyboard.press('Alt+ArrowRight')
+  await expect(hudLabel(page, '1°')).toBeVisible()
+  await expect(hudLabel(page, '200 × 100')).toHaveCount(0)
+  await expect(hudLabel(page, '200 × 100')).toBeVisible({ timeout: 2000 })
+  await expect(hudLabel(page, '1°')).toHaveCount(0)
+
+  // On the knob of two shapes, whose box is measured upright again after each key, it reads how far the key turned them.
+  await page.evaluate(() => {
+    const store = window.__marque.store
+    store.getState().startOver()
+    store.getState().addPenShape('M-150,-30L-50,-30L-50,30L-150,30Z')
+    store.getState().addPenShape('M50,-30L150,-30L150,30L50,30Z')
+    const { illustrator, setSelection } = store.getState()
+    setSelection(illustrator.layers.map((layer) => layer.id))
+    ;(document.activeElement as HTMLElement | null)?.blur()
+  })
+  const knob = await handle(page, 'rotate')
+  await page.mouse.move(knob.x, knob.y)
+  await page.keyboard.press('Alt+ArrowRight')
+  await expect(hudLabel(page, '1°')).toBeVisible()
+  await expect(hudLabel(page, '0°')).toHaveCount(0)
 })
 
 test('a reload from the link keeps recipes, and their handles still work', async ({ page }) => {
@@ -768,6 +918,40 @@ test('the selection bar is there for a selection and gone without one', async ({
   expect(await undoDepth(page)).toBe(depth + 1)
   await page.keyboard.press('ControlOrMeta+z')
   await expect.poll(() => layers(page)).toEqual([shape])
+})
+
+test('the selection bar reads out a new selection, even of the same kind, but not the keys that move it', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await addSlab(page, 'Square')
+  await addSlab(page, 'Circle')
+  const [square, circle] = (await layers(page)).map((layer) => layer.id)
+  await page.evaluate((id) => window.__marque.store.getState().setSelection([id]), square)
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  const live = selectionBar(page).locator('[aria-live]')
+  await expect(live).toHaveText('Slab')
+  const changes = () => live.evaluate((node) => (node as HTMLElement & { changes?: number }).changes ?? 0)
+  await live.evaluate((node) => {
+    const counted = node as HTMLElement & { changes?: number }
+    counted.changes = 0
+    new MutationObserver((records) => (counted.changes! += records.length)).observe(node, {
+      childList: true,
+      subtree: true,
+      characterData: true,
+    })
+  })
+
+  // A burst of keys changes the numbers, which are not read out.
+  await page.keyboard.press('Shift+ArrowRight')
+  await page.keyboard.press('Shift+ArrowRight')
+  await expect(selectionSummary(page)).toHaveText(/^Slab · 380 × 380/)
+  expect(await changes()).toBe(0)
+
+  // Another slab reads 'Slab' too, yet it is a new selection, so it is read out.
+  await page.evaluate((id) => window.__marque.store.getState().setSelection([id]), circle)
+  await expect(selectionSummary(page)).toHaveText(/^Slab · 200 × 200/)
+  await expect(live).toHaveText('Slab')
+  await expect.poll(changes).toBeGreaterThan(0)
 })
 
 test('an empty canvas says what to do first, until there is something on it', async ({ page }) => {
@@ -1119,7 +1303,7 @@ test("a pen shape's box turns with it and stays turned, and resizes along its ow
   expect(await undoDepth(page)).toBe(depth + 1)
   expect(await frameRotations(page)).toEqual([30])
   // The bar reads its size and angle at rest, as it does for a recipe.
-  const label = selectionBar(page).locator('p[aria-live]')
+  const label = selectionSummary(page)
   await expect(label).toHaveText(/ · 2\d\d × 1\d\d · 30°$/)
   // The box is turned: its east handle sits out along the shape's own turned axis.
   const east = await handle(page, 'e')
@@ -1225,7 +1409,7 @@ test('a spark with cuts sticking far out keeps its box on the ink, and every han
   expect(await frameRotations(page)).toEqual(pieces.map(() => 30))
 })
 
-test('Alt with the arrow keys turns and scales the selection, one undo step for each burst', async ({ page }) => {
+test('Alt with the arrow keys turns and scales the selection, written at once, one undo step for each burst', async ({ page }) => {
   await openVectorMaker(page)
   await startOver(page)
   const f = await frame(page)
@@ -1247,28 +1431,32 @@ test('Alt with the arrow keys turns and scales the selection, one undo step for 
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
   const depth = await undoDepth(page)
 
-  // Two turns of 15° and one of 1°: a single step of 31°, about the shape's middle.
+  // Two turns of 15° and one of 1°: a single step of 31°, about the shape's middle, in the document key by key.
   // The angle shows by the box while the keys are pressed, and each key reads out the angle it reached.
   await page.keyboard.press('Alt+Shift+ArrowRight')
   await page.keyboard.press('Alt+Shift+ArrowRight')
+  expect(await frameRotations(page)).toEqual([30])
   await expect(hudLabel(page, '30°')).toBeVisible()
   await expect(page.locator('main').getByRole('status')).toHaveText('Turned to 30°')
   await page.keyboard.press('Alt+ArrowRight')
-  await expect.poll(() => undoDepth(page)).toBe(depth + 1)
-  await expect(hudLabel(page, '31°')).toBeHidden()
+  expect(await undoDepth(page)).toBe(depth + 1)
   await expect(page.locator('main').getByRole('status')).toHaveText('Turned to 31°')
+  // The angle goes from by the box a moment after the last key.
+  await expect(hudLabel(page, '31°')).toBeVisible()
+  await expect(hudLabel(page, '31°')).toBeHidden()
   expect(await frameRotations(page)).toEqual([31])
   const [turned] = await anchors(page)
   expect(Math.abs(turned[0].x - rotateAbout({ x: -100, y: -50 }, { x: 0, y: 0 }, 31).x)).toBeLessThan(0.01)
   expect(Math.abs(turned[0].y - rotateAbout({ x: -100, y: -50 }, { x: 0, y: 0 }, 31).y)).toBeLessThan(0.01)
 
-  // Up by 10% and down by 1%: 109%, about the same middle, still turned.
+  // The longer side up by 10 and down by 1: 200 × 100 becomes 209 × 104.5, about the same middle, still turned.
   await page.keyboard.press('Alt+Shift+ArrowUp')
   await page.keyboard.press('Alt+ArrowDown')
-  await expect.poll(() => undoDepth(page)).toBe(depth + 2)
+  await expect(page.locator('main').getByRole('status')).toHaveText(/^Size 209 × 10[45]$/)
+  expect(await undoDepth(page)).toBe(depth + 2)
   expect(await frameRotations(page)).toEqual([31])
   const [scaled] = await anchors(page)
-  expect(Math.hypot(scaled[0].x, scaled[0].y) / Math.hypot(turned[0].x, turned[0].y)).toBeCloseTo(1.09, 4)
+  expect(Math.hypot(scaled[0].x, scaled[0].y) / Math.hypot(turned[0].x, turned[0].y)).toBeCloseTo(209 / 200, 4)
 
   // Undo straight after a burst takes it back, and the canvas shows the shape as it was.
   const shapeBefore = await layers(page)
@@ -1283,7 +1471,7 @@ test('Alt with the arrow keys turns and scales the selection, one undo step for 
   await page.keyboard.press('ControlOrMeta+z')
   await expect.poll(() => frameRotations(page)).toEqual([0])
 
-  // A lone round punch half over a slab turns and scales about its own centre.
+  // A lone round punch half over a slab turns and scales about its own centre, to a whole diameter.
   await startOver(page)
   await addSlab(page, 'Square')
   await page.evaluate(() => window.__marque.store.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 190, y: 0 }, radius: 60 }))
@@ -1291,14 +1479,33 @@ test('Alt with the arrow keys turns and scales the selection, one undo step for 
   const punchDepth = await undoDepth(page)
   await page.keyboard.press('Alt+Shift+ArrowLeft')
   await page.keyboard.press('Alt+Shift+ArrowLeft')
-  await expect.poll(() => undoDepth(page)).toBe(punchDepth + 1)
+  expect(await undoDepth(page)).toBe(punchDepth + 1)
   await page.keyboard.press('Alt+Shift+ArrowUp')
-  await expect.poll(() => undoDepth(page)).toBe(punchDepth + 2)
+  expect(await undoDepth(page)).toBe(punchDepth + 2)
   const punch = (await carves(page))[1] as PunchSpec
   expect(punch.center.x).toBeCloseTo(190, 6)
   expect(punch.center.y).toBeCloseTo(0, 6)
-  expect(punch.radius).toBeCloseTo(66, 6)
+  expect(punch.radius).toBe(65)
   expect(punch.rotation).toBe(-30)
+
+  // The slab alone turns and grows as its own knob and handles would: the punch in it stays where it is.
+  const [slab] = await layers(page)
+  await page.evaluate((id) => window.__marque.store.getState().setSelection([id]), slab.id)
+  await page.keyboard.press('Alt+Shift+ArrowRight')
+  await page.keyboard.press('Alt+ArrowUp')
+  const [turnedSlab, still] = (await carves(page)) as [SlabSpec, PunchSpec]
+  expect(turnedSlab.rotation).toBe(15)
+  expect(turnedSlab.width).toBe(381)
+  expect(still).toEqual(punch)
+
+  // With the punch hidden, the slab is the only one of the two that takes part, so the bar reads it as the slab.
+  const ids = (await layers(page)).map((layer) => layer.id)
+  await page.evaluate(([slabId, punchId]) => {
+    window.__marque.store.getState().toggleIllustratorLayerVisibility(punchId)
+    window.__marque.store.getState().setSelection([slabId, punchId])
+  }, ids)
+  await expect(selectionSummary(page)).toHaveText('Slab · 381 × 381 · corner 0 · 15°')
+  await expect(selectionBar(page).locator('[aria-live]')).toHaveText('Slab')
 })
 
 test('inside the box of several shapes, a drag moves them all and a click keeps them selected', async ({ page }) => {
@@ -1336,7 +1543,9 @@ test('inside the box of several shapes, a drag moves them all and a click keeps 
   expect(b[0].y).toBeCloseTo(-30 + 40, 0)
   expect(await selectedIds(page)).toEqual(ids)
   // The bar reads the size of their box at rest.
-  await expect(selectionBar(page).locator('p[aria-live]')).toHaveText('2 layers · 320 × 60')
+  await expect(selectionSummary(page)).toHaveText('2 layers · 320 × 60')
+  // Only what is selected is read out as it changes, so a burst of keys is not read out twice.
+  await expect(selectionBar(page).locator('[aria-live]')).toHaveText('2 layers')
 })
 
 /** Drag with one finger: the canvas sees touch pointers, as on a phone. */
@@ -1469,16 +1678,24 @@ test('a press straight after a burst of keys meets the shapes where they are dra
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
   const depth = await undoDepth(page)
 
-  // Nudge 50 right, and before the burst lands, drag from where the shape was: that is empty canvas now.
+  // The pointer rests on the shape, so the cursor offers to move it; once the keys take the shape away, it no longer does.
+  const resting = f.at(-80, 0)
+  await page.mouse.move(resting.x, resting.y)
+  await expect.poll(() => page.evaluate(() => window.__marque.cursor())).toBe('move')
+  // Nudge 50 right, and straight after, drag from where the shape was: that is empty canvas now.
   for (let i = 0; i < 5; i++) await page.keyboard.press('Shift+ArrowRight')
+  await expect.poll(() => page.evaluate(() => window.__marque.cursor())).toBe('default')
   await drag(page, f.at(-80, 0), f.at(-80, 60), ['ControlOrMeta'])
   expect(await extent()).toEqual({ minX: -50, minY: -50, maxX: 150, maxY: 50 })
   expect(await undoDepth(page)).toBe(depth + 1)
-  // Nudge again, and drag from where only its new place covers: the shape goes along.
+  // Nudge again, and drag from where only its new place covers: the shape goes along, as a step of its own.
   for (let i = 0; i < 5; i++) await page.keyboard.press('Shift+ArrowRight')
+  const nudged = await undoDepth(page)
   await drag(page, f.at(170, 0), f.at(170, 60), ['ControlOrMeta'])
   expect(await extent()).toEqual({ minX: 0, minY: 10, maxX: 200, maxY: 110 })
-  expect(await undoDepth(page)).toBe(depth + 3)
+  expect(await undoDepth(page)).toBe(nudged + 1)
+  // Hover is found again where the drag let go, which is on the shape it moved.
+  await expect.poll(() => page.evaluate(() => window.__marque.cursor())).toBe('move')
 
   // The same after a turn with Alt and the arrow keys.
   await startOver(page)
@@ -1492,11 +1709,30 @@ test('a press straight after a burst of keys meets the shapes where they are dra
   expect(await extent()).toEqual({ minX: -150, minY: 50, maxX: 150, maxY: 70 })
   await pointerAway(page, f)
   expect(await inkMismatches(page)).toEqual([])
+
+  // Two shapes turned with Alt and the arrow keys: their box is measured upright around them again, and a
+  // press on its knob straight after turns them further, about its middle.
+  await startOver(page)
+  await page.evaluate(() => {
+    const state = window.__marque.store.getState()
+    state.addPenShape('M-160,-30L-100,-30L-100,30L-160,30Z')
+    window.__marque.store.getState().addPenShape('M100,-30L160,-30L160,30L100,30Z')
+    const { illustrator, setSelection } = window.__marque.store.getState()
+    setSelection(illustrator.layers.map((layer) => layer.id))
+  })
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  for (let i = 0; i < 2; i++) await page.keyboard.press('Alt+Shift+ArrowRight')
+  expect(await frameRotations(page)).toEqual([30, 30])
+  const turnedDepth = await undoDepth(page)
+  const pivot = await boxMiddle(page, f)
+  await turnKnob(page, f.at(pivot.x, pivot.y), 31, ['Shift'])
+  expect(await undoDepth(page)).toBe(turnedDepth + 1)
+  expect(await frameRotations(page)).toEqual([60, 60])
 })
 
 /**
  * Press keys in the page itself, then sample the canvas two frames later
- * (after the render a commit brings), all well inside one burst of keys.
+ * (after the render the edits bring), all well inside one burst of keys.
  * Returns whether each point is solid ink, and the undo depth then.
  */
 function keysThenInk(page: Page, keys: Array<{ key: string; shift?: boolean; alt?: boolean }>, points: Point[]) {
@@ -1524,7 +1760,7 @@ function keysThenInk(page: Page, keys: Array<{ key: string; shift?: boolean; alt
   )
 }
 
-test('a nudge and a turn with Alt in one burst of keys show together in the ink', async ({ page }) => {
+test('a nudge and a turn with Alt in one burst of keys are both written, and show together in the ink', async ({ page }) => {
   await openVectorMaker(page)
   await startOver(page)
   const f = await frame(page)
@@ -1534,21 +1770,20 @@ test('a nudge and a turn with Alt in one burst of keys show together in the ink'
   const depth = await undoDepth(page)
   const quarterTurn = Array.from({ length: 6 }, () => ({ key: 'ArrowRight', shift: true, alt: true }))
 
-  // Up 10, then a quarter turn about the moved bar's middle: the nudge lands, and the ink shows the bar turned upright.
+  // Up 10, then a quarter turn about the moved bar's middle: a step for each kind of key, and the ink shows the bar turned upright.
   const turned = await keysThenInk(page, [{ key: 'ArrowUp', shift: true }, ...quarterTurn], [f.at(0, 100), f.at(120, -10)])
-  expect(turned.depth).toBe(depth + 1)
+  expect(turned.depth).toBe(depth + 2)
   expect(turned.ink).toEqual([true, false])
-  await expect.poll(() => undoDepth(page)).toBe(depth + 2)
 
-  // A quarter turn back, then down 50: the turn lands, and the ink shows the bar lying down again, moved.
+  // A second later, a quarter turn back, then down 50: the ink shows the bar lying down again, moved.
+  await page.waitForTimeout(1100)
   const moved = await keysThenInk(
     page,
     [...quarterTurn, ...Array.from({ length: 5 }, () => ({ key: 'ArrowDown', shift: true }))],
     [f.at(120, 40), f.at(0, 100), f.at(120, -10)],
   )
-  expect(moved.depth).toBe(depth + 3)
+  expect(moved.depth).toBe(depth + 4)
   expect(moved.ink).toEqual([true, false, false])
-  await expect.poll(() => undoDepth(page)).toBe(depth + 4)
   const [points] = await anchors(page)
   const ys = points.map((p) => Math.round(p.y))
   expect([Math.min(...ys), Math.max(...ys)]).toEqual([30, 50])
@@ -1562,11 +1797,11 @@ test('Alt with the arrow keys reads out the size and angle it reaches, every tim
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
   const status = page.locator('main').getByRole('status')
 
-  // Two separate presses, each read out with the size it reached.
-  await page.keyboard.press('Alt+ArrowUp')
-  await expect(status).toHaveText('Size 202 × 101')
-  await page.keyboard.press('Alt+ArrowUp')
-  await expect(status).toHaveText('Size 204 × 102')
+  // Two separate presses, each read out with the size it reached: the longer side 10 units longer each time.
+  await page.keyboard.press('Alt+Shift+ArrowUp')
+  await expect(status).toHaveText('Size 210 × 105')
+  await page.keyboard.press('Alt+Shift+ArrowUp')
+  await expect(status).toHaveText('Size 220 × 110')
 
   // The same turn twice, with an undo between, is read out twice; the undo leaves nothing stale.
   const announced: string[] = []
@@ -1580,8 +1815,11 @@ test('Alt with the arrow keys reads out the size and angle it reaches, every tim
   })
   await page.keyboard.press('Alt+ArrowRight')
   await expect(status).toHaveText('Turned to 1°')
+  await expect(hudLabel(page, '1°')).toBeVisible()
   await page.keyboard.press('ControlOrMeta+z')
   await expect(status).toHaveText('')
+  // Nor does the number by the box, which no longer holds.
+  await expect(hudLabel(page, '1°')).toHaveCount(0)
   await page.keyboard.press('Alt+ArrowRight')
   await expect(status).toHaveText('Turned to 1°')
   await expect.poll(() => announced.filter((text) => text === 'Turned to 1°').length).toBe(2)

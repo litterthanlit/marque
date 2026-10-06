@@ -24,25 +24,6 @@ export function dispatchEditorKey(event: KeyboardEvent): boolean {
   return false
 }
 
-const pendingFlushes: Array<() => void> = []
-
-/** An editor's edits that wait on a timer, such as a burst of arrow-key nudges, and how to commit them now. */
-export function registerPendingEdits(flush: () => void): () => void {
-  pendingFlushes.push(flush)
-  return () => {
-    const index = pendingFlushes.indexOf(flush)
-    if (index >= 0) pendingFlushes.splice(index, 1)
-  }
-}
-
-/**
- * Commit every edit that is waiting on a timer. Undo and redo call this
- * first, so a late commit cannot land on top of the state they restore.
- */
-export function flushPendingEdits(): void {
-  for (const flush of [...pendingFlushes]) flush()
-}
-
 /** True while a drag is in progress: undo and redo must wait. */
 export function isEditorInteracting(): boolean {
   return interacting

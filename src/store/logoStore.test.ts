@@ -1,5 +1,5 @@
 import paper from 'paper'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useLogoStore } from './logoStore.ts'
 import type { SlabSpec } from '../engine/carve/spec.ts'
 import { composeIllustratorMark } from '../engine/illustrator/compose.ts'
@@ -100,6 +100,104 @@ describe('history', () => {
 
     useLogoStore.getState().undoVectorCommand()
     expect((layers()[0].carve as SlabSpec).width).toBe(380)
+  })
+
+  describe('key edits in a row', () => {
+    let now = 0
+    beforeEach(() => {
+      now = 1_000_000
+      vi.spyOn(Date, 'now').mockImplementation(() => now)
+    })
+    afterEach(() => vi.restoreAllMocks())
+
+    const nudge = (id: string, x: number, merge: 'nudge' | 'key-turn' = 'nudge') => {
+      const spec = layers().find((layer) => layer.id === id)!.carve as SlabSpec
+      useLogoStore.getState().commitLayerEdits({
+        label: 'Move',
+        edits: [{ layerId: id, carve: { ...spec, center: { x: spec.center.x + x, y: spec.center.y } } }],
+        select: [id],
+        merge,
+      })
+    }
+    const centreX = (id: string) => (layers().find((layer) => layer.id === id)!.carve as SlabSpec).center.x
+
+    it('join into one undo step that restores the objects array from before them', () => {
+      useLogoStore.getState().addSlab('square')
+      const [slab] = layers()
+      const before = objects()
+      const depth = undoDepth()
+      for (let i = 0; i < 3; i++) {
+        now += 400
+        nudge(slab.id, 1)
+      }
+      expect(undoDepth()).toBe(depth + 1)
+      expect(centreX(slab.id)).toBe((slab.carve as SlabSpec).center.x + 3)
+      expect(useLogoStore.getState().vectorUndoStack.at(-1)!.label).toBe('Move')
+
+      useLogoStore.getState().undoVectorCommand()
+      expect(objects()).toBe(before)
+      useLogoStore.getState().redoVectorCommand()
+      expect(centreX(slab.id)).toBe((slab.carve as SlabSpec).center.x + 3)
+    })
+
+    it('start a new step a second after the last one', () => {
+      useLogoStore.getState().addSlab('square')
+      const [slab] = layers()
+      const depth = undoDepth()
+      nudge(slab.id, 1)
+      now += 999
+      nudge(slab.id, 1)
+      expect(undoDepth()).toBe(depth + 1)
+      now += 1000
+      nudge(slab.id, 1)
+      expect(undoDepth()).toBe(depth + 2)
+      useLogoStore.getState().undoVectorCommand()
+      expect(centreX(slab.id)).toBe((slab.carve as SlabSpec).center.x + 2)
+    })
+
+    it('start a new step for another selection or another kind of key', () => {
+      useLogoStore.getState().addSlab('square')
+      useLogoStore.getState().addSlab('circle')
+      const [square, circle] = layers()
+      const depth = undoDepth()
+      nudge(square.id, 1)
+      nudge(circle.id, 1)
+      expect(undoDepth()).toBe(depth + 2)
+      nudge(circle.id, 1, 'key-turn')
+      expect(undoDepth()).toBe(depth + 3)
+      nudge(circle.id, 1, 'key-turn')
+      expect(undoDepth()).toBe(depth + 3)
+    })
+
+    it('start a new step after any other edit, or after an undo', () => {
+      useLogoStore.getState().addSlab('square')
+      const [slab] = layers()
+      const depth = undoDepth()
+      nudge(slab.id, 1)
+      useLogoStore.getState().updateIllustratorLayer(slab.id, { name: 'Base' })
+      nudge(slab.id, 1)
+      expect(undoDepth()).toBe(depth + 3)
+
+      useLogoStore.getState().undoVectorCommand()
+      nudge(slab.id, 5)
+      expect(undoDepth()).toBe(depth + 3)
+      useLogoStore.getState().undoVectorCommand()
+      expect(centreX(slab.id)).toBe((slab.carve as SlabSpec).center.x + 1)
+      expect(layers()[0].name).toBe('Base')
+    })
+
+    it('start a new step after a redo, so one undo takes back only the new key', () => {
+      useLogoStore.getState().addSlab('square')
+      const [slab] = layers()
+      const depth = undoDepth()
+      nudge(slab.id, 1)
+      useLogoStore.getState().undoVectorCommand()
+      useLogoStore.getState().redoVectorCommand()
+      nudge(slab.id, 1)
+      expect(undoDepth()).toBe(depth + 2)
+      useLogoStore.getState().undoVectorCommand()
+      expect(centreX(slab.id)).toBe((slab.carve as SlabSpec).center.x + 1)
+    })
   })
 
   it('Start over clears the mark and undo brings it back', () => {

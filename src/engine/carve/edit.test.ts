@@ -14,6 +14,7 @@ import {
   scaleCarveAbout,
   straightenCarve,
   translateCarve,
+  wholeCarveDrag,
 } from './edit.ts'
 import { carveOutline, grooveSpine } from './outline.ts'
 import { isGroove, roundCarveSpec, slabSpec, type CarveSpec, type GrooveSpec, type PunchSpec, type SlabSpec } from './spec.ts'
@@ -116,6 +117,60 @@ describe('punch and groove handles', () => {
   it('width never drops below 2', () => {
     const next = dragCarveHandle(groove, 'width', { x: 0, y: -32 }, { x: 0, y: 400 }) as GrooveSpec
     expect(next.width).toBe(2)
+  })
+})
+
+describe('handle drags at whole numbers', () => {
+  it('turn the knob to whole degrees', () => {
+    const next = dragCarveHandle(rotated, 'rotate', world(rotated, { x: 0, y: -200 }), world(rotated, { x: 37.3, y: -200 }))
+    const whole = wholeCarveDrag(rotated, next, 'rotate') as SlabSpec
+    expect(whole.rotation).toBe(Math.round((next as SlabSpec).rotation))
+    expect(whole.center).toEqual(rotated.center)
+  })
+
+  it('size a slab in whole units, keeping the opposite side or corner where it was', () => {
+    const corner = (spec: SlabSpec, fx: number, fy: number) => world(spec, { x: (fx * spec.width) / 2, y: (fy * spec.height) / 2 })
+    const raw = dragCarveHandle(rotated, 'e', world(rotated, { x: rotated.width / 2, y: 0 }), world(rotated, { x: rotated.width / 2 + 23.4, y: 7 })) as SlabSpec
+    const east = wholeCarveDrag(rotated, raw, 'e') as SlabSpec
+    expect(east.width).toBe(Math.round(raw.width))
+    expect(east.height).toBe(rotated.height)
+    for (const fy of [-1, 1]) {
+      expect(corner(east, -1, fy).x).toBeCloseTo(corner(rotated, -1, fy).x, 6)
+      expect(corner(east, -1, fy).y).toBeCloseTo(corner(rotated, -1, fy).y, 6)
+    }
+
+    const shift = { shift: true, alt: false }
+    const even = dragCarveHandle(rotated, 'se', corner(rotated, 1, 1), add(corner(rotated, 1, 1), { x: 17.3, y: 11.1 }), shift) as SlabSpec
+    const evenWhole = wholeCarveDrag(rotated, even, 'se', shift) as SlabSpec
+    expect(evenWhole.width).toBe(Math.round(even.width))
+    expect(evenWhole.height / evenWhole.width).toBeCloseTo(rotated.height / rotated.width, 9)
+    expect(evenWhole.radius / rotated.radius).toBeCloseTo(evenWhole.width / rotated.width, 9)
+    expect(corner(evenWhole, -1, -1).x).toBeCloseTo(corner(rotated, -1, -1).x, 6)
+    expect(corner(evenWhole, -1, -1).y).toBeCloseTo(corner(rotated, -1, -1).y, 6)
+  })
+
+  it('leave a side the handle does not pull at its size, whole or not', () => {
+    const fractional: SlabSpec = { ...rotated, width: 201, height: 100.5 }
+    const raw = dragCarveHandle(fractional, 'e', world(fractional, { x: 100.5, y: 0 }), world(fractional, { x: 120.3, y: 0 })) as SlabSpec
+    const east = wholeCarveDrag(fractional, raw, 'e') as SlabSpec
+    expect(east.width).toBe(Math.round(raw.width))
+    expect(east.height).toBe(100.5)
+    const west = world(fractional, { x: -100.5, y: 0 })
+    expect(world(east, { x: -east.width / 2, y: 0 }).x).toBeCloseTo(west.x, 6)
+    expect(world(east, { x: -east.width / 2, y: 0 }).y).toBeCloseTo(west.y, 6)
+    const rawSouth = dragCarveHandle(fractional, 's', world(fractional, { x: 0, y: 50.25 }), world(fractional, { x: 0, y: 56.6 })) as SlabSpec
+    const south = wholeCarveDrag(fractional, rawSouth, 's') as SlabSpec
+    expect(south.width).toBe(201)
+    expect(south.height).toBe(Math.round(rawSouth.height))
+  })
+
+  it('give a punch a whole diameter and a groove a whole width', () => {
+    const punch: PunchSpec = { v: 1, kind: 'punch', shape: 'circle', center: { x: 10, y: 10 }, radius: 40, rotation: 0 }
+    const grown = dragCarveHandle(punch, 'se', { x: 50, y: 10 }, { x: 63.3, y: 10 }) as PunchSpec
+    expect((wholeCarveDrag(punch, grown, 'se') as PunchSpec).radius * 2).toBe(Math.round(grown.radius * 2))
+    const groove: GrooveSpec = { v: 1, kind: 'channel', from: { x: -100, y: 0 }, to: { x: 100, y: 0 }, width: 40 }
+    const wider = dragCarveHandle(groove, 'width', { x: 0, y: -20 }, { x: 0, y: -23.7 }) as GrooveSpec
+    expect((wholeCarveDrag(groove, wider, 'width') as GrooveSpec).width).toBe(Math.round(wider.width))
   })
 })
 

@@ -275,6 +275,58 @@ export function dragCarveHandle(
   return dragGroove(start, id, startPointer, pointer, mods)
 }
 
+/**
+ * A handle drag with what it changes at whole numbers, as box handles have
+ * it with snapping on, so the number the readout shows is the number
+ * stored: the knob's angle, a slab's width and height, a punch's diameter,
+ * a groove's width. The side or point that stays put still does, and a
+ * value keeps its exact size where rounding would take it below its floor.
+ */
+export function wholeCarveDrag(start: CarveSpec, raw: CarveSpec, id: HandleId, mods: DragModifiers = NO_MODS): CarveSpec {
+  if (id === 'rotate' && !isGroove(raw)) {
+    const rotation = normalizeDegrees(Math.round(raw.rotation))
+    return rotation === raw.rotation ? raw : { ...raw, rotation }
+  }
+  if (raw.kind === 'punch' && start.kind === 'punch') {
+    const radius = Math.round(raw.radius * 2) / 2
+    if (radius === raw.radius || radius < MIN_PUNCH_RADIUS) return raw
+    return scaleBends({ ...start, radius }, radius / start.radius)
+  }
+  if (raw.kind === 'slab' && start.kind === 'slab') return wholeSlabResize(start, raw, id, mods)
+  if (isGroove(raw) && id === 'width') {
+    const width = Math.round(raw.width)
+    return width === raw.width || width < MIN_GROOVE_WIDTH ? raw : { ...raw, width }
+  }
+  return raw
+}
+
+function wholeSlabResize(start: SlabSpec, raw: SlabSpec, id: HandleId, mods: DragModifiers): SlabSpec {
+  const fx = id.includes('e') ? 1 : id.includes('w') ? -1 : 0
+  const fy = id.includes('s') ? 1 : id === 'n' || id === 'ne' || id === 'nw' ? -1 : 0
+  if ((fx === 0 && fy === 0) || id === 'radius') return raw
+  const whole = (side: number): number => (Math.round(side) >= MIN_SIZE ? Math.round(side) : side)
+  // A side the handle doesn't pull keeps its size, whole or not.
+  let width = fx !== 0 || mods.shift ? whole(raw.width) : raw.width
+  let height = fy !== 0 || mods.shift ? whole(raw.height) : raw.height
+  // Shift keeps the proportions: only the longer side is whole.
+  if (mods.shift && start.width >= start.height) height = (start.height * width) / start.width
+  else if (mods.shift) width = (start.width * height) / start.height
+  // Rounding must not take the shorter side below the smallest slab.
+  if (Math.min(width, height) < MIN_SIZE) return raw
+  if (width === raw.width && height === raw.height) return raw
+  const sx = width / start.width
+  const sy = height / start.height
+  // What stays put: the opposite corner or side, or the middle with Alt (and across a side pulled with Shift).
+  const pivot = {
+    x: mods.alt || fx === 0 ? 0 : (-fx * start.width) / 2,
+    y: mods.alt || fy === 0 ? 0 : (-fy * start.height) / 2,
+  }
+  const center = add(start.center, rotate({ x: pivot.x * (1 - sx), y: pivot.y * (1 - sy) }, start.rotation))
+  // A corner with Shift scales the whole recipe, its rounding and bends too.
+  if (fx !== 0 && fy !== 0 && mods.shift) return scaleBends({ ...start, width, height, center, radius: start.radius * sx }, sx)
+  return { ...raw, width, height, center }
+}
+
 /* ─── Bending ─── */
 
 export interface CarveGrab {

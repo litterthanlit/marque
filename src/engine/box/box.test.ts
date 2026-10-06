@@ -4,7 +4,6 @@ import type { EditablePath } from '../path/editPath.ts'
 import {
   applyAffine,
   boxHandles,
-  boxToBox,
   boxPoint,
   boxHandlePoint,
   boxFrameSides,
@@ -217,20 +216,6 @@ describe('a resize at whole units', () => {
     // 2.45 would round to 2, thinner than the 2.4 it started at.
     const barely = resizeBox(thin, 'e', at(thin, 1, 0), { x: 1.25, y: 0 }, NONE)
     expect(wholeBoxResize(thin, barely, false)).toBe(barely)
-  })
-})
-
-describe('carrying one box onto another', () => {
-  it('keeps every point at its share of each side', () => {
-    const to: OrientedBox = { center: { x: -40, y: 12 }, width: 300, height: 50, rotation: 75 }
-    const m = boxToBox(turned, to)
-    for (const [fx, fy] of [
-      [-1, -1],
-      [1, 0],
-      [0.3, 0.8],
-    ]) {
-      expectNear(applyAffine(m, at(turned, fx, fy)), at(to, fx, fy))
-    }
   })
 })
 

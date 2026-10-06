@@ -25,24 +25,34 @@ const FREE_SHAPE_HINT =
   'Drag the handles on the canvas to resize or turn it. Drag an edge to bend it, or click it to add a point. Double-click a point to make it sharp or smooth.'
 
 /**
- * The selection in words: a recipe by its own numbers; a free shape or
- * several layers by the box their handles sit around, turned or not. So the
- * size and angle read at rest too, on touch where nothing hovers, and a
- * screen reader hears where every resize or turn landed.
+ * The selection in words: what it is, and its numbers. A recipe reads by its
+ * own numbers; a free shape or several layers by the box their handles sit
+ * around, turned or not, so the size and angle read at rest too, on touch
+ * where nothing hovers. Hidden and locked layers take no part, as on the
+ * canvas: a recipe that is the only one left reads as that recipe.
  */
-function describeSelection(doc: IllustratorDocument, objects: VectorObject[], selected: IllustratorLayer[]): string {
-  const alone = selected.length === 1 ? selected[0] : null
-  if (alone?.carve) return describeCarve(alone.carve)
-  const name = alone ? alone.name : `${selected.length} layers`
+function describeSelection(
+  doc: IllustratorDocument,
+  objects: VectorObject[],
+  selected: IllustratorLayer[],
+): { name: string; numbers: string | null } {
+  const usable = selected.filter((layer) => layer.visible && !layer.locked)
+  const members = usable.length ? usable : selected
+  const alone = members.length === 1 ? members[0] : null
+  if (alone?.carve) {
+    const [kind, ...numbers] = describeCarve(alone.carve).split(' · ')
+    return { name: kind, numbers: numbers.join(' · ') || null }
+  }
+  const name = alone ? alone.name : `${members.length} layers`
   const byId = new Map(objects.map((object) => [object.id, object]))
   const around = selectionBox(doc, (layer) => {
     const object = byId.get(layer.id)
     return object?.type === 'path' ? bakedObjectPath(object.path, layer.transform) : null
   })
-  if (!around) return name
+  if (!around) return { name, numbers: null }
   const { width, height, rotation } = around.box
   const turned = Math.round(rotation) ? ` · ${Math.round(rotation)}°` : ''
-  return `${name} · ${Math.round(width)} × ${Math.round(height)}${turned}`
+  return { name, numbers: `${Math.round(width)} × ${Math.round(height)}${turned}` }
 }
 
 export function SelectionBar() {
@@ -62,7 +72,7 @@ export function SelectionBar() {
     [illustrator],
   )
   const description = useMemo(
-    () => (selectedLayers.length ? describeSelection(illustrator, objects, selectedLayers) : ''),
+    () => (selectedLayers.length ? describeSelection(illustrator, objects, selectedLayers) : null),
     [illustrator, objects, selectedLayers],
   )
   if (selectedLayers.length === 0) return null
@@ -83,12 +93,18 @@ export function SelectionBar() {
           'pointer-events-auto relative flex max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1.5 p-1.5',
         )}
       >
+        {/*
+          Only what is selected is read out as it changes: a burst of keys reads out its own numbers.
+          The name is drawn afresh for each new selection, so moving from one slab to another is heard too.
+        */}
         <p
           className="max-w-full truncate px-1.5 text-xs text-sidebar-text"
-          aria-live="polite"
           title={selectedLayer ? (selectedLayer.carve ? RECIPE_HINT : FREE_SHAPE_HINT) : undefined}
         >
-          {description}
+          <span aria-live="polite">
+            <span key={illustrator.selectedLayerIds.join(' ')}>{description?.name}</span>
+          </span>
+          {description?.numbers && <span> · {description.numbers}</span>}
         </p>
 
         {selectedLayer && (

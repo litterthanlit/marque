@@ -6,20 +6,20 @@ import { SavedMenu } from '../editor/SavedMenu.tsx'
 import { SurvivalPopover } from '../editor/SurvivalPopover.tsx'
 import { ToolbarButton } from './ToolbarButton.tsx'
 import { cn } from '../../lib/utils.ts'
-import { flushPendingEdits } from '../../renderer/directEdit/keyboard.ts'
+import { hud } from '../../renderer/directEdit/hud.ts'
 
 type ShareState = 'idle' | 'copied' | 'failed'
 
 export function Toolbar() {
   const undoVectorCommand = useLogoStore((s) => s.undoVectorCommand)
   const redoVectorCommand = useLogoStore((s) => s.redoVectorCommand)
-  // A nudge waiting to commit lands first, so it is undone rather than written over the undo.
+  // What a keyboard edit read out last no longer holds after an undo or redo.
   const undo = () => {
-    flushPendingEdits()
+    hud.silence()
     undoVectorCommand()
   }
   const redo = () => {
-    flushPendingEdits()
+    hud.silence()
     redoVectorCommand()
   }
   const canUndo = useLogoStore((s) => s.vectorUndoStack.length > 0)

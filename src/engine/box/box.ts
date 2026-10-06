@@ -469,19 +469,6 @@ export function wholeBoxResize(start: OrientedBox, resized: BoxResize, even: boo
   return resizeResult(start, sx, sy, { x: pivotLocal.x * (1 - sx), y: pivotLocal.y * (1 - sy) }, pivotLocal)
 }
 
-/**
- * The map that carries one box onto another: every point keeps its place in
- * the box, as a share of each side. A side with no length keeps its scale.
- */
-export function boxToBox(from: OrientedBox, to: OrientedBox): Affine {
-  const sx = from.width > 1e-6 ? to.width / from.width : 1
-  const sy = from.height > 1e-6 ? to.height / from.height : 1
-  return affineOf((p) => {
-    const local = rotate(sub(p, from.center), -from.rotation)
-    return boxPoint(to, { x: local.x * sx, y: local.y * sy })
-  })
-}
-
 /** The widest band either side of a 15° step that settles on it, in degrees. */
 const SETTLE_MAX_DEG = 3
 
