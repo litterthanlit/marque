@@ -12,8 +12,8 @@ import {
   normalizeInitials,
   STYLE_FAMILIES,
 } from '../../store/modes.ts'
-import { isVectorDocument } from './document.ts'
 import { createVectorDocumentFromGeneration } from './fromGeneration.ts'
+import { readVectorDocument } from './migrate.ts'
 import type { VectorDocument } from './types.ts'
 
 /** What a link asks the app to open. */
@@ -52,16 +52,17 @@ const GENERATOR_KEYS = new Set<string>(['mode', 'style', 'initials', 'shapes', '
 const MODE_PARAM_PREFIX = 'm.'
 const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
 
-const UNREADABLE: DecodedLink = { kind: 'invalid', reason: 'This link holds a document that could not be read.' }
+export const UNREADABLE: DecodedLink = { kind: 'invalid', reason: 'This link holds a document that could not be read.' }
 
 export function decodeLink(hash: string): DecodedLink {
   const query = new URLSearchParams(hash.replace(/^#/, ''))
 
   // A document does not depend on the generator, so the version check below does not apply to it.
+  // Version 1 is upgraded as it is read, and version 2 repaired.
   const vectorDocument = query.get('vd')
   if (vectorDocument) {
-    const document = unpack(vectorDocument)
-    return isVectorDocument(document) ? { kind: 'vector', document, inkColor: inkColor(query) } : UNREADABLE
+    const document = readVectorDocument(unpack(vectorDocument))
+    return document ? { kind: 'vector', document, inkColor: inkColor(query) } : UNREADABLE
   }
   const layerDocument = query.get('i')
   if (layerDocument) {
@@ -87,7 +88,7 @@ export function decodeLink(hash: string): DecodedLink {
   return { kind: 'generator', params: generatorParams(query, modeId) }
 }
 
-/** The hash for a document, as `location.hash` reads it. An empty document has none. */
+/** The hash for a document, as `location.hash` reads it. An empty document has none. The selection is never in it. */
 export function encodeLink(document: VectorDocument, inkColor: string): string {
   if (document.objects.length === 0) return ''
   const query = new URLSearchParams({

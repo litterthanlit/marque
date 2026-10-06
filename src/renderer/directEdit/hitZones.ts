@@ -5,10 +5,10 @@ import {
   DEFAULT_HANDLE_LAYOUT,
   handleFraction,
   isCornerHandle,
-  pathBoundsInFrame,
+  shapeBoundsInFrame,
   type OrientedBox,
 } from '../../engine/box/box.ts'
-import { curveOf, isCurveStraight, type EditablePath } from '../../engine/path/editPath.ts'
+import { curveOf, isCurveStraight, type EditablePath, type EditableShape } from '../../engine/path/editPath.ts'
 import type { CarveHandle } from '../../engine/carve/edit.ts'
 import { locateCarveGrab, type CarveGrab } from '../../engine/carve/edit.ts'
 import type { HandleSet } from './handleSet.ts'
@@ -19,9 +19,16 @@ import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustr
 export type Zone =
   /** `ring`: just outside a corner of the handles' frame, where a drag turns it like the knob does. */
   | { kind: 'handle'; set: HandleSet; handle: CarveHandle; ring?: boolean }
-  | { kind: 'anchor'; layerId: string; index: number }
-  | { kind: 'bezier'; layerId: string; index: number; which: 'in' | 'out' }
-  | { kind: 'edge'; layerId: string; free: { curveIndex: number; t: number } | null; carve: CarveGrab | null; point: Vec }
+  /** A point of a free shape: `index` on contour `contourIndex`. */
+  | { kind: 'anchor'; layerId: string; contourIndex: number; index: number }
+  | { kind: 'bezier'; layerId: string; contourIndex: number; index: number; which: 'in' | 'out' }
+  | {
+      kind: 'edge'
+      layerId: string
+      free: { contourIndex: number; curveIndex: number; t: number } | null
+      carve: CarveGrab | null
+      point: Vec
+    }
   | { kind: 'body'; layerId: string }
   /** Inside a box's frame, off every shape: a drag moves the whole selection. */
   | { kind: 'frame'; set: HandleSet }
@@ -37,9 +44,10 @@ export interface HitContext {
   /** Project-space position of the layer-space origin (the view centre). */
   center: Vec
   selectedIds: string[]
-  /** The single selected free shape, baked, in layer space. */
-  freePath: { layerId: string; path: EditablePath } | null
-  anchorIndex: number | null
+  /** The single selected free shape, baked, in layer space: every contour. */
+  freePath: { layerId: string; shape: EditableShape } | null
+  /** Its selected point, if any. */
+  anchor: { contourIndex: number; index: number } | null
   /** The selection's handles, layer space: one recipe's own, or a box around one free shape or several layers. */
   handles: HandleSet | null
   /** Layer units per CSS pixel. */
@@ -47,8 +55,8 @@ export interface HitContext {
   touch: boolean
   /** Edge bending enabled. */
   edges: boolean
-  /** Any free layer's single path with its transform baked in (cached by the caller). */
-  freePathOf(layer: IllustratorLayer): EditablePath | null
+  /** Any free layer's contours with its transform baked in (cached by the caller). */
+  freePathOf(layer: IllustratorLayer): EditableShape | null
 }
 
 function px(ctx: HitContext, value: number): number {
@@ -183,30 +191,34 @@ function findRing(ctx: HitContext, p: Vec): Zone | null {
  */
 function findPoint(ctx: HitContext, p: Vec): { zone: Zone; d: number } | null {
   if (!ctx.freePath) return null
-  const { layerId, path } = ctx.freePath
-  if (ctx.anchorIndex !== null && path.segs[ctx.anchorIndex]) {
-    const seg = path.segs[ctx.anchorIndex]
+  const { layerId, shape } = ctx.freePath
+  const anchor = ctx.anchor
+  const selected = anchor ? shape[anchor.contourIndex]?.segs[anchor.index] : undefined
+  if (anchor && selected) {
     for (const which of ['in', 'out'] as const) {
-      const h = which === 'in' ? seg.hIn : seg.hOut
+      const h = which === 'in' ? selected.hIn : selected.hOut
       if (!h) continue
-      const d = distance(toProject(ctx, { x: seg.p.x + h.x, y: seg.p.y + h.y }), p)
-      if (d <= px(ctx, 5)) return { zone: { kind: 'bezier', layerId, index: ctx.anchorIndex, which }, d }
+      const d = distance(toProject(ctx, { x: selected.p.x + h.x, y: selected.p.y + h.y }), p)
+      if (d <= px(ctx, 5)) return { zone: { kind: 'bezier', layerId, contourIndex: anchor.contourIndex, index: anchor.index, which }, d }
     }
   }
-  let bestIndex = -1
+  let best: { contourIndex: number; index: number } | null = null
   let bestD = px(ctx, 6)
   if (contains(ctx.items.get(layerId), p)) {
-    const b = pathBoundsInFrame(path)
+    const b = shapeBoundsInFrame(shape)
     bestD = Math.min(bestD, Math.max(b.maxX - b.minX, b.maxY - b.minY) / 3)
   }
-  path.segs.forEach((seg, i) => {
-    const d = distance(toProject(ctx, seg.p), p)
-    if (d <= bestD) {
-      bestD = d
-      bestIndex = i
+  for (let contourIndex = 0; contourIndex < shape.length; contourIndex++) {
+    const segs = shape[contourIndex].segs
+    for (let index = 0; index < segs.length; index++) {
+      const d = distance(toProject(ctx, segs[index].p), p)
+      if (d <= bestD) {
+        bestD = d
+        best = { contourIndex, index }
+      }
     }
-  })
-  return bestIndex >= 0 ? { zone: { kind: 'anchor', layerId, index: bestIndex }, d: bestD } : null
+  }
+  return best ? { zone: { kind: 'anchor', layerId, ...best }, d: bestD } : null
 }
 
 interface EdgeCandidate {
@@ -273,12 +285,31 @@ function findEdge(ctx: HitContext, p: Vec, onInk: boolean): { zone: Zone; d: num
 
   const free = ctx.freePathOf(best.layer)
   if (!free) return null
-  const hit = nearestCurve(free, layerPoint)
+  const hit = nearestShapeCurve(free, layerPoint)
   if (!hit) return null
   return {
-    zone: { kind: 'edge', layerId: best.layer.id, free: { curveIndex: hit.curveIndex, t: hit.t }, carve: null, point: hit.point },
+    zone: {
+      kind: 'edge',
+      layerId: best.layer.id,
+      free: { contourIndex: hit.contourIndex, curveIndex: hit.curveIndex, t: hit.t },
+      carve: null,
+      point: hit.point,
+    },
     d: best.d,
   }
+}
+
+/** The curve of a free shape nearest to `p`, on whichever contour it lies. */
+export function nearestShapeCurve(
+  shape: EditableShape,
+  p: Vec,
+): { contourIndex: number; curveIndex: number; t: number; point: Vec; distance: number } | null {
+  let best: { contourIndex: number; curveIndex: number; t: number; point: Vec; distance: number } | null = null
+  for (let contourIndex = 0; contourIndex < shape.length; contourIndex++) {
+    const hit = nearestCurve(shape[contourIndex], p)
+    if (hit && (!best || hit.distance < best.distance)) best = { contourIndex, ...hit }
+  }
+  return best
 }
 
 /**
@@ -387,11 +418,11 @@ export function zoneKey(zone: Zone): string {
     case 'handle':
       return `handle:${zone.set.kind}:${zone.set.ids.join(',')}:${zone.handle.id}${zone.ring ? ':ring' : ''}`
     case 'anchor':
-      return `anchor:${zone.layerId}:${zone.index}`
+      return `anchor:${zone.layerId}:${zone.contourIndex}:${zone.index}`
     case 'bezier':
-      return `bezier:${zone.layerId}:${zone.index}:${zone.which}`
+      return `bezier:${zone.layerId}:${zone.contourIndex}:${zone.index}:${zone.which}`
     case 'edge':
-      return `edge:${zone.layerId}:${zone.carve ? JSON.stringify(zone.carve.side) : zone.free?.curveIndex}`
+      return `edge:${zone.layerId}:${zone.carve ? JSON.stringify(zone.carve.side) : `${zone.free?.contourIndex}:${zone.free?.curveIndex}`}`
     case 'body':
       return `body:${zone.layerId}`
     case 'frame':

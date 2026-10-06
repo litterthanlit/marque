@@ -103,7 +103,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       isSnapping: () => useLogoStore.getState().ui.carve.snapping,
       setSelection: (ids, anchor) => useLogoStore.getState().setSelection(ids, anchor),
       commitLayerEdits: (commit) => useLogoStore.getState().commitLayerEdits(commit),
-      editAnchor: (layerId, index, op) => useLogoStore.getState().editAnchor(layerId, index, op),
+      editAnchor: (layerId, index, op, contourIndex) => useLogoStore.getState().editAnchor(layerId, index, op, contourIndex),
     })
     controllerRef.current = controller
     return () => {
@@ -372,6 +372,17 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
           onDoubleClick={handleDoubleClick}
         />
         <CanvasHud />
+        {ui.look === 'construction' && activeMark.warnings && (
+          // A failed boolean step is never a silent gap.
+          <p
+            role="status"
+            className="pointer-events-none absolute bottom-3 left-3 z-10 max-w-[calc(100%-1.5rem)] rounded-md bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-900 shadow-sm"
+          >
+            {activeMark.warnings.length === 1
+              ? 'One shape could not be combined and is left out of the mark.'
+              : `${activeMark.warnings.length} shapes could not be combined and are left out of the mark.`}
+          </p>
+        )}
         {children}
       </div>
     </div>

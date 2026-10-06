@@ -5,8 +5,15 @@ import { generate } from '../pipeline/GenerationPipeline.ts'
 import { DEFAULT_PARAMS } from '../types.ts'
 import { createEmptyVectorDocument } from './document.ts'
 import { composeVectorMark } from './export.ts'
-import { illustratorDocumentToVectorDocument } from './legacyIllustratorAdapter.ts'
+import { illustratorDocumentToVectorDocument } from './legacyImport.ts'
 import { decodeLink, documentFromGeneratorLink, encodeLink } from './link.ts'
+import { readVectorDocument, upgradeV1 } from './migrate.ts'
+
+/** A document the test expects to read. */
+function readable<T>(value: T | null): T {
+  if (value === null) throw new Error('could not be read')
+  return value
+}
 
 const square: IllustratorDocument = {
   id: 'doc',
@@ -29,7 +36,10 @@ const square: IllustratorDocument = {
 }
 
 // As a link carries it: JSON has no undefined and no negative zero.
-const squareDocument = JSON.parse(JSON.stringify(illustratorDocumentToVectorDocument(square)))
+const stored = <T>(value: T): T => JSON.parse(JSON.stringify(value))
+/** As stage 1 wrote it: schema version 1. */
+const squareV1 = stored(illustratorDocumentToVectorDocument(square))
+const squareDocument = stored(readable(upgradeV1(squareV1)))
 const packed = (value: unknown) => compressToEncodedURIComponent(JSON.stringify(value))
 
 describe('opening a link', () => {
@@ -92,6 +102,17 @@ describe('opening a link', () => {
   it('opens a document link whatever generator version it names', () => {
     const link = decodeLink(`#seed=7&fillColor=%23ff3300&v=0.9&surface=generated&vd=${packed(squareDocument)}`)
     expect(link).toEqual({ kind: 'vector', document: squareDocument, inkColor: '#ff3300' })
+  })
+
+  it('opens a version 1 document link, upgraded, without its selection', () => {
+    const link = decodeLink(`#fillColor=%23ff3300&vd=${packed(squareV1)}`)
+    expect(link).toEqual({ kind: 'vector', document: readVectorDocument(squareV1), inkColor: '#ff3300' })
+    if (link.kind !== 'vector') return
+    expect(link.document).toMatchObject({ schemaVersion: 2, guides: [], fillets: [] })
+    expect(link.document).not.toHaveProperty('selection')
+    expect(link.document.objects).toEqual([
+      expect.objectContaining({ id: 'square', operation: 'add', contours: [expect.objectContaining({ closed: true })] }),
+    ])
   })
 
   it('opens a layer document from before the vector format', () => {

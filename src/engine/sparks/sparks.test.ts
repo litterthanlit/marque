@@ -9,7 +9,7 @@ import {
   type IllustratorDocument,
   type IllustratorLayer,
 } from '../illustrator/types.ts'
-import { illustratorDocumentToVectorDocument } from '../vector/legacyIllustratorAdapter.ts'
+import { objectFromLayer } from '../../store/objectEdits.ts'
 import { getStyleFamilyDefaults, STYLE_FAMILIES } from '../../store/modes.ts'
 import { rollSparks, sparkLayers, type Spark } from './sparks.ts'
 
@@ -499,9 +499,10 @@ describe('turning a spark into layers', () => {
   it('keeps every layer id through the store adapter', () => {
     for (const spark of everyFifth()) {
       const layers = sparkLayers(spark, CENTRED)
-      const objects = illustratorDocumentToVectorDocument(documentOf(layers)).objects
+      const objects = layers.map((layer) => objectFromLayer(layer))
 
       expect(objects.map((object) => object.id)).toEqual(layers.map((layer) => layer.id))
+      expect(objects.every((object) => object.contours.length === 1)).toBe(true)
     }
   })
 

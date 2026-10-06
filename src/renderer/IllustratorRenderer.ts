@@ -38,7 +38,7 @@ function getCenter(scope: paper.PaperScope): paper.Point {
 
 /**
  * Draw Vector Maker: the composed mark, the weak-spot overlay, and one hit
- * area per layer (named by layer id) for the editor to test against. The
+ * area per layer, tagged with its layer id, for the editor to test against. The
  * final look is the solid ink, exactly as it exports. The construction look
  * also strokes each layer's own outline, with the mark's outline on top.
  * Editing overlays are drawn by the editor on its own layer.
@@ -78,7 +78,7 @@ export function renderIllustratorOnScope(
     const item = getLayerPathItem(scope, layer, true)
     if (!item) continue
     item.translate(center)
-    item.name = layer.id
+    // Found through the map and its data, never by name: paper refuses a name of digits alone, and an id may be one.
     item.fillColor = new scope.Color(0, 0, 0, HIT_AREA_ALPHA)
     item.strokeColor = construction ? new scope.Color(CONSTRUCTION[layer.operation].color) : null
     item.data = { illustratorLayerId: layer.id, operation: layer.operation }

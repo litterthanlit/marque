@@ -2,19 +2,11 @@ import type { CarveSpec } from '../engine/carve/spec.ts'
 import { normalizeDegrees } from '../engine/path/bezier.ts'
 import { roundCarveSpec } from '../engine/carve/spec.ts'
 import { carveOutline } from '../engine/carve/outline.ts'
-import { isIdentityMatrix, segsToVectorPath, syncCarve } from '../engine/carve/sync.ts'
+import { segsToContour, syncCarve } from '../engine/carve/sync.ts'
 import type { IllustratorLayer } from '../engine/illustrator/types.ts'
-import { createDefaultAppearance, IDENTITY_MATRIX } from '../engine/vector/document.ts'
-import { matrixFromIllustratorTransform } from '../engine/vector/legacyIllustratorAdapter.ts'
-import { pathDataToVectorPaths, vectorPathToPathData } from '../engine/vector/pathSerialization.ts'
-import type {
-  Matrix2D,
-  PathObject,
-  VectorDocument,
-  VectorDocumentSource,
-  VectorObject,
-  VectorPath,
-} from '../engine/vector/types.ts'
+import { bakeLegacyTransform } from '../engine/vector/migrate.ts'
+import { contoursToPathData, contourToPathData, pathDataToContours } from '../engine/vector/pathSerialization.ts'
+import type { Contour, PathObject, VectorObject } from '../engine/vector/types.ts'
 
 /**
  * Pure writes over a document's objects. Objects are immutable: a write builds
@@ -23,45 +15,17 @@ import type {
  * their identity, so every cache keyed on them still hits.
  */
 
-/** What a new object takes from the document it joins. */
-export interface NewObjectContext {
-  artboardId: string
-  /** Copied onto each new object's source, beside its operation. */
-  source: VectorDocumentSource
-  /** The current ink. New objects take it as their appearance; existing ones keep theirs. */
-  ink: string
-}
-
-export function newObjectContext(document: VectorDocument, ink: string): NewObjectContext {
-  return {
-    artboardId: document.artboards[0]?.id ?? '',
-    source: document.source ?? {
-      seed: 0,
-      modeId: 'generated',
-      generatorId: 'unknown',
-      generatorVersion: 'v0',
-      paramsHash: '',
-      convertedAt: new Date().toISOString(),
-    },
-    ink,
-  }
-}
-
-function identity(): Matrix2D {
-  return { ...IDENTITY_MATRIX }
-}
-
 /* ─── The list ─── */
 
-/** Each object through `update`, which returns it unchanged, a replacement, or several (a path split in pieces). */
+/** Each object through `update`, which returns it unchanged, or a replacement. */
 export function updateObjects(
   objects: VectorObject[],
-  update: (object: VectorObject, index: number) => VectorObject | VectorObject[],
+  update: (object: VectorObject, index: number) => VectorObject,
 ): VectorObject[] {
   let changed = false
-  const next = objects.flatMap((object, index) => {
+  const next = objects.map((object, index) => {
     const result = update(object, index)
-    if (result !== object && !(Array.isArray(result) && result.length === 1 && result[0] === object)) changed = true
+    if (result !== object) changed = true
     return result
   })
   return changed ? next : objects
@@ -71,7 +35,7 @@ export function updateObjects(
 export function updateObject(
   objects: VectorObject[],
   id: string,
-  update: (object: VectorObject) => VectorObject | VectorObject[],
+  update: (object: VectorObject) => VectorObject,
 ): VectorObject[] {
   return updateObjects(objects, (object) => (object.id === id ? update(object) : object))
 }
@@ -89,41 +53,55 @@ export function removeObjects(objects: VectorObject[], ids: Iterable<string>): V
   return next.length === objects.length ? objects : next
 }
 
-/** One place in the stack: 'up' is towards the top, where later objects sit. */
+/**
+ * One place in the stack: 'up' is towards the top, where later objects sit.
+ * The step is one place among the object's siblings: a group moves with its
+ * members, an object steps over a whole group, and a member stays in its
+ * group's run. At the end of that run it stays where it is.
+ */
 export function moveObject(objects: VectorObject[], id: string, direction: 'up' | 'down'): VectorObject[] {
   const index = objects.findIndex((object) => object.id === id)
   if (index < 0) return objects
-  const target = direction === 'up' ? index + 1 : index - 1
-  if (target < 0 || target >= objects.length) return objects
-  const next = [...objects]
-  const [object] = next.splice(index, 1)
-  next.splice(target, 0, object)
-  return next
+  const { parentId } = objects[index]
+  const end = runEnd(objects, index)
+  if (direction === 'up') {
+    if (end >= objects.length || objects[end].parentId !== parentId) return objects
+    const nextEnd = runEnd(objects, end)
+    return [...objects.slice(0, index), ...objects.slice(end, nextEnd), ...objects.slice(index, end), ...objects.slice(nextEnd)]
+  }
+  // The sibling below starts at the nearest object below that shares the parent; the header first means there is none.
+  let start = index - 1
+  while (start >= 0 && objects[start].parentId !== parentId && objects[start].id !== parentId) start--
+  if (start < 0 || objects[start].parentId !== parentId) return objects
+  return [...objects.slice(0, start), ...objects.slice(index, end), ...objects.slice(start, index), ...objects.slice(end)]
+}
+
+/** Where the run of the object at `index` ends: past its members, and theirs, for a group. */
+function runEnd(objects: VectorObject[], index: number): number {
+  const object = objects[index]
+  if (object.type !== 'group') return index + 1
+  const inside = new Set([object.id])
+  let end = index + 1
+  while (end < objects.length) {
+    const parentId = objects[end].parentId
+    if (parentId === null || !inside.has(parentId)) break
+    inside.add(objects[end].id)
+    end++
+  }
+  return end
 }
 
 /* ─── One object ─── */
 
 /**
- * A recipe written to an object. The path is always the outline of the
- * rounded recipe, and the transform is the identity. A recipe turns by its
- * own rotation, so it keeps no frame.
+ * A recipe written to an object. Its one contour is always the outline of
+ * the rounded recipe. A recipe turns by its own rotation, so it keeps no
+ * frame.
  */
 export function writeRecipe(object: PathObject, carve: CarveSpec): PathObject {
   const rounded = roundCarveSpec(carve)
-  if (
-    object.carve &&
-    !object.frame &&
-    isIdentityMatrix(object.transform) &&
-    JSON.stringify(object.carve) === JSON.stringify(rounded)
-  ) {
-    return object
-  }
-  const next: PathObject = {
-    ...object,
-    transform: identity(),
-    path: segsToVectorPath(carveOutline(rounded).segs, object.path.id),
-    carve: rounded,
-  }
+  if (object.carve && !object.frame && JSON.stringify(object.carve) === JSON.stringify(rounded)) return object
+  const next: PathObject = { ...object, contours: [segsToContour(carveOutline(rounded).segs)], carve: rounded }
   delete next.frame
   return next
 }
@@ -140,93 +118,92 @@ export function writeFrame(object: PathObject, rotation: number): PathObject {
 }
 
 /**
- * New path data for an object, already in untransformed layer space. The
- * object becomes a free shape: its recipe goes and its transform is reset.
- * Its frame stays: a gesture that turns the box writes it with writeFrame.
- * Path data with several subpaths still becomes one object per subpath.
+ * New path data for an object: all its contours, or with `contourIndex`
+ * only that one, the others kept as they are. The object becomes a free
+ * shape: its recipe goes, and so do its link and pin. Its frame stays: a
+ * gesture that turns the box writes it with writeFrame. Path data of several
+ * subpaths is one object of several contours: a hole stays a hole.
  */
-export function writePathData(object: PathObject, pathData: string): PathObject[] {
-  if (pathData === vectorPathToPathData(object.path)) return [object]
-  return writeContours(object, pathDataToVectorPaths(pathData))
+export function writePathData(object: PathObject, pathData: string, contourIndex?: number): PathObject {
+  if (contourIndex !== undefined) {
+    const current = object.contours[contourIndex]
+    if (!current) return object
+    if (pathData === contourToPathData(current)) return object
+    const [contour] = pathDataToContours(pathData)
+    if (!contour) return object
+    return writeContours(object, object.contours.map((each, index) => (index === contourIndex ? contour : each)))
+  }
+  if (pathData === contoursToPathData(object.contours)) return object
+  const contours = pathDataToContours(pathData)
+  return contours.length ? writeContours(object, contours) : object
 }
 
-/** New paths for an object: one object per path, each a free shape with the identity transform. */
-export function writeContours(object: PathObject, paths: VectorPath[]): PathObject[] {
-  return paths.map((path, index) => {
-    const next: PathObject = {
-      ...object,
-      id: paths.length === 1 ? object.id : `${object.id}_${index + 1}`,
-      name: paths.length === 1 ? object.name : `${object.name}.${index + 1}`,
-      transform: identity(),
-      path,
-    }
-    delete next.carve
-    return next
-  })
+/** New contours for an object: a free shape, its recipe, link and pin gone. */
+export function writeContours(object: PathObject, contours: Contour[]): PathObject {
+  const next: PathObject = { ...object, contours }
+  delete next.carve
+  delete next.link
+  delete next.pin
+  return next
 }
 
-/** The fields of a layer that need no new geometry: name, visibility, lock, fill rule and operation. */
+/** The fields of a layer that need no new geometry: name, visibility, lock, fill rule, operation and generated shape. */
 export function writeLayerFields(object: PathObject, layer: IllustratorLayer): PathObject {
-  const source = object.source
   if (
     object.name === layer.name &&
     object.visible === layer.visible &&
     object.locked === layer.locked &&
     object.fillRule === layer.fillRule &&
-    (source?.compatOperation ?? 'add') === layer.operation &&
-    source?.sourceShapeId === layer.sourceShapeId
+    object.operation === layer.operation &&
+    object.sourceShapeId === layer.sourceShapeId
   ) {
     return object
   }
-  return {
+  const next: PathObject = {
     ...object,
     name: layer.name,
     visible: layer.visible,
     locked: layer.locked,
     fillRule: layer.fillRule,
-    source: { ...source, sourceShapeId: layer.sourceShapeId, compatOperation: layer.operation },
+    operation: layer.operation,
   }
+  if (layer.sourceShapeId !== undefined) next.sourceShapeId = layer.sourceShapeId
+  else delete next.sourceShapeId
+  return next
 }
 
 /**
- * The objects a layer describes, as the legacy adapter built them: a recipe
- * stays only while it matches its path and takes any transform into itself,
- * and a path with several subpaths becomes one object per subpath. With a
- * `base`, its appearance, parent, artboard and source fields are kept.
+ * The object a layer describes: one object, every subpath a contour. A
+ * recipe stays only while it matches its single contour, and takes any
+ * legacy transform into itself; a free shape has the transform baked into
+ * its points, the way stage 1 drew it. With a `base`, its parent, link,
+ * pin and the fields a layer does not carry are kept.
  */
-export function objectsFromLayer(layer: IllustratorLayer, context: NewObjectContext, base?: PathObject): PathObject[] {
-  const paths = pathDataToVectorPaths(layer.pathData)
-  const synced = layer.carve && paths.length === 1 ? syncCarve(layer.carve, paths[0], layer.transform) : null
-  const build = (path: VectorPath, id: string, name: string, transform: Matrix2D, carve?: CarveSpec): PathObject => {
-    const object: PathObject = {
-      ...(base ?? { parentId: null, artboardId: context.artboardId, appearance: createDefaultAppearance(context.ink) }),
-      id,
-      type: 'path',
-      name,
-      visible: layer.visible,
-      locked: layer.locked,
-      transform,
-      source: {
-        ...(base ? base.source : context.source),
-        sourceShapeId: layer.sourceShapeId,
-        compatOperation: layer.operation,
-      },
-      path,
-      fillRule: layer.fillRule,
-    }
-    if (carve) object.carve = carve
-    else delete object.carve
-    if (!carve && layer.frameRotation) object.frame = { rotation: layer.frameRotation }
-    else delete object.frame
-    return object
+export function objectFromLayer(layer: IllustratorLayer, base?: PathObject): PathObject {
+  const contours = pathDataToContours(layer.pathData)
+  const synced = layer.carve && contours.length === 1 ? syncCarve(layer.carve, contours[0], layer.transform) : null
+  const object: PathObject = {
+    ...(base ?? { parentId: null }),
+    id: layer.id,
+    type: 'path',
+    name: layer.name,
+    visible: layer.visible,
+    locked: layer.locked,
+    operation: layer.operation,
+    contours: synced ? [synced.contour] : bakeLegacyTransform(contours, layer.transform),
+    fillRule: layer.fillRule,
   }
-  if (synced) return [build(synced.path, layer.id, layer.name, identity(), synced.carve)]
-  const transform = matrixFromIllustratorTransform(layer.transform)
-  return paths.map((path, index) =>
-    paths.length === 1
-      ? build(path, layer.id, layer.name, { ...transform })
-      : build(path, `${layer.id}_${index + 1}`, `${layer.name}.${index + 1}`, { ...transform }),
-  )
+  if (layer.sourceShapeId !== undefined) object.sourceShapeId = layer.sourceShapeId
+  else delete object.sourceShapeId
+  if (synced) object.carve = synced.carve
+  else {
+    delete object.carve
+    delete object.link
+    delete object.pin
+  }
+  if (!synced && layer.frameRotation) object.frame = { rotation: layer.frameRotation }
+  else delete object.frame
+  return object
 }
 
 /* ─── Immutability ─── */

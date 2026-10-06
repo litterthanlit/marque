@@ -19,9 +19,11 @@ import {
   isCurveStraight,
   moveAnchor,
   moveHandle,
+  shapePathData,
   straightenCurve,
-  translatePath,
+  translateShape,
   type EditablePath,
+  type EditableShape,
 } from '../../engine/path/editPath.ts'
 import {
   bendCarve,
@@ -53,7 +55,7 @@ import {
   scalesEvenly,
   scalingAbout,
   settleAngle,
-  transformPath,
+  transformShape,
   wholeBoxResize,
   type Affine,
   type BoxResize,
@@ -76,10 +78,10 @@ import {
 } from '../../engine/snap/snapping.ts'
 import { boxGeometryFor, carveOutline, grooveSpine, type SideRef } from '../../engine/carve/outline.ts'
 import { bentEdgeCount, isGroove, type CarveSpec } from '../../engine/carve/spec.ts'
-import { bakedEditablePath } from '../../engine/illustrator/layerPath.ts'
+import { bakedEditableShape } from '../../engine/illustrator/layerPath.ts'
 import { createComposeSession, type ComposeSession } from '../../engine/illustrator/composeSession.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
-import { HISTORY_MERGE_MS, type HistoryMergeKind, type LayerEdit, type LayerEditCommit } from '../../store/logoStore.ts'
+import { HISTORY_MERGE_MS, type AnchorRef, type HistoryMergeKind, type LayerEdit, type LayerEditCommit } from '../../store/logoStore.ts'
 import { getInkItem, hideLayerOutlines, setInkPathData, setSurvivalVisible } from '../IllustratorRenderer.ts'
 import { carriedCuts } from './carry.ts'
 import { CURSORS, resizeCursor } from './cursors.ts'
@@ -123,9 +125,9 @@ export interface DirectEditHost {
   getInkPathData(): string
   /** The panel's Snapping switch. */
   isSnapping(): boolean
-  setSelection(ids: string[], anchor?: { layerId: string; segmentIndex: number } | null): void
+  setSelection(ids: string[], anchor?: AnchorRef | null): void
   commitLayerEdits(commit: LayerEditCommit): void
-  editAnchor(layerId: string, index: number, op: AnchorOp): void
+  editAnchor(layerId: string, index: number, op: AnchorOp, contourIndex: number): void
 }
 
 interface Session {
@@ -151,6 +153,7 @@ interface PendingPoint {
   layerId: string
   /** The layer as it was clicked: if anything changes it first, the point is not added. */
   layer: IllustratorLayer
+  contourIndex: number
   curveIndex: number
   t: number
   point: Vec
@@ -199,34 +202,34 @@ function resizeMove(resized: BoxResize): BoxMove {
   return { affine: same ? IDENTITY_AFFINE : resized.affine, pivot: resized.pivot, factor: resized.sx, turn: 0, center: resized.pivot }
 }
 
-/** Where a layer that an edit carries starts: its recipe, or its free path and how far its frame is turned. */
+/** Where a layer that an edit carries starts: its recipe, or its free shape and how far its frame is turned. */
 interface MovedStart {
   carve?: CarveSpec
-  path?: EditablePath
+  path?: EditableShape
   frame: number
 }
 
-type Moved = { carve?: CarveSpec; path?: EditablePath }
+type Moved = { carve?: CarveSpec; path?: EditableShape }
 
-/** A layer under an affine map: a free path takes all of it, a recipe as much as keeps it a recipe. */
+/** A layer under an affine map: a free shape takes all of it, a recipe as much as keeps it a recipe. */
 function underAffine(start: MovedStart, m: Affine): Moved {
-  return start.carve ? { carve: carveUnderAffine(start.carve, m) } : { path: transformPath(start.path!, m) }
+  return start.carve ? { carve: carveUnderAffine(start.carve, m) } : { path: transformShape(start.path!, m) }
 }
 
 function movedPathData(next: Moved): string {
-  return next.carve ? carveOutline(next.carve).pathData : editablePathToPathData(next.path!)
+  return next.carve ? carveOutline(next.carve).pathData : shapePathData(next.path!)
 }
 
-/** The edit that stores a carried layer. A free path turned by `turn` turns its frame with it. */
+/** The edit that stores a carried layer. A free shape turned by `turn` turns its frame with it. */
 function movedEdit(layerId: string, start: MovedStart, next: Moved, turn: number): LayerEdit {
   if (next.carve) return { layerId, carve: next.carve }
-  const pathData = editablePathToPathData(next.path!)
+  const pathData = shapePathData(next.path!)
   return Math.abs(turn) > 1e-9 ? { layerId, pathData, frameRotation: normalizeDegrees(start.frame + turn) } : { layerId, pathData }
 }
 
 /** Where the layers of a move start: the ones moved, then the cuts they carry. */
 interface MoveStarts {
-  starts: Map<string, { carve?: CarveSpec; path?: EditablePath }>
+  starts: Map<string, { carve?: CarveSpec; path?: EditableShape }>
   carried: string[]
 }
 
@@ -237,7 +240,7 @@ function moveCommit({ starts }: MoveStarts, ids: string[], d: Vec): LayerEditCom
     edits: [...starts.entries()].map(([layerId, start]) =>
       start.carve
         ? { layerId, carve: translateCarve(start.carve, d) }
-        : { layerId, pathData: editablePathToPathData(translatePath(start.path!, d)) },
+        : { layerId, pathData: shapePathData(translateShape(start.path!, d)) },
     ),
     select: ids,
     anchor: null,
@@ -257,7 +260,7 @@ interface BoxMembers {
  */
 function boxMoved({ members, carried }: BoxMembers, move: BoxMove): Array<{ id: string; from: MovedStart; next: Moved; carried: boolean }> {
   const member = (start: MovedStart): Moved => {
-    if (!start.carve) return { path: transformPath(start.path!, move.affine) }
+    if (!start.carve) return { path: transformShape(start.path!, move.affine) }
     const scaled = move.factor === 1 ? start.carve : scaleCarveAbout(start.carve, move.pivot, move.factor)
     return { carve: move.turn ? rotateCarveAbout(scaled, move.center, move.turn) : scaled }
   }
@@ -374,9 +377,18 @@ function handleAxes(rotation: number, id: HandleId): { x: boolean; y: boolean } 
   return null
 }
 
-/** A free shape's own anchors as snap targets, except the one being dragged. */
-function otherAnchors(path: EditablePath, except: number): SnapTarget[] {
-  return path.segs.filter((_, i) => i !== except).map((seg) => ({ p: seg.p, kind: 'point' as const }))
+/** A free shape's own anchors as snap targets, on every contour, except the one being dragged. */
+function otherAnchors(shape: EditableShape, except: { contourIndex: number; index: number } | null): SnapTarget[] {
+  return shape.flatMap((path, contourIndex) =>
+    path.segs
+      .filter((_, i) => !except || contourIndex !== except.contourIndex || i !== except.index)
+      .map((seg) => ({ p: seg.p, kind: 'point' as const })),
+  )
+}
+
+/** A shape with one contour put in place of another. */
+function withContour(shape: EditableShape, contourIndex: number, path: EditablePath): EditableShape {
+  return shape.map((each, index) => (index === contourIndex ? path : each))
 }
 
 /**
@@ -417,7 +429,7 @@ export class DirectEditController {
   private press: Press | null = null
   private session: Session | null = null
   private lastDown: { time: number; point: Vec; key: string } | null = null
-  private readonly freePaths = new WeakMap<IllustratorLayer, EditablePath | null>()
+  private readonly freePaths = new WeakMap<IllustratorLayer, EditableShape | null>()
   private keyBurst: KeyBurst | null = null
   private keyChipTimer = 0
   /** The layers the key chip's number is about: once they change by anything else, such as an undo, it goes. */
@@ -591,14 +603,14 @@ export class DirectEditController {
     if (selectedIds.length !== 1) return null
     const layer = doc.layers.find((candidate) => candidate.id === selectedIds[0])
     if (!layer || layer.carve || !layer.visible) return null
-    const path = this.freePathOf(layer)
-    return path ? { layerId: layer.id, path } : null
+    const shape = this.freePathOf(layer)
+    return shape ? { layerId: layer.id, shape } : null
   }
 
-  /** A free layer's path with its transform baked in. Layers are immutable, so this caches by identity. */
-  private freePathOf(layer: IllustratorLayer): EditablePath | null {
+  /** A free layer's contours with its transform baked in. Layers are immutable, so this caches by identity. */
+  private freePathOf(layer: IllustratorLayer): EditableShape | null {
     if (layer.carve) return null
-    if (!this.freePaths.has(layer)) this.freePaths.set(layer, bakedEditablePath(layer))
+    if (!this.freePaths.has(layer)) this.freePaths.set(layer, bakedEditableShape(layer))
     // Baking runs in a headless scope; drawing must go back to ours.
     this.scope.activate()
     return this.freePaths.get(layer) ?? null
@@ -624,10 +636,8 @@ export class DirectEditController {
     const selectedIds = doc.selectedLayerIds.filter((id) => ids.has(id))
     const freePath = this.selectedFreePath(doc, selectedIds)
     const handles = this.handleSet(doc)
-    const anchorIndex =
-      freePath && doc.pointSelection && doc.pointSelection.layerId === freePath.layerId
-        ? doc.pointSelection.segmentIndex
-        : null
+    const point = doc.pointSelection
+    const anchor = freePath && point && point.layerId === freePath.layerId ? { contourIndex: point.contourIndex, index: point.segmentIndex } : null
     this.scope.activate()
     return {
       doc,
@@ -636,7 +646,7 @@ export class DirectEditController {
       center: this.center(),
       selectedIds,
       freePath,
-      anchorIndex,
+      anchor,
       handles,
       unitsPerPx: this.unitsPerPx(),
       touch,
@@ -863,7 +873,7 @@ export class DirectEditController {
         else this.host.setSelection([zone.layerId], null)
         return
       case 'anchor':
-        this.host.setSelection([zone.layerId], { layerId: zone.layerId, segmentIndex: zone.index })
+        this.host.setSelection([zone.layerId], { layerId: zone.layerId, contourIndex: zone.contourIndex, segmentIndex: zone.index })
         return
       case 'edge':
         if (press.mods.shift) {
@@ -897,7 +907,7 @@ export class DirectEditController {
   private doubleAction(zone: Zone) {
     if (zone.kind === 'anchor') {
       this.dropPendingPoint()
-      this.host.editAnchor(zone.layerId, zone.index, 'toggle-smooth')
+      this.host.editAnchor(zone.layerId, zone.index, 'toggle-smooth', zone.contourIndex)
       return
     }
     if (zone.kind === 'edge') this.straightenEdge(zone)
@@ -919,9 +929,10 @@ export class DirectEditController {
       return
     }
     if (!zone.free) return
-    const path = this.freePathOf(layer)
-    if (!path) return
-    if (isCurveStraight(path, zone.free.curveIndex)) {
+    const { contourIndex, curveIndex } = zone.free
+    const path = this.freePathOf(layer)?.[contourIndex]
+    if (!path || curveIndex >= path.segs.length) return
+    if (isCurveStraight(path, curveIndex)) {
       // Nothing to straighten: the double-click was two clicks on the edge.
       if (this.pendingPoint) this.flushPendingPoint()
       return
@@ -930,7 +941,7 @@ export class DirectEditController {
     const doc = this.host.getDoc()
     this.host.commitLayerEdits({
       label: 'Straighten edge',
-      edits: [{ layerId: layer.id, pathData: editablePathToPathData(straightenCurve(path, zone.free.curveIndex)) }],
+      edits: [{ layerId: layer.id, contourIndex, pathData: editablePathToPathData(straightenCurve(path, curveIndex)) }],
       select: [layer.id],
       anchor: doc.pointSelection?.layerId === layer.id ? undefined : null,
     })
@@ -946,6 +957,7 @@ export class DirectEditController {
     this.pendingPoint = {
       layerId: zone.layerId,
       layer,
+      contourIndex: zone.free.contourIndex,
       curveIndex: zone.free.curveIndex,
       t: zone.free.t,
       point: zone.point,
@@ -969,7 +981,8 @@ export class DirectEditController {
     window.clearTimeout(pending.timer)
     // The shape changed first, by an undo from the toolbar say: where the click was no longer holds.
     const layer = this.layer(pending.layerId)
-    const path = layer === pending.layer ? this.freePathOf(layer) : null
+    const { contourIndex } = pending
+    const path = layer && layer === pending.layer ? this.freePathOf(layer)?.[contourIndex] : null
     if (!layer || !path || pending.curveIndex >= path.segs.length) {
       this.drawOverlay()
       return
@@ -977,9 +990,9 @@ export class DirectEditController {
     const { path: next, index } = insertPoint(path, pending.curveIndex, pending.t)
     this.host.commitLayerEdits({
       label: 'Add point',
-      edits: [{ layerId: layer.id, pathData: editablePathToPathData(next) }],
+      edits: [{ layerId: layer.id, contourIndex, pathData: editablePathToPathData(next) }],
       select: [layer.id],
-      anchor: { layerId: layer.id, segmentIndex: index },
+      anchor: { layerId: layer.id, contourIndex, segmentIndex: index },
     })
   }
 
@@ -998,9 +1011,9 @@ export class DirectEditController {
       case 'edge':
         return zone.carve ? this.carveBendSession(press, zone.layerId, zone.carve) : this.freeBendSession(press, zone)
       case 'anchor':
-        return this.pointSession(press, zone.layerId, zone.index, 'anchor')
+        return this.pointSession(press, zone.layerId, zone.contourIndex, zone.index, 'anchor')
       case 'bezier':
-        return this.pointSession(press, zone.layerId, zone.index, zone.which)
+        return this.pointSession(press, zone.layerId, zone.contourIndex, zone.index, zone.which)
       default:
         return null
     }
@@ -1020,7 +1033,7 @@ export class DirectEditController {
   private moveStarts(doc: IllustratorDocument, ids: string[], carry: boolean, picked?: readonly string[]): MoveStarts {
     const addIds = ids.filter((id) => this.layer(id)?.operation === 'add')
     const carried = !carry || !addIds.length ? [] : picked ? [...picked] : carriedCuts(doc, addIds, this.items, ids)
-    const starts = new Map<string, { carve?: CarveSpec; path?: EditablePath }>()
+    const starts = new Map<string, { carve?: CarveSpec; path?: EditableShape }>()
     for (const id of [...ids, ...carried]) {
       const layer = this.layer(id)
       if (!layer) continue
@@ -1043,7 +1056,7 @@ export class DirectEditController {
     const restore = () => setInkPathData(this.scope, this.host.getInkPathData())
     const pathFor = (id: string, d: Vec): string => {
       const start = starts.get(id)!
-      return start.carve ? carveOutline(translateCarve(start.carve, d)).pathData : editablePathToPathData(translatePath(start.path!, d))
+      return start.carve ? carveOutline(translateCarve(start.carve, d)).pathData : shapePathData(translateShape(start.path!, d))
     }
     const carriedSet = new Set(carried)
     const keyPoints: Vec[] = []
@@ -1545,9 +1558,10 @@ export class DirectEditController {
     const doc = this.host.getDoc()
     const layer = this.layer(zone.layerId)
     if (!layer || layer.carve || layer.locked || !zone.free) return null
-    const start = this.freePathOf(layer)
-    if (!start || zone.free.curveIndex >= start.segs.length) return null
-    const { curveIndex } = zone.free
+    const { contourIndex, curveIndex } = zone.free
+    const shape = this.freePathOf(layer)
+    const start = shape?.[contourIndex]
+    if (!shape || !start || curveIndex >= start.segs.length) return null
     const t = clamp(zone.free.t, BEND_T_MIN, BEND_T_MAX)
     const base = cubicPoint(freeCurve(start, curveIndex), t)
     const exclude = new Set([layer.id])
@@ -1563,7 +1577,7 @@ export class DirectEditController {
         let target = add(base, sub(p, press.point))
         let snap: SnapResult = NO_SNAP
         if (this.snapsOn(mods)) {
-          index ??= this.makeSnapIndex(doc, exclude, otherAnchors(start, -1))
+          index ??= this.makeSnapIndex(doc, exclude, otherAnchors(shape, null))
           snap = snapMoving(index, [target], { tolerance: this.snapTolerance(press.touch) })
           target = add(target, snap.d)
         }
@@ -1572,7 +1586,7 @@ export class DirectEditController {
         straight = maxChordDeviation(freeCurve(bent, curveIndex)) < 2 * this.unitsPerPx()
         current = straight ? (wasStraight ? start : straightenCurve(start, curveIndex)) : bent
         this.showSnap(straight ? null : snap, straight ? 'straight' : null)
-        this.showInk(compose, new Map([[layer.id, editablePathToPathData(current)]]))
+        this.showInk(compose, new Map([[layer.id, shapePathData(withContour(shape, contourIndex, current))]]))
         hud.set({
           chip: straight ? 'straight' : `depth ${r0(maxChordDeviation(freeCurve(current, curveIndex)))}`,
         })
@@ -1583,16 +1597,17 @@ export class DirectEditController {
         const point = this.host.getDoc().pointSelection
         this.host.commitLayerEdits({
           label: straight ? 'Straighten edge' : 'Bend edge',
-          edits: [{ layerId: layer.id, pathData: editablePathToPathData(current) }],
+          edits: [{ layerId: layer.id, contourIndex, pathData: editablePathToPathData(current) }],
           select: [layer.id],
           anchor: point?.layerId === layer.id ? undefined : null,
         })
       },
       cancel: () => setInkPathData(this.scope, this.host.getInkPathData()),
       drawOverlay: (overlay) => {
-        outlinePathData(this.scope, overlay, editablePathToPathData(current), center)
+        const whole = withContour(shape, contourIndex, current)
+        outlinePathData(this.scope, overlay, shapePathData(whole), center)
         drawCurves(this.scope, overlay, [freeCurve(current, curveIndex)], center)
-        drawAnchors(this.scope, overlay, current, center, null, null, layer.frameRotation ?? 0)
+        drawAnchors(this.scope, overlay, whole, center, null, null, layer.frameRotation ?? 0)
       },
     }
   }
@@ -1606,13 +1621,20 @@ export class DirectEditController {
     drawCurves(this.scope, overlay, curves, this.center())
   }
 
-  /** Drag one anchor of a free shape, or one of its Bézier handles. */
-  private pointSession(press: Press, layerId: string, anchorIndex: number, which: 'anchor' | 'in' | 'out'): Session | null {
+  /** Drag one anchor of a free shape, on any of its contours, or one of its Bézier handles. */
+  private pointSession(
+    press: Press,
+    layerId: string,
+    contourIndex: number,
+    anchorIndex: number,
+    which: 'anchor' | 'in' | 'out',
+  ): Session | null {
     const doc = this.host.getDoc()
     const layer = this.layer(layerId)
     if (!layer || layer.carve) return null
-    const start = this.freePathOf(layer)
-    if (!start || !start.segs[anchorIndex]) return null
+    const shape = this.freePathOf(layer)
+    const start = shape?.[contourIndex]
+    if (!shape || !start || !start.segs[anchorIndex]) return null
     const seg = start.segs[anchorIndex]
     const handle = which === 'anchor' ? null : ((which === 'in' ? seg.hIn : seg.hOut) ?? { x: 0, y: 0 })
     const startPoint = handle ? add(seg.p, handle) : seg.p
@@ -1637,7 +1659,7 @@ export class DirectEditController {
         if (this.snapsOn(mods)) {
           const tolerance = this.snapTolerance(press.touch)
           if (which === 'anchor') {
-            index ??= this.makeSnapIndex(doc, exclude, otherAnchors(start, anchorIndex))
+            index ??= this.makeSnapIndex(doc, exclude, otherAnchors(shape, { contourIndex, index: anchorIndex }))
             snap = snapMoving(index, [add(startPoint, d)], { tolerance, edges: true, rays: neighbours })
           } else {
             snap = snapMoving({ targets: [] }, [add(startPoint, d)], { tolerance, rays: neighbours })
@@ -1649,22 +1671,24 @@ export class DirectEditController {
             ? moveAnchor(start, anchorIndex, add(seg.p, d))
             : moveHandle(start, anchorIndex, which, add(startPoint, d), { breakSmooth: mods.alt })
         this.showSnap(snap)
-        this.showInk(compose, new Map([[layerId, editablePathToPathData(current)]]))
+        this.showInk(compose, new Map([[layerId, shapePathData(withContour(shape, contourIndex, current))]]))
         this.drawOverlay()
       },
       commit: () => {
         if (current === start) return
+        // Only this contour is written: the others keep what they were.
         this.host.commitLayerEdits({
           label: which === 'anchor' ? 'Move point' : 'Shape curve',
-          edits: [{ layerId, pathData: editablePathToPathData(current) }],
+          edits: [{ layerId, contourIndex, pathData: editablePathToPathData(current) }],
           select: [layerId],
-          anchor: { layerId, segmentIndex: anchorIndex },
+          anchor: { layerId, contourIndex, segmentIndex: anchorIndex },
         })
       },
       cancel: () => setInkPathData(this.scope, this.host.getInkPathData()),
       drawOverlay: (overlay) => {
-        outlinePathData(this.scope, overlay, editablePathToPathData(current), center)
-        drawAnchors(this.scope, overlay, current, center, anchorIndex, null, layer.frameRotation ?? 0)
+        const whole = withContour(shape, contourIndex, current)
+        outlinePathData(this.scope, overlay, shapePathData(whole), center)
+        drawAnchors(this.scope, overlay, whole, center, { contourIndex, index: anchorIndex }, null, layer.frameRotation ?? 0)
       },
     }
   }
@@ -1709,11 +1733,12 @@ export class DirectEditController {
       // The curve that would bend under the pointer.
       if (this.hover.kind === 'edge') this.drawEdgeHover(layer, this.hover)
       if (free) {
-        const anchorIndex = doc.pointSelection?.layerId === free.layerId ? doc.pointSelection.segmentIndex : null
-        const hoverIndex = this.hover.kind === 'anchor' ? this.hover.index : null
+        const point = doc.pointSelection
+        const selected = point?.layerId === free.layerId ? { contourIndex: point.contourIndex, index: point.segmentIndex } : null
+        const hover = this.hover.kind === 'anchor' ? { contourIndex: this.hover.contourIndex, index: this.hover.index } : null
         this.scope.activate()
         layer.activate()
-        drawAnchors(this.scope, layer, free.path, this.center(), anchorIndex, hoverIndex, this.layer(free.layerId)?.frameRotation ?? 0)
+        drawAnchors(this.scope, layer, free.shape, this.center(), selected, hover, this.layer(free.layerId)?.frameRotation ?? 0)
       }
       if (this.pendingPoint) drawGhostPoint(this.scope, layer, this.pendingPoint.point, this.center())
     }
@@ -1732,7 +1757,7 @@ export class DirectEditController {
       this.drawSide(overlay, layer.carve, zone.carve.side)
       return
     }
-    const path = zone.free ? this.freePathOf(layer) : null
+    const path = zone.free ? this.freePathOf(layer)?.[zone.free.contourIndex] : null
     if (!path || !zone.free || zone.free.curveIndex >= path.segs.length) return
     drawCurves(this.scope, overlay, [freeCurve(path, zone.free.curveIndex)], this.center())
   }
@@ -1770,7 +1795,7 @@ export class DirectEditController {
       const point = doc.pointSelection
       const layer = point ? this.layer(point.layerId) : undefined
       if (point && layer && !layer.carve) {
-        this.host.editAnchor(point.layerId, point.segmentIndex, 'delete')
+        this.host.editAnchor(point.layerId, point.segmentIndex, 'delete', point.contourIndex)
         return true
       }
       return false

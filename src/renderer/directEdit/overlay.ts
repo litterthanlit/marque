@@ -1,5 +1,5 @@
 import type { Cubic, Vec } from '../../engine/path/bezier.ts'
-import type { EditablePath } from '../../engine/path/editPath.ts'
+import type { EditableShape } from '../../engine/path/editPath.ts'
 import type { CarveHandle } from '../../engine/carve/edit.ts'
 import type { SnapGuide } from '../../engine/snap/snapping.ts'
 
@@ -142,24 +142,31 @@ export function drawSnapGuides(scope: paper.PaperScope, layer: paper.Layer, guid
   }
 }
 
+/** One anchor of a free shape: point `index` on contour `contourIndex`. */
+export interface AnchorAt {
+  contourIndex: number
+  index: number
+}
+
 /**
- * Anchors of a free shape; the selected one is filled and shows its handles.
- * They are smaller and lighter than the resize squares of a box, which sit
- * close by at every corner, so the two never read as one family. They turn
- * by `turn` (the shape's frame), so they square up with the box's handles.
+ * Anchors of a free shape, on every contour; the selected one is filled and
+ * shows its handles. They are smaller and lighter than the resize squares
+ * of a box, which sit close by at every corner, so the two never read as one
+ * family. They turn by `turn` (the shape's frame), so they square up with
+ * the box's handles.
  */
 export function drawAnchors(
   scope: paper.PaperScope,
   layer: paper.Layer,
-  path: EditablePath,
+  shape: EditableShape,
   center: Vec,
-  selectedIndex: number | null,
-  hoverIndex: number | null,
+  selected: AnchorAt | null,
+  hover: AnchorAt | null,
   turn = 0,
 ) {
   const at = (v: Vec) => new scope.Point(v.x + center.x, v.y + center.y)
-  if (selectedIndex !== null && path.segs[selectedIndex]) {
-    const seg = path.segs[selectedIndex]
+  const seg = selected ? shape[selected.contourIndex]?.segs[selected.index] : undefined
+  if (seg) {
     for (const h of [seg.hIn, seg.hOut]) {
       if (!h) continue
       const end = at({ x: seg.p.x + h.x, y: seg.p.y + h.y })
@@ -176,19 +183,24 @@ export function drawAnchors(
       layer.addChild(dot)
     }
   }
-  path.segs.forEach((seg, i) => {
-    const size = (i === hoverIndex || i === selectedIndex ? 8 : 6.5) * u
-    const square = new scope.Path.Rectangle({
-      point: [seg.p.x + center.x - size / 2, seg.p.y + center.y - size / 2],
-      size: [size, size],
-    })
-    if (turn) square.rotate(turn, at(seg.p))
-    square.fillColor = new scope.Color(i === selectedIndex ? SELECTION_COLOR : '#ffffff')
-    square.strokeColor = new scope.Color(SELECTION_COLOR)
-    square.strokeWidth = 1.25 * u
-    square.locked = true
-    layer.addChild(square)
-  })
+  const is = (anchor: AnchorAt | null, contourIndex: number, i: number) =>
+    anchor !== null && anchor.contourIndex === contourIndex && anchor.index === i
+  shape.forEach((path, contourIndex) =>
+    path.segs.forEach((each, i) => {
+      const chosen = is(selected, contourIndex, i)
+      const size = (chosen || is(hover, contourIndex, i) ? 8 : 6.5) * u
+      const square = new scope.Path.Rectangle({
+        point: [each.p.x + center.x - size / 2, each.p.y + center.y - size / 2],
+        size: [size, size],
+      })
+      if (turn) square.rotate(turn, at(each.p))
+      square.fillColor = new scope.Color(chosen ? SELECTION_COLOR : '#ffffff')
+      square.strokeColor = new scope.Color(SELECTION_COLOR)
+      square.strokeWidth = 1.25 * u
+      square.locked = true
+      layer.addChild(square)
+    }),
+  )
 }
 
 /**

@@ -4,7 +4,7 @@ import {
   boxRotateHandle,
   DEFAULT_HANDLE_LAYOUT,
   intersectBounds,
-  pathBoundsInFrame,
+  shapeBoundsInFrame,
   unionBounds,
   type CarveHandle,
   type HandleLayout,
@@ -15,7 +15,7 @@ import { carveOutline, outlineBounds } from '../../engine/carve/outline.ts'
 import { isGroove, type CarveSpec } from '../../engine/carve/spec.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
 import { emptyBounds, type Bounds, type Vec } from '../../engine/path/bezier.ts'
-import type { EditablePath } from '../../engine/path/editPath.ts'
+import type { EditableShape } from '../../engine/path/editPath.ts'
 
 /**
  * The handles the selection gets. A single recipe keeps its own handles. A
@@ -71,7 +71,7 @@ const usable = (layer: IllustratorLayer | undefined): layer is IllustratorLayer 
  */
 export function boxAround(
   layers: IllustratorLayer[],
-  freePathOf: (layer: IllustratorLayer) => EditablePath | null,
+  freePathOf: (layer: IllustratorLayer) => EditableShape | null,
   material: () => Bounds = emptyBounds,
 ): { box: OrientedBox; ids: string[]; uniform: boolean } | null {
   const alone = layers.length === 1
@@ -91,7 +91,7 @@ export function boxAround(
       const path = freePathOf(layer)
       if (!path) continue
       ids.push(layer.id)
-      bounds = pathBoundsInFrame(path, rotation)
+      bounds = shapeBoundsInFrame(path, rotation)
     }
     if (layer.operation === 'subtract' && !alone) cuts.push(bounds)
     else shapes = unionBounds(shapes, bounds)
@@ -142,7 +142,7 @@ export function recipeFrame(spec: CarveSpec): OrientedBox {
  */
 export function selectionBox(
   doc: IllustratorDocument,
-  freePathOf: (layer: IllustratorLayer) => EditablePath | null,
+  freePathOf: (layer: IllustratorLayer) => EditableShape | null,
 ): { box: OrientedBox; ids: string[]; uniform: boolean } | null {
   const byId = new Map(doc.layers.map((layer) => [layer.id, layer]))
   const members = doc.selectedLayerIds.map((id) => byId.get(id)).filter(usable)
@@ -158,7 +158,7 @@ export function selectionBox(
       if (layer.carve) bounds = unionBounds(bounds, outlineBounds(carveOutline(layer.carve)))
       else {
         const path = freePathOf(layer)
-        if (path) bounds = unionBounds(bounds, pathBoundsInFrame(path))
+        if (path) bounds = unionBounds(bounds, shapeBoundsInFrame(path))
       }
     }
     return bounds
@@ -170,7 +170,7 @@ export function selectionBox(
 export function selectionHandles(
   doc: IllustratorDocument,
   layout: HandleLayout,
-  freePathOf: (layer: IllustratorLayer) => EditablePath | null,
+  freePathOf: (layer: IllustratorLayer) => EditableShape | null,
   live: LiveHandles = 'all',
 ): HandleSet | null {
   if (live === 'none') return null

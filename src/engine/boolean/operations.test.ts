@@ -2,7 +2,7 @@ import paper from 'paper'
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_PARAMS, type LogoParams } from '../types.ts'
 import { getAllModeParamDefaults } from '../../store/modes.ts'
-import { vectorDocumentToIllustratorDocument } from '../vector/legacyIllustratorAdapter.ts'
+import { vectorDocumentToIllustratorDocument } from '../vector/view.ts'
 import { documentFromGeneratorLink } from '../vector/link.ts'
 import { composeOrderedPaths } from './operations.ts'
 

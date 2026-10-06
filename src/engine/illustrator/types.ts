@@ -25,15 +25,35 @@ export interface IllustratorLayer {
   locked: boolean
   pathData: string
   fillRule: 'nonzero' | 'evenodd'
+  /** The identity in every view of a document. A layer from before the vector format may hold another, drawn as stage 1 drew it. */
   transform: IllustratorTransform
   /** Recipe for slabs and cuts; the path above is always generated from it. */
   carve?: CarveSpec
   /** How far a free shape's box is turned, in degrees. Missing is upright. */
   frameRotation?: number
+  /** The group the object sits in. Missing is the root. */
+  parentId?: string
+  /** How many contours the path holds, when more than one: a hole is a further contour. */
+  contourCount?: number
+}
+
+/** A group of the document as the canvas reads it. Its members follow it in the layers. */
+export interface IllustratorGroup {
+  id: string
+  name: string
+  /** The group it sits in. Missing is the root. */
+  parentId?: string
+  visible: boolean
+  locked: boolean
+  /** Members compose alone and enter the stack as one input, with `operation`. */
+  isolated: boolean
+  operation: 'add' | 'subtract'
 }
 
 export interface PointSelection {
   layerId: string
+  /** Which contour of the layer: 0 is its first. */
+  contourIndex: number
   segmentIndex: number
   handle: 'anchor' | 'in' | 'out' | null
 }
@@ -45,12 +65,16 @@ export interface IllustratorDocument {
   selectedLayerIds: string[]
   pointSelection: PointSelection | null
   mode: IllustratorMode
+  /** The document's groups, when it has any. */
+  groups?: IllustratorGroup[]
 }
 
 export interface MarkData {
   compoundPathData: string
   fillRule: 'nonzero' | 'evenodd'
   viewBox: { x: number; y: number; width: number; height: number }
+  /** Boolean steps that failed, each input left out of the mark. Missing when none did. */
+  warnings?: string[]
 }
 
 export const DEFAULT_ILLUSTRATOR_TRANSFORM: IllustratorTransform = {

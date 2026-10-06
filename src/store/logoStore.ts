@@ -4,22 +4,22 @@ import type { LogoParams } from '../engine/types.ts'
 import { DEFAULT_PARAMS } from '../engine/types.ts'
 import type { IllustratorDocument, IllustratorLayer, PointSelection } from '../engine/illustrator/types.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../engine/illustrator/types.ts'
-import { bakedEditablePath } from '../engine/illustrator/layerPath.ts'
+import { bakedEditableShape } from '../engine/illustrator/layerPath.ts'
 import { deleteAnchor, editablePathToPathData, toggleSmooth } from '../engine/path/editPath.ts'
 import { getLayerPathItem } from '../engine/illustrator/compose.ts'
 import { savedDocument, type SavedVariation } from '../engine/vector/saved.ts'
 import type { VectorDocument, VectorObject, VectorSelection } from '../engine/vector/types.ts'
+import { readLegacyLayers } from '../engine/vector/migrate.ts'
 import {
-  illustratorDocumentToVectorDocument,
   pointSelectionToVectorSelection,
   vectorDocumentToIllustratorDocument,
   vectorObjectToLayer,
-} from '../engine/vector/legacyIllustratorAdapter.ts'
+} from '../engine/vector/view.ts'
 import type { CutSpec, PunchShape, SlabKind } from '../engine/carve/geometry.ts'
 import { carveOutline } from '../engine/carve/outline.ts'
 import { carveFromCut, carveLayerName, roundCarveSpec, slabSpec, type CarveSpec } from '../engine/carve/spec.ts'
 import { translateCarve } from '../engine/carve/edit.ts'
-import { createEmptyVectorDocument, sanitizeVectorDocument } from '../engine/vector/document.ts'
+import { createEmptyVectorDocument, repairStructure, sanitizeVectorDocument } from '../engine/vector/document.ts'
 import { composeVectorMarkCached } from '../engine/vector/export.ts'
 import { placeMark, placeSlab } from '../engine/carve/placement.ts'
 import type { SurvivalSize } from '../engine/carve/survival.ts'
@@ -29,15 +29,13 @@ import {
   deepFreeze,
   insertObjects,
   moveObject,
-  newObjectContext,
-  objectsFromLayer,
+  objectFromLayer,
   removeObjects,
   updateObject,
   writeFrame,
   writeLayerFields,
   writePathData,
   writeRecipe,
-  type NewObjectContext,
 } from './objectEdits.ts'
 
 type ThemeMode = 'dark' | 'light'
@@ -65,6 +63,8 @@ export interface LayerEdit {
   carve?: CarveSpec
   /** New path data for free shapes (already in untransformed layer space). */
   pathData?: string
+  /** With `pathData`: the one contour it replaces, the others kept as they are. Missing replaces them all. */
+  contourIndex?: number
   /** How far a free shape's box is turned after the edit, in degrees. Missing keeps its frame as it was. */
   frameRotation?: number
 }
@@ -75,9 +75,16 @@ export interface LayerEditCommit {
   /** Selection to leave behind; defaults to the current one. */
   select?: string[]
   /** Selected anchor on the single selected layer, or null to clear it. */
-  anchor?: { layerId: string; segmentIndex: number } | null
+  anchor?: AnchorRef | null
   /** A key edit that joins the one just before it into one undo step: see `HISTORY_MERGE_MS`. */
   merge?: HistoryMergeKind
+}
+
+/** One anchor of a layer: which contour (0 when missing) and which point on it. */
+export interface AnchorRef {
+  layerId: string
+  segmentIndex: number
+  contourIndex?: number
 }
 
 /** Key edits that run together into one undo step: arrow nudges, and turns and scales with Alt. */
@@ -130,7 +137,9 @@ interface LogoStore {
   ui: UIState
   /** Never missing: an empty canvas is an empty document. Every edit writes it directly. */
   vectorDocument: VectorDocument
-  /** The document seen as layers, for the canvas and the panels. Derived from `vectorDocument`, never written. */
+  /** What is selected: beside the document, never in it, so links and saved marks leave it out. */
+  selection: VectorSelection
+  /** The document and selection seen as layers, for the canvas and the panels. Derived, never written. */
   illustrator: IllustratorDocument
   vectorUndoStack: HistoryStep[]
   vectorRedoStack: HistoryStep[]
@@ -160,7 +169,7 @@ interface LogoStore {
   startOver: () => void
   /** Put a saved mark in place of the open document: one undo step for the layers. */
   openSaved: (entry: SavedVariation) => void
-  setSelection: (layerIds: string[], anchor?: { layerId: string; segmentIndex: number } | null) => void
+  setSelection: (layerIds: string[], anchor?: AnchorRef | null) => void
   commitLayerEdits: (commit: LayerEditCommit) => void
   setViewport: (viewport: { width: number; height: number }) => void
   toggleLook: () => void
@@ -169,8 +178,8 @@ interface LogoStore {
   /** A closed shape drawn with the pen (layer space): added on top, selected, back to direct editing. */
   addPenShape: (pathData: string) => void
   booleanIllustratorLayers: (op: 'unite' | 'subtract' | 'intersect') => void
-  /** Sharp/smooth or delete one point of a free shape: one undo step. */
-  editAnchor: (layerId: string, index: number, op: 'toggle-smooth' | 'delete') => void
+  /** Sharp/smooth or delete one point of a free shape, on its first contour or another: one undo step. */
+  editAnchor: (layerId: string, index: number, op: 'toggle-smooth' | 'delete', contourIndex?: number) => void
 }
 
 export const useLogoStore = create<LogoStore>()((set) => ({
@@ -205,11 +214,15 @@ export const useLogoStore = create<LogoStore>()((set) => ({
 
   setVectorDocument: (incoming) =>
     set((state) => {
+      // Opening is no undo step, and what opening repairs is none either.
       const vectorDocument = sanitizeVectorDocument(incoming)
+      if (!vectorDocument) return { error: 'This document could not be read.' }
       freezeInDevelopment([], vectorDocument.objects)
+      const selection: VectorSelection = { targets: [] }
       return {
         vectorDocument,
-        illustrator: vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator),
+        selection,
+        illustrator: vectorDocumentToIllustratorDocument(vectorDocument, selection, state.illustrator),
         vectorUndoStack: [],
         vectorRedoStack: [],
       }
@@ -240,11 +253,14 @@ export const useLogoStore = create<LogoStore>()((set) => ({
 
   setIllustratorDocument: (doc) =>
     set((state) => {
-      const vectorDocument = illustratorDocumentToVectorDocument(doc, null, state.params.fillColor)
+      const vectorDocument = readLegacyLayers(doc, state.params.fillColor)
+      if (!vectorDocument) return { error: 'This document could not be read.' }
       freezeInDevelopment([], vectorDocument.objects)
+      const selection: VectorSelection = { targets: [] }
       return {
-        illustrator: vectorDocumentToIllustratorDocument(vectorDocument, doc),
+        illustrator: vectorDocumentToIllustratorDocument(vectorDocument, selection, state.illustrator),
         vectorDocument,
+        selection,
         vectorUndoStack: [],
         vectorRedoStack: [],
       }
@@ -252,7 +268,7 @@ export const useLogoStore = create<LogoStore>()((set) => ({
 
   selectIllustratorLayer: (id, additive = false) =>
     set((state) => {
-      const current = state.vectorDocument.selection.targets.map((target) => target.objectId)
+      const current = state.selection.targets.map((target) => target.objectId)
       const selectedLayerIds = id
         ? additive
           ? current.includes(id)
@@ -269,11 +285,11 @@ export const useLogoStore = create<LogoStore>()((set) => ({
     set((state) => {
       const objects = state.vectorDocument.objects
       const index = objects.findIndex((candidate) => candidate.id === id)
-      const layer = index < 0 ? null : vectorObjectToLayer(objects[index])
-      if (!layer) return {}
-      // The copy is a new object: it takes the current ink.
-      const copy = objectsFromLayer(duplicateLayer(layer), editContext(state))
-      return commitObjects(state, 'Duplicate layer', insertObjects(objects, copy, index + 1), objectSelection(idsOf(copy)))
+      const original = objects[index]
+      if (!original || original.type !== 'path') return {}
+      // The copy sits just above, in the same group.
+      const copy: VectorObject = { ...objectFromLayer(duplicateLayer(vectorObjectToLayer(original))), parentId: original.parentId }
+      return commitObjects(state, 'Duplicate layer', insertObjects(objects, [copy], index + 1), objectSelection([copy.id]))
     }),
 
   deleteIllustratorLayers: (ids) =>
@@ -303,10 +319,10 @@ export const useLogoStore = create<LogoStore>()((set) => ({
       const spec = existing.compoundPathData
         ? placeSlab(kind, existing.viewBox, state.ui.viewport)
         : slabSpec(kind)
-      const slab = objectsFromLayer(recipeLayer(spec, 'add'), editContext(state))
+      const slab = objectFromLayer(recipeLayer(spec, 'add'))
       // New material goes on top: older cuts can't bite into it.
       return {
-        ...commitObjects(state, 'Add slab', insertObjects(state.vectorDocument.objects, slab, 'top'), objectSelection(idsOf(slab))),
+        ...commitObjects(state, 'Add slab', insertObjects(state.vectorDocument.objects, [slab], 'top'), objectSelection([slab.id])),
         ui: { ...state.ui, activeTool: null },
       }
     }),
@@ -320,8 +336,7 @@ export const useLogoStore = create<LogoStore>()((set) => ({
         existing.compoundPathData ? existing.viewBox : null,
         state.ui.viewport,
       )
-      const context = editContext(state)
-      const dropped = sparkLayers(spark, target).flatMap((layer) => objectsFromLayer(layer, context))
+      const dropped = sparkLayers(spark, target).map((layer) => objectFromLayer(layer))
       // A cut removes only what is below it. Underneath, the spark's cuts cannot reach the work already there.
       return {
         ...commitObjects(state, 'Add spark', insertObjects(state.vectorDocument.objects, dropped, 'bottom'), objectSelection(idsOf(dropped))),
@@ -338,18 +353,19 @@ export const useLogoStore = create<LogoStore>()((set) => ({
     set((state) => {
       const document = slabDocument()
       return {
-        ...commitObjects(state, 'Start over', document.objects, document.selection, document),
+        ...commitObjects(state, 'Start over', document.objects, { targets: [] }, document),
         ui: { ...state.ui, activeTool: null },
       }
     }),
 
   openSaved: (entry) =>
     set((state) => {
+      // An older entry is upgraded here, as it opens, and never rewritten in storage.
       const saved = savedDocument(entry)
       if (!saved) return { error: 'This saved mark could not be read.' }
-      const document = sanitizeVectorDocument(saved.document)
+      const document = saved.document
       return {
-        ...commitObjects(state, 'Open saved mark', document.objects, document.selection, document),
+        ...commitObjects(state, 'Open saved mark', document.objects, { targets: [] }, document),
         params: { ...state.params, fillColor: saved.inkColor },
         ui: { ...state.ui, activeTool: null },
       }
@@ -360,7 +376,7 @@ export const useLogoStore = create<LogoStore>()((set) => ({
       selectionUpdate(state, {
         targets:
           anchor && layerIds.length === 1
-            ? [{ type: 'anchor', objectId: anchor.layerId, segmentIndex: anchor.segmentIndex }]
+            ? [{ type: 'anchor', objectId: anchor.layerId, contourIndex: anchor.contourIndex ?? 0, segmentIndex: anchor.segmentIndex }]
             : layerIds.map((objectId) => ({ type: 'object', objectId })),
       }),
     ),
@@ -386,9 +402,9 @@ export const useLogoStore = create<LogoStore>()((set) => ({
     set((state) => {
       const layer = recipeLayer(carveFromCut(spec), 'subtract')
       if (!layer.pathData) return {}
-      const cut = objectsFromLayer(layer, editContext(state))
+      const cut = objectFromLayer(layer)
       // The carve tool stays active so cuts can be made one after another.
-      return commitObjects(state, `Add ${layer.name}`, insertObjects(state.vectorDocument.objects, cut, 'top'), objectSelection(idsOf(cut)))
+      return commitObjects(state, `Add ${layer.name}`, insertObjects(state.vectorDocument.objects, [cut], 'top'), objectSelection([cut.id]))
     }),
 
   addPenShape: (pathData) =>
@@ -406,9 +422,9 @@ export const useLogoStore = create<LogoStore>()((set) => ({
         fillRule: 'nonzero',
         transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
       }
-      const shape = objectsFromLayer(layer, editContext(state))
+      const shape = objectFromLayer(layer)
       return {
-        ...commitObjects(state, 'Draw shape', insertObjects(state.vectorDocument.objects, shape, 'top'), objectSelection(idsOf(shape))),
+        ...commitObjects(state, 'Draw shape', insertObjects(state.vectorDocument.objects, [shape], 'top'), objectSelection([shape.id])),
         ui: { ...state.ui, activeTool: null },
       }
     }),
@@ -427,32 +443,34 @@ export const useLogoStore = create<LogoStore>()((set) => ({
       if (!result) return {}
       const objects = state.vectorDocument.objects
       const insertAt = Math.min(...ids.map((id) => objects.findIndex((object) => object.id === id)))
-      const made = objectsFromLayer(result, editContext(state))
-      const next = insertObjects(removeObjects(objects, ids), made, Math.max(0, insertAt))
-      return commitObjects(state, `${op} layers`, next, objectSelection(idsOf(made)))
+      // One object, however many contours: a hole stays a hole. It stays in the group its inputs share.
+      const parents = new Set(ids.map((id) => objects.find((object) => object.id === id)?.parentId ?? null))
+      const made: VectorObject = { ...objectFromLayer(result), parentId: parents.size === 1 ? [...parents][0] : null }
+      const next = insertObjects(removeObjects(objects, ids), [made], Math.max(0, insertAt))
+      return commitObjects(state, `${op} layers`, next, objectSelection([made.id]))
     }),
 
-  editAnchor: (layerId, index, op) =>
+  editAnchor: (layerId, index, op, contourIndex = 0) =>
     set((state) => {
       const layer = state.illustrator.layers.find((candidate) => candidate.id === layerId)
       if (!layer || layer.carve) return {}
-      const path = bakedEditablePath(layer)
+      const path = bakedEditableShape(layer)?.[contourIndex]
       if (!path || !path.segs[index]) return {}
       if (op === 'delete') {
         const next = deleteAnchor(path, index)
         if (!next) return {}
         return applyLayerEdits(state, {
           label: 'Delete point',
-          edits: [{ layerId, pathData: editablePathToPathData(next) }],
+          edits: [{ layerId, contourIndex, pathData: editablePathToPathData(next) }],
           select: [layerId],
           anchor: null,
         })
       }
       return applyLayerEdits(state, {
         label: 'Sharp / smooth',
-        edits: [{ layerId, pathData: editablePathToPathData(toggleSmooth(path, index)) }],
+        edits: [{ layerId, contourIndex, pathData: editablePathToPathData(toggleSmooth(path, index)) }],
         select: [layerId],
-        anchor: { layerId, segmentIndex: index },
+        anchor: { layerId, contourIndex, segmentIndex: index },
       })
     }),
 }))
@@ -483,17 +501,19 @@ export const HISTORY_MERGE_MS = 1000
 function commitObjects(
   state: LogoStore,
   label: string,
-  objects: VectorObject[],
+  written: VectorObject[],
   selection?: VectorSelection,
   document?: VectorDocument,
   merge?: string,
 ): Partial<LogoStore> {
   const current = state.vectorDocument
+  // Groups stay runs under their headers, as reading the document would make them.
+  const objects = repairStructure(written)
   if (!document && sameObjects(current.objects, objects)) {
     return selection ? selectionUpdate(state, selection) : {}
   }
   freezeInDevelopment(current.objects, objects)
-  const selectionAfter = selection ?? current.selection
+  const selectionAfter = selection ?? state.selection
   const now = Date.now()
   const last = state.vectorUndoStack.at(-1)
   const joins =
@@ -511,7 +531,7 @@ function commitObjects(
         timestamp: now,
         before: current.objects,
         after: objects,
-        selectionBefore: current.selection,
+        selectionBefore: state.selection,
         selectionAfter,
         ...(document ? { documents: { before: current, after: document } } : {}),
         ...(merge !== undefined ? { merge: { key: merge, at: now } } : {}),
@@ -519,12 +539,12 @@ function commitObjects(
   const vectorDocument: VectorDocument = {
     ...(document ?? current),
     objects,
-    selection: selectionAfter,
     updatedAt: new Date().toISOString(),
   }
   return {
     vectorDocument,
-    illustrator: vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator),
+    selection: selectionAfter,
+    illustrator: vectorDocumentToIllustratorDocument(vectorDocument, selectionAfter, state.illustrator),
     vectorUndoStack: joins ? [...state.vectorUndoStack.slice(0, -1), step] : capHistory([...state.vectorUndoStack, step]),
     vectorRedoStack: [],
   }
@@ -546,15 +566,19 @@ function restoreStep(
   document: VectorDocument | undefined,
   objects: VectorObject[],
   selection: VectorSelection,
-): Pick<LogoStore, 'vectorDocument' | 'illustrator'> {
+): Pick<LogoStore, 'vectorDocument' | 'selection' | 'illustrator'> {
   const ids = new Set(objects.map((object) => object.id))
   const vectorDocument: VectorDocument = {
     ...(document ?? state.vectorDocument),
     objects,
-    selection: { targets: selection.targets.filter((target) => ids.has(target.objectId)) },
     updatedAt: new Date().toISOString(),
   }
-  return { vectorDocument, illustrator: vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator) }
+  const restored: VectorSelection = { targets: selection.targets.filter((target) => ids.has(target.objectId)) }
+  return {
+    vectorDocument,
+    selection: restored,
+    illustrator: vectorDocumentToIllustratorDocument(vectorDocument, restored, state.illustrator),
+  }
 }
 
 /** Development builds freeze each object as it enters the document, so an edit in place throws. */
@@ -562,10 +586,6 @@ function freezeInDevelopment(before: VectorObject[], after: VectorObject[]): voi
   if (!import.meta.env.DEV) return
   const known = new Set(before)
   for (const object of after) if (!known.has(object)) deepFreeze(object)
-}
-
-function editContext(state: LogoStore): NewObjectContext {
-  return newObjectContext(state.vectorDocument, state.params.fillColor)
 }
 
 function objectSelection(ids: string[]): VectorSelection {
@@ -579,7 +599,7 @@ function idsOf(objects: VectorObject[]): string[] {
 /**
  * Change one path object through its layer view: fields such as the name or
  * operation are written in place, and a change of path, recipe or transform
- * rebuilds it the way the layer describes it.
+ * rebuilds it the way the layer describes it, a transform baked in.
  */
 function layerUpdate(
   state: LogoStore,
@@ -587,14 +607,13 @@ function layerUpdate(
   id: string,
   update: (layer: IllustratorLayer) => IllustratorLayer,
 ): Partial<LogoStore> {
-  const context = editContext(state)
   const objects = updateObject(state.vectorDocument.objects, id, (object) => {
-    const layer = object.type === 'path' ? vectorObjectToLayer(object) : null
-    if (object.type !== 'path' || !layer) return object
+    if (object.type !== 'path') return object
+    const layer = vectorObjectToLayer(object)
     const next = update(layer)
     const sameGeometry =
       next.pathData === layer.pathData && next.carve === layer.carve && sameTransform(next.transform, layer.transform)
-    return sameGeometry ? writeLayerFields(object, next) : objectsFromLayer(next, context, object)
+    return sameGeometry ? writeLayerFields(object, next) : objectFromLayer(next, object)
   })
   return commitObjects(state, label, objects)
 }
@@ -618,9 +637,8 @@ function applyLayerEdits(state: LogoStore, commit: LayerEditCommit): Partial<Log
     objects = updateObject(objects, edit.layerId, (object) => {
       if (object.type !== 'path') return object
       if (edit.carve) return writeRecipe(object, edit.carve)
-      const written = edit.pathData !== undefined ? writePathData(object, edit.pathData) : [object]
-      const { frameRotation } = edit
-      return frameRotation === undefined ? written : written.map((piece) => writeFrame(piece, frameRotation))
+      const written = edit.pathData !== undefined ? writePathData(object, edit.pathData, edit.contourIndex) : object
+      return edit.frameRotation === undefined ? written : writeFrame(written, edit.frameRotation)
     })
   }
   if (objects === state.vectorDocument.objects) return {}
@@ -630,7 +648,12 @@ function applyLayerEdits(state: LogoStore, commit: LayerEditCommit): Partial<Log
     commit.anchor === undefined
       ? doc.pointSelection
       : commit.anchor
-        ? { layerId: commit.anchor.layerId, segmentIndex: commit.anchor.segmentIndex, handle: 'anchor' }
+        ? {
+            layerId: commit.anchor.layerId,
+            contourIndex: commit.anchor.contourIndex ?? 0,
+            segmentIndex: commit.anchor.segmentIndex,
+            handle: 'anchor',
+          }
         : null
   const selection = pointSelectionToVectorSelection(pointSelection, selectedLayerIds)
   // The same kind of key edit on other layers is an edit of its own.
@@ -644,17 +667,17 @@ function applyLayerEdits(state: LogoStore, commit: LayerEditCommit): Partial<Log
  * captured with each edit, so redo stays valid too.
  */
 function selectionUpdate(state: LogoStore, selection: VectorSelection): Partial<LogoStore> {
-  const vectorDocument = { ...state.vectorDocument, selection }
   return {
-    vectorDocument,
-    illustrator: vectorDocumentToIllustratorDocument(vectorDocument, state.illustrator),
+    selection,
+    illustrator: vectorDocumentToIllustratorDocument(state.vectorDocument, selection, state.illustrator),
   }
 }
 
 /** The document the app opens on. */
-function blankDocument(): Pick<LogoStore, 'vectorDocument' | 'illustrator'> {
+function blankDocument(): Pick<LogoStore, 'vectorDocument' | 'selection' | 'illustrator'> {
   const vectorDocument = createEmptyVectorDocument()
-  return { vectorDocument, illustrator: vectorDocumentToIllustratorDocument(vectorDocument) }
+  const selection: VectorSelection = { targets: [] }
+  return { vectorDocument, selection, illustrator: vectorDocumentToIllustratorDocument(vectorDocument, selection) }
 }
 
 /** An empty document that starts from slabs, with no generated mark behind it. */
@@ -694,7 +717,7 @@ const SPARK_SPAN = 360
 
 const DUPLICATE_OFFSET = 12
 
-/** A copy offset down-right. Recipe layers move their recipe, not a transform. */
+/** A copy offset down-right. Recipe layers move their recipe; a free shape's offset is baked into its points. */
 function duplicateLayer(layer: IllustratorLayer): IllustratorLayer {
   const copy: IllustratorLayer = {
     ...structuredClone(layer),

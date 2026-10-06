@@ -1,5 +1,5 @@
 import { add, distance, dot, length, normalize, rotate, scale, sub, type Vec } from '../path/bezier.ts'
-import type { EditablePath } from '../path/editPath.ts'
+import { shapeAnchors, type EditableShape } from '../path/editPath.ts'
 import { carveOutline } from '../carve/outline.ts'
 import { isGroove, type CarveSpec } from '../carve/spec.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../illustrator/types.ts'
@@ -276,17 +276,19 @@ export function carveKeyPoints(spec: CarveSpec): SnapTarget[] {
   return out
 }
 
-/** Anchors of a free shape and the middle of its bounds. */
-export function freeKeyPoints(path: EditablePath): SnapTarget[] {
-  if (!path.segs.length) return []
-  const box = pointsBounds(path.segs.map((seg) => seg.p))
-  return [...path.segs.map((seg) => ({ p: seg.p, kind: 'point' as const })), { p: box.center, kind: 'centre' }]
+/** Anchors of a free shape, on every contour, and the middle of its bounds. */
+export function freeKeyPoints(shape: EditableShape): SnapTarget[] {
+  const anchors = shapeAnchors(shape)
+  if (!anchors.length) return []
+  const box = pointsBounds(anchors)
+  return [...anchors.map((p) => ({ p, kind: 'point' as const })), { p: box.center, kind: 'centre' }]
 }
 
 /** The bounds box of a free shape, for moving it: corners, side middles and centre. */
-export function freeBoxPoints(path: EditablePath): Vec[] {
-  if (!path.segs.length) return []
-  const { minX, minY, maxX, maxY, center } = pointsBounds(path.segs.map((seg) => seg.p))
+export function freeBoxPoints(shape: EditableShape): Vec[] {
+  const anchors = shapeAnchors(shape)
+  if (!anchors.length) return []
+  const { minX, minY, maxX, maxY, center } = pointsBounds(anchors)
   return [
     center,
     { x: minX, y: minY },
@@ -318,7 +320,7 @@ function pointsBounds(points: Vec[]) {
 export function documentSnapTargets(
   doc: IllustratorDocument,
   exclude: Set<string>,
-  freePathOf: (layer: IllustratorLayer) => EditablePath | null,
+  freePathOf: (layer: IllustratorLayer) => EditableShape | null,
 ): SnapTarget[] {
   const targets: SnapTarget[] = [{ p: { x: 0, y: 0 }, kind: 'centre' }]
   for (const layer of doc.layers) {

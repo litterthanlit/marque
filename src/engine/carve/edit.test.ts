@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import { add, cubicPoint, rotate, rotateAbout, scale, sub, type Vec } from '../path/bezier.ts'
-import { IDENTITY_MATRIX } from '../vector/document.ts'
 import { affineOf, applyAffine } from '../box/box.ts'
 import {
   bendCarve,
@@ -18,7 +17,7 @@ import {
 } from './edit.ts'
 import { carveOutline, grooveSpine } from './outline.ts'
 import { isGroove, roundCarveSpec, slabSpec, type CarveSpec, type GrooveSpec, type PunchSpec, type SlabSpec } from './spec.ts'
-import { isObjectCarveValid, segsToVectorPath } from './sync.ts'
+import { isObjectCarveValid, segsToContour } from './sync.ts'
 
 const rotated: SlabSpec = { ...slabSpec('rounded'), center: { x: 30, y: -10 }, rotation: 30 }
 
@@ -288,7 +287,7 @@ describe('scaling and turning a recipe as part of a selection', () => {
 
   const expectValid = (spec: CarveSpec) => {
     const rounded = roundCarveSpec(spec)
-    expect(isObjectCarveValid(rounded, segsToVectorPath(carveOutline(rounded).segs, 'p'), IDENTITY_MATRIX)).toBe(true)
+    expect(isObjectCarveValid(rounded, [segsToContour(carveOutline(rounded).segs)])).toBe(true)
   }
 
   it.each(recipes)('scales %s about a pivot, every length alike, and it stays a valid recipe', (_, spec) => {
@@ -324,7 +323,7 @@ describe('a recipe carried by a map', () => {
       })
       if (!isGroove(next)) expect(next.rotation).toBe(60)
       const rounded = roundCarveSpec(next)
-      expect(isObjectCarveValid(rounded, segsToVectorPath(carveOutline(rounded).segs, 'p'), IDENTITY_MATRIX)).toBe(true)
+      expect(isObjectCarveValid(rounded, [segsToContour(carveOutline(rounded).segs)])).toBe(true)
     }
   })
 

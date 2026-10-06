@@ -1,9 +1,11 @@
 import paper from 'paper'
 import type { CompositeLayer } from '../types.ts'
 
-interface BooleanInput {
+export interface BooleanInput {
   pathData: string
   operation: 'add' | 'subtract'
+  /** How an input of several contours fills: given, its holes are holes. One contour reads the same either way. */
+  fillRule?: 'nonzero' | 'evenodd'
 }
 
 interface BooleanResult {
@@ -42,21 +44,63 @@ function pathFromSVG(
   }
 }
 
-// Accepts compound path data (several subpaths, e.g. a shape with holes).
+/**
+ * Accepts compound path data (several subpaths, e.g. a shape with holes).
+ * With a fill rule, an item of several contours is resolved under that rule
+ * and its contours turned so that either rule reads it alike: paper's
+ * booleans honour it, and so does the even-odd ink the result is drawn as.
+ */
 function pathItemFromSVG(
   scope: paper.PaperScope,
   pathData: string,
+  fillRule?: BooleanInput['fillRule'],
 ): paper.PathItem | null {
   try {
-    const item = scope.PathItem.create(pathData)
+    let item: paper.PathItem = scope.PathItem.create(pathData)
     if (item.isEmpty()) {
       item.remove()
       return null
+    }
+    if (fillRule && item.children && item.children.length > 1) {
+      item.fillRule = fillRule
+      item = (item as unknown as { resolveCrossings(): paper.PathItem }).resolveCrossings()
+      item.reorient(fillRule === 'nonzero', true)
     }
     return item
   } catch {
     return null
   }
+}
+
+/** Pieces of a result smaller than this, in square units, are slivers a boolean left behind. */
+export const MIN_PIECE_AREA = 0.01
+
+/**
+ * The ink a piece covers. A piece no boolean has resolved yet, such as a lone
+ * self-crossing input, can have lobes whose signed areas cancel, so a small
+ * net area is measured again with its crossings resolved.
+ */
+function inkArea(piece: paper.PathItem): number {
+  const net = areaOf(piece)
+  if (net >= MIN_PIECE_AREA) return net
+  const resolved = (piece.clone({ insert: false }) as unknown as { resolveCrossings(): paper.PathItem }).resolveCrossings()
+  const parts = resolved.children ? [...resolved.children] : [resolved]
+  const total = parts.reduce((sum, part) => sum + areaOf(part as paper.PathItem), 0)
+  resolved.remove()
+  return total
+}
+
+/** The result without its slivers; null when nothing but slivers is left. */
+function dropSlivers(item: paper.PathItem): paper.PathItem | null {
+  if (!item.children) {
+    if (inkArea(item) >= MIN_PIECE_AREA) return item
+    item.remove()
+    return null
+  }
+  for (const piece of [...item.children]) {
+    if (inkArea(piece as paper.PathItem) < MIN_PIECE_AREA) piece.remove()
+  }
+  return item
 }
 
 /**
@@ -239,7 +283,7 @@ export function composeOrderedPaths(inputs: BooleanInput[]): OrderedBooleanResul
     const operation = inputs[start].operation
     let end = start
     while (end < inputs.length && inputs[end].operation === operation) end++
-    const run = inputs.slice(start, end).map((input) => input.pathData)
+    const run = inputs.slice(start, end)
     start = end
     // Cuts before the first material have nothing to cut.
     if (!result && operation === 'subtract') continue
@@ -253,6 +297,7 @@ export function composeOrderedPaths(inputs: BooleanInput[]): OrderedBooleanResul
     result = result ? applyStep(scope, result, united, operation, warnings) : united.item
   }
 
+  if (result) result = dropSlivers(result)
   if (!result || result.isEmpty()) {
     result?.remove()
     scope.project.clear()
@@ -279,7 +324,7 @@ export function composeOrderedPaths(inputs: BooleanInput[]): OrderedBooleanResul
 /** A shape made from some of the inputs, with the inputs it was made from. */
 interface Applied {
   item: paper.PathItem
-  inputs: string[]
+  inputs: BooleanInput[]
 }
 
 /**
@@ -289,10 +334,10 @@ interface Applied {
  * is not plausible the run is reported as unreliable, so the caller applies
  * its inputs one at a time as the fold always did.
  */
-function uniteBalanced(scope: paper.PaperScope, run: string[]): Applied | null | 'unreliable' {
-  let level = run.flatMap((pathData): Applied[] => {
-    const item = pathItemFromSVG(scope, pathData)
-    return item ? [{ item, inputs: [pathData] }] : []
+function uniteBalanced(scope: paper.PaperScope, run: BooleanInput[]): Applied | null | 'unreliable' {
+  let level = run.flatMap((input): Applied[] => {
+    const item = pathItemFromSVG(scope, input.pathData, input.fillRule)
+    return item ? [{ item, inputs: [input] }] : []
   })
   while (level.length > 1) {
     const next: Applied[] = []
@@ -384,27 +429,27 @@ function applyStep(
 function foldInputs(
   scope: paper.PaperScope,
   target: paper.PathItem,
-  inputs: string[],
+  inputs: BooleanInput[],
   operation: BooleanInput['operation'],
   warnings: string[],
 ): paper.PathItem
 function foldInputs(
   scope: paper.PaperScope,
   target: paper.PathItem | null,
-  inputs: string[],
+  inputs: BooleanInput[],
   operation: BooleanInput['operation'],
   warnings: string[],
 ): paper.PathItem | null
 function foldInputs(
   scope: paper.PaperScope,
   target: paper.PathItem | null,
-  inputs: string[],
+  inputs: BooleanInput[],
   operation: BooleanInput['operation'],
   warnings: string[],
 ): paper.PathItem | null {
   let result = target
-  for (const pathData of inputs) {
-    const path = pathItemFromSVG(scope, pathData)
+  for (const input of inputs) {
+    const path = pathItemFromSVG(scope, input.pathData, input.fillRule)
     if (!path) continue
     if (!result) {
       if (operation === 'add') result = path

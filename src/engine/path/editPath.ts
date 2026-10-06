@@ -24,6 +24,13 @@ export interface EditablePath {
   closed: boolean
 }
 
+/**
+ * A free shape whole: its contours, in the order its object keeps them. A
+ * hole is a further contour. Moves and boxes take the whole shape; points
+ * and edges are edited on one contour of it.
+ */
+export type EditableShape = readonly EditablePath[]
+
 const fmt = (v: number): string => {
   const r = Math.round(v * 1000) / 1000
   return Object.is(r, -0) ? '0' : String(r)
@@ -70,6 +77,20 @@ export function editablePathToPathData(path: EditablePath): string {
   }
   if (path.closed) d += 'Z'
   return d
+}
+
+/** Every contour's path data in turn. */
+export function shapePathData(shape: EditableShape): string {
+  return shape.map(editablePathToPathData).join('')
+}
+
+export function translateShape(shape: EditableShape, d: Vec): EditableShape {
+  return shape.map((path) => translatePath(path, d))
+}
+
+/** Every anchor of a shape, contour after contour. */
+export function shapeAnchors(shape: EditableShape): Vec[] {
+  return shape.flatMap((path) => path.segs.map((seg) => seg.p))
 }
 
 function cloneSegs(path: EditablePath): Seg[] {

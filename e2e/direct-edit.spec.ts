@@ -1,6 +1,8 @@
 import { expect, test as base, type Locator, type Page } from '@playwright/test'
+import LZString from 'lz-string'
 import type { DevHook } from '../src/devHook.ts'
 import type { CarveSpec, PunchSpec, SlabSpec } from '../src/engine/carve/spec.ts'
+import { STAGE_1_LINK } from './fixtures/stage1Link.ts'
 
 declare global {
   interface Window {
@@ -160,15 +162,15 @@ async function isEmpty(page: Page, p: Point) {
  * The points of a grid over the canvas (layer space) that show ink where the
  * document's mark has none, or none where it has some. Points near an edge
  * of the mark or under a handle are left out. The mark is measured by the
- * browser, not by the app.
+ * browser, not by the app. `expected` stands in for the document's mark.
  */
-function inkMismatches(page: Page, span = 280, step = 20) {
+function inkMismatches(page: Page, span = 280, step = 20, expected?: string) {
   return page.evaluate(
-    ({ span, step }) => {
+    ({ span, step, expected }) => {
       const mark = window.__marque.mark()
       const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-      path.setAttribute('d', mark.compoundPathData)
+      path.setAttribute('d', expected ?? mark.compoundPathData)
       path.setAttribute('fill-rule', mark.fillRule)
       svg.append(path)
       document.body.append(svg)
@@ -202,7 +204,7 @@ function inkMismatches(page: Page, span = 280, step = 20) {
       svg.remove()
       return bad
     },
-    { span, step },
+    { span, step, expected },
   )
 }
 
@@ -233,6 +235,17 @@ const anchors = (page: Page) =>
       .getState()
       .illustrator.layers.map((layer) => window.__marque.bakedEditablePath(layer)?.segs.map((seg) => seg.p) ?? []),
   )
+
+/** Every anchor of each layer, contour by contour: a hole is a further contour. */
+const contourAnchors = (page: Page) =>
+  page.evaluate(() =>
+    window.__marque.store
+      .getState()
+      .illustrator.layers.map((layer) => window.__marque.bakedEditableShape(layer)?.map((path) => path.segs.map((seg) => seg.p)) ?? []),
+  )
+
+/** The selected point, if any: its layer, contour and index. */
+const pointSelection = (page: Page) => page.evaluate(() => window.__marque.store.getState().illustrator.pointSelection)
 
 async function carves(page: Page): Promise<CarveSpec[]> {
   return (await layers(page)).map((layer) => layer.carve!)
@@ -1915,4 +1928,151 @@ test('a slab at the top of the canvas turns from just outside a corner, as a fre
   await drag(page, from, to, ['Shift'])
   expect(await undoDepth(page)).toBe(depth + 1)
   expect(((await carves(page))[0] as SlabSpec).rotation).toBe(30)
+})
+
+test('Subtract on two circles leaves one ring, and its inner contour takes point edits', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await addSlab(page, 'Circle')
+  await page.evaluate(() => {
+    const store = window.__marque.store.getState()
+    store.setCarveSettings({ snapping: false })
+    store.addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 100 })
+  })
+  const f = await frame(page)
+  const [slab, punch] = await layers(page)
+  expect(slab.carve).toMatchObject({ kind: 'slab', width: 400 })
+
+  // The ring picks the slab, the hole picks the punch.
+  await click(page, f.at(150, 0))
+  await page.keyboard.down('Shift')
+  await click(page, f.at(0, 0))
+  await page.keyboard.up('Shift')
+  expect(await selectedIds(page)).toEqual([slab.id, punch.id])
+  const depth = await undoDepth(page)
+  await selectionBar(page).getByRole('button', { name: 'Subtract', exact: true }).click()
+
+  const [ring] = await layers(page)
+  expect(await layers(page)).toHaveLength(1)
+  expect(await selectedIds(page)).toEqual([ring.id])
+  expect(await undoDepth(page)).toBe(depth + 1)
+  let shape = (await contourAnchors(page))[0]
+  expect(shape).toHaveLength(2)
+  await pointerAway(page, f)
+  expect(await isEmpty(page, f.at(0, 0))).toBe(true)
+  expect(await isEmpty(page, f.at(60, 40))).toBe(true)
+  expect(await isInk(page, f.at(150, 0))).toBe(true)
+  expect(await isInk(page, f.at(0, -150))).toBe(true)
+  expect(await inkMismatches(page)).toEqual([])
+
+  // The inner contour's rightmost point: select it, then drag it 40 units out.
+  const inner = shape[1]
+  const index = inner.reduce((best, p, i) => (p.x > inner[best].x ? i : best), 0)
+  const point = inner[index]
+  const outer = shape[0]
+  await click(page, f.at(point.x, point.y))
+  expect(await pointSelection(page)).toMatchObject({ layerId: ring.id, contourIndex: 1, segmentIndex: index })
+  // Not so soon that the press makes a double-click.
+  await page.waitForTimeout(400)
+  await drag(page, f.at(point.x, point.y), f.at(point.x + 40, point.y))
+
+  shape = (await contourAnchors(page))[0]
+  // Only the inner contour was written.
+  expect(shape[0]).toEqual(outer)
+  expect(Math.abs(shape[1][index].x - (point.x + 40))).toBeLessThan(1)
+  expect(await pointSelection(page)).toMatchObject({ contourIndex: 1, segmentIndex: index })
+  expect(await undoDepth(page)).toBe(depth + 2)
+  // Escape lets go of the point, so its handles no longer cover the ink.
+  await page.keyboard.press('Escape')
+  expect(await pointSelection(page)).toBeNull()
+  await pointerAway(page, f)
+  // The hole now reaches where the ring was.
+  expect(await isEmpty(page, f.at(point.x + 25, point.y))).toBe(true)
+  expect(await isInk(page, f.at(-150, 0))).toBe(true)
+  expect(await inkMismatches(page)).toEqual([])
+
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(async () => (await contourAnchors(page))[0][1][index].x).toBeCloseTo(point.x, 3)
+})
+
+test('a link whose ids are all digits opens and draws, as stage 1 drew it', async ({ page }) => {
+  const square = (x: number, y: number) => `M${x},${y}H${x + 200}V${y + 200}H${x}Z`
+  const layer = { name: 'A', operation: 'add', visible: true, locked: false, fillRule: 'nonzero', transform: { dx: 0, dy: 0, scale: 1, rotation: 0 } }
+  const legacy = {
+    id: 'doc',
+    source: { seed: 0, modeId: 'slab', generatorId: 'slab', generatorVersion: 'v1' },
+    layers: [
+      { ...layer, id: 1, pathData: square(-200, -200) },
+      { ...layer, id: 'b', pathData: square(0, 0) },
+    ],
+    selectedLayerIds: [],
+    pointSelection: null,
+    mode: 'object',
+  }
+  const now = new Date(0).toISOString()
+  const contour = (x: number, y: number) => ({
+    closed: true,
+    segments: [
+      [x, y],
+      [x + 200, y],
+      [x + 200, y + 200],
+      [x, y + 200],
+    ].map(([px, py]) => ({ point: { x: px, y: py }, handleIn: null, handleOut: null })),
+  })
+  const current = {
+    schemaVersion: 2,
+    id: 'doc',
+    kind: 'brand-vector',
+    activeMode: 'logo',
+    name: 'Digits',
+    artboards: [{ id: 'board', name: 'Artboard 1', rect: { x: -512, y: -512, width: 1024, height: 1024 }, background: null }],
+    objects: [{ id: '7', name: 'Seven', parentId: null, visible: true, locked: false, type: 'path', operation: 'add', contours: [contour(-200, -200)], fillRule: 'nonzero' }],
+    guides: [],
+    fillets: [],
+    source: null,
+    createdAt: now,
+    updatedAt: now,
+  }
+  const links = [
+    `#v=1.0&fillColor=%23222222&i=${LZString.compressToEncodedURIComponent(JSON.stringify(legacy))}`,
+    `#fillColor=%23222222&vd=${LZString.compressToEncodedURIComponent(JSON.stringify(current))}`,
+  ]
+  for (const [index, hash] of links.entries()) {
+    await page.goto('about:blank')
+    await page.goto(`/${hash}`)
+    await expect(page.locator('main canvas')).toBeVisible()
+    await page.evaluate(() => {
+      const { ui, toggleLook } = window.__marque.store.getState()
+      if (ui.look !== 'final') toggleLook()
+    })
+    const ids = await page.evaluate(() => window.__marque.store.getState().vectorDocument.objects.map((object) => object.id))
+    expect(ids).toEqual(index === 0 ? ['1', 'b'] : ['7'])
+    const f = await frame(page)
+    await pointerAway(page, f)
+    expect(await isInk(page, f.at(-100, -100))).toBe(true)
+    if (index === 0) expect(await isInk(page, f.at(100, 100))).toBe(true)
+    expect(await isEmpty(page, f.at(100, -100))).toBe(true)
+  }
+})
+
+test('a link stage 1 wrote opens, and draws the mark stage 1 drew', async ({ page }) => {
+  await page.goto(`/${STAGE_1_LINK.hash}`)
+  await expect(page.locator('main canvas')).toBeVisible()
+  await page.evaluate(() => {
+    const { ui, toggleLook } = window.__marque.store.getState()
+    if (ui.look !== 'final') toggleLook()
+  })
+  const state = await page.evaluate(() => {
+    const { vectorDocument, vectorUndoStack, params } = window.__marque.store.getState()
+    return { version: vectorDocument.schemaVersion, objects: vectorDocument.objects.length, undo: vectorUndoStack.length, ink: params.fillColor }
+  })
+  expect(state).toEqual({ version: 2, objects: 3, undo: 0, ink: STAGE_1_LINK.inkColor })
+  expect(await page.evaluate(() => window.__marque.mark().viewBox)).toEqual(STAGE_1_LINK.mark.viewBox)
+  const f = await frame(page)
+  await pointerAway(page, f)
+  // Ink where stage 1 drew ink, and none where it cut, on a fine grid.
+  expect(await inkMismatches(page, 280, 10, STAGE_1_LINK.mark.compoundPathData)).toEqual([])
+  // Opening is no edit: the link stays as it came.
+  await page.waitForTimeout(600)
+  expect(await page.evaluate(() => window.location.hash)).toBe(STAGE_1_LINK.hash)
 })

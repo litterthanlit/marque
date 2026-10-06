@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { describeCarve } from '../../engine/carve/spec.ts'
-import { bakedObjectPath } from '../../engine/illustrator/layerPath.ts'
+import { editableShapeOf } from '../../engine/illustrator/layerPath.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
 import type { VectorObject } from '../../engine/vector/types.ts'
 import { selectionBox } from '../../renderer/directEdit/handleSet.ts'
@@ -47,7 +47,7 @@ function describeSelection(
   const byId = new Map(objects.map((object) => [object.id, object]))
   const around = selectionBox(doc, (layer) => {
     const object = byId.get(layer.id)
-    return object?.type === 'path' ? bakedObjectPath(object.path, layer.transform) : null
+    return object?.type === 'path' ? editableShapeOf(object.contours) : null
   })
   if (!around) return { name, numbers: null }
   const { width, height, rotation } = around.box
@@ -82,6 +82,13 @@ export function SelectionBar() {
     selectedLayer && !selectedLayer.carve && illustrator.pointSelection?.layerId === selectedLayer.id
       ? illustrator.pointSelection
       : null
+
+  // On a shape with a hole, the hole's points are told apart from the outline's.
+  const pointLabel = selectedPoint
+    ? (selectedLayer?.contourCount ?? 1) > 1
+      ? `Point ${selectedPoint.segmentIndex + 1} · contour ${(selectedPoint.contourIndex ?? 0) + 1}`
+      : `Point ${selectedPoint.segmentIndex + 1}`
+    : ''
 
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center px-3">
@@ -119,19 +126,19 @@ export function SelectionBar() {
         {selectedPoint && (
           <>
             <Divider className="max-sm:hidden" />
-            <div className="flex items-center gap-1" role="group" aria-label={`Point ${selectedPoint.segmentIndex + 1}`}>
+            <div className="flex items-center gap-1" role="group" aria-label={pointLabel}>
               <span aria-hidden="true" className="px-1 text-[10px] uppercase tracking-widest text-sidebar-text">
-                Point {selectedPoint.segmentIndex + 1}
+                {pointLabel}
               </span>
               <EditorButton
                 title="Double-click a point to switch it between sharp and smooth."
-                onClick={() => editAnchor(selectedPoint.layerId, selectedPoint.segmentIndex, 'toggle-smooth')}
+                onClick={() => editAnchor(selectedPoint.layerId, selectedPoint.segmentIndex, 'toggle-smooth', selectedPoint.contourIndex)}
               >
                 Sharp / Smooth
               </EditorButton>
               <EditorButton
                 danger
-                onClick={() => editAnchor(selectedPoint.layerId, selectedPoint.segmentIndex, 'delete')}
+                onClick={() => editAnchor(selectedPoint.layerId, selectedPoint.segmentIndex, 'delete', selectedPoint.contourIndex)}
               >
                 Delete point
               </EditorButton>

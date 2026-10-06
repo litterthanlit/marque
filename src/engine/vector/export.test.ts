@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { composeVectorMarkCached } from './export.ts'
-import type { PathObject, VectorDocument } from './types.ts'
+import type { GroupObject, PathObject, VectorDocument } from './types.ts'
 
 function reset() {
   useLogoStore.setState(useLogoStore.getInitialState())
@@ -35,12 +35,31 @@ describe('the cached mark', () => {
     expect(composeVectorMarkCached(document())).toBe(mark)
   })
 
-  it('is composed again when a transform moves a shape', () => {
+  it('is composed again when a shape moves', () => {
     const mark = composeVectorMarkCached(document())
-    const moved = withFirst(document(), (object) => ({ ...object, transform: { ...object.transform, e: 25 } }))
+    const moved = withFirst(document(), (object) => ({
+      ...object,
+      contours: object.contours.map((contour) => ({
+        ...contour,
+        segments: contour.segments.map((segment) => ({ ...segment, point: { x: segment.point.x + 25, y: segment.point.y } })),
+      })),
+    }))
     const next = composeVectorMarkCached(moved)
     expect(next).not.toBe(mark)
     expect(next.viewBox.x).toBeCloseTo(mark.viewBox.x + 25, 1)
+  })
+
+  it('is the same mark when its layers go into a shared group, and composed again when the group isolates or hides', () => {
+    const mark = composeVectorMarkCached(document())
+    const [slab, punch] = document().objects as PathObject[]
+    const group: GroupObject = { type: 'group', id: 'g', name: 'Group', parentId: null, visible: true, locked: false, isolated: false, operation: 'add' }
+    const grouped = (header: GroupObject): VectorDocument => ({
+      ...document(),
+      objects: [header, { ...slab, parentId: 'g' }, { ...punch, parentId: 'g' }],
+    })
+    expect(composeVectorMarkCached(grouped(group))).toBe(mark)
+    expect(composeVectorMarkCached(grouped({ ...group, isolated: true }))).not.toBe(mark)
+    expect(composeVectorMarkCached(grouped({ ...group, visible: false })).compoundPathData).toBe('')
   })
 
   it('is composed again when a shape is hidden', () => {

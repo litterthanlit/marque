@@ -10,7 +10,7 @@ import {
   type Bounds,
   type Vec,
 } from '../path/bezier.ts'
-import { curveCount, curveOf, type EditablePath } from '../path/editPath.ts'
+import { curveCount, curveOf, type EditablePath, type EditableShape } from '../path/editPath.ts'
 
 /**
  * The box that handles sit around: eight resize handles on a frame padded
@@ -208,6 +208,11 @@ export function pathBoundsInFrame(path: EditablePath, rotation = 0): Bounds {
   return b
 }
 
+/** Tight bounds of every contour of a shape, in a frame turned by `rotation`. */
+export function shapeBoundsInFrame(shape: EditableShape, rotation = 0): Bounds {
+  return shape.reduce((bounds, path) => unionBounds(bounds, pathBoundsInFrame(path, rotation)), emptyBounds())
+}
+
 /** The part two bounds share, or empty bounds when they do not meet. */
 export function intersectBounds(a: Bounds, b: Bounds): Bounds {
   const shared = {
@@ -277,6 +282,11 @@ export function transformPath(path: EditablePath, m: Affine): EditablePath {
       hOut: seg.hOut ? applyLinear(m, seg.hOut) : null,
     })),
   }
+}
+
+/** Every contour of a shape under an affine map. */
+export function transformShape(shape: EditableShape, m: Affine): EditableShape {
+  return shape.map((path) => transformPath(path, m))
 }
 
 /* ─── Dragging ─── */

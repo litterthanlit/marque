@@ -1,7 +1,7 @@
 import type { GenerationResult, LogoParams } from '../types.ts'
 import { getGenerator } from '../generators/registry.ts'
-import { createDefaultAppearance, createDefaultArtboard, IDENTITY_MATRIX } from './document.ts'
-import { pathDataToVectorPaths } from './pathSerialization.ts'
+import { createDefaultArtboard, VECTOR_SCHEMA_VERSION } from './document.ts'
+import { pathDataToContours } from './pathSerialization.ts'
 import { generatedShapesInApplyOrder } from '../illustrator/compose.ts'
 import type { PathObject, VectorDocument, VectorObject } from './types.ts'
 
@@ -29,6 +29,10 @@ function generatedObjectName(type: string, operation: 'add' | 'subtract', index:
   return `Generated ${titleCaseShapeType(type)} ${number}`
 }
 
+/**
+ * A generated mark as a document: one object per subpath of each shape, adds
+ * before cuts, so it composes to the generated mark.
+ */
 export function createVectorDocumentFromGeneration(
   result: GenerationResult,
   params: LogoParams,
@@ -49,38 +53,33 @@ export function createVectorDocumentFromGeneration(
     if (!shape.pathData) return []
     const index = result.shapes.indexOf(shape)
 
-    const paths = pathDataToVectorPaths(shape.pathData)
-    return paths.map((path, pathIndex): PathObject => ({
+    const contours = pathDataToContours(shape.pathData)
+    return contours.map((contour, pathIndex): PathObject => ({
       id: crypto.randomUUID(),
       type: 'path',
       name: `${generatedObjectName(shape.type, shape.operation, index)}${
-        paths.length > 1 ? `.${pathIndex + 1}` : ''
+        contours.length > 1 ? `.${pathIndex + 1}` : ''
       }`,
       parentId: null,
-      artboardId: artboard.id,
       visible: true,
       locked: false,
-      transform: { ...IDENTITY_MATRIX },
-      appearance: createDefaultAppearance(params.fillColor),
-      source: {
-        ...source,
-        sourceShapeId: shape.id,
-        compatOperation: shape.operation,
-      },
-      path,
+      operation: shape.operation,
+      contours: [contour],
       fillRule: 'evenodd',
+      sourceShapeId: shape.id,
     }))
   })
 
   return {
-    schemaVersion: 1,
+    schemaVersion: VECTOR_SCHEMA_VERSION,
     id: crypto.randomUUID(),
     kind: 'brand-vector',
     activeMode: 'logo',
     name: `Vector Maker ${params.seed}`,
     artboards: [artboard],
     objects,
-    selection: objects[0] ? { targets: [{ type: 'object', objectId: objects[0].id }] } : { targets: [] },
+    guides: [],
+    fillets: [],
     source,
     createdAt: convertedAt,
     updatedAt: convertedAt,

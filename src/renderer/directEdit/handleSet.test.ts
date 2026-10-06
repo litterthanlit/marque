@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_HANDLE_LAYOUT } from '../../engine/box/box.ts'
 import { carveOutline, outlineBounds } from '../../engine/carve/outline.ts'
 import { slabSpec, type CarveSpec } from '../../engine/carve/spec.ts'
-import { bakedEditablePath } from '../../engine/illustrator/layerPath.ts'
+import { bakedEditableShape } from '../../engine/illustrator/layerPath.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
 import { rotate } from '../../engine/path/bezier.ts'
 import { scaledHandleLayout, selectionBox, selectionHandles, type LiveHandles } from './handleSet.ts'
@@ -63,7 +63,7 @@ function docOf(layers: IllustratorLayer[]): IllustratorDocument {
 }
 
 function handlesFor(selected: string[], layers: IllustratorLayer[] = [slab, slice, square, turned], live: LiveHandles = 'all') {
-  return selectionHandles({ ...docOf(layers), selectedLayerIds: selected }, DEFAULT_HANDLE_LAYOUT, bakedEditablePath, live)
+  return selectionHandles({ ...docOf(layers), selectedLayerIds: selected }, DEFAULT_HANDLE_LAYOUT, bakedEditableShape, live)
 }
 
 describe('the handles a selection gets', () => {
@@ -133,7 +133,7 @@ describe('the handles a selection gets', () => {
     expect(handlesFor(['small'], [small])!.list.map((h) => h.id)).toEqual(['nw', 'ne', 'e', 'se', 'sw', 'w', 'rotate'])
     // At two pixels per unit the same shape is 64 pixels wide padded, and gets them all.
     const doc: IllustratorDocument = { ...docOf([small]), selectedLayerIds: ['small'] }
-    expect(selectionHandles(doc, scaledHandleLayout(0.5), bakedEditablePath)!.list).toHaveLength(9)
+    expect(selectionHandles(doc, scaledHandleLayout(0.5), bakedEditableShape)!.list).toHaveLength(9)
     const smallSlab = recipeLayer('smallSlab', { ...slabSpec('square'), width: 20, height: 20 })
     expect(handlesFor(['smallSlab'], [smallSlab])!.list.map((h) => h.id)).toContain('e')
   })
@@ -188,7 +188,7 @@ describe('the box Alt+arrows turn and scale', () => {
       pointSelection: null,
       mode: 'object',
     }
-    return selectionBox(doc, bakedEditablePath)
+    return selectionBox(doc, bakedEditableShape)
   }
 
   it("turns a lone punch about its own centre, even where half of it cuts nothing", () => {

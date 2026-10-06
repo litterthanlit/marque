@@ -4,7 +4,7 @@
  * this module.
  */
 import { useLogoStore } from './store/logoStore.ts'
-import { bakedEditablePath } from './engine/illustrator/layerPath.ts'
+import { bakedEditablePath, bakedEditableShape } from './engine/illustrator/layerPath.ts'
 import { grooveSpine } from './engine/carve/outline.ts'
 import { isGroove } from './engine/carve/spec.ts'
 import { cubicPoint, cubicTangent, type Vec } from './engine/path/bezier.ts'
@@ -31,6 +31,7 @@ function createDevHook() {
   return {
     store: useLogoStore,
     bakedEditablePath,
+    bakedEditableShape,
 
     /**
      * Client-space positions of the selection's handles, as the canvas
@@ -40,7 +41,7 @@ function createDevHook() {
     handles() {
       const frame = canvasFrame()
       if (!frame) return []
-      const set = selectionHandles(useLogoStore.getState().illustrator, scaledHandleLayout(1 / frame.unit), bakedEditablePath)
+      const set = selectionHandles(useLogoStore.getState().illustrator, scaledHandleLayout(1 / frame.unit), bakedEditableShape)
       return (set?.list ?? []).map((h) => ({ id: h.id, ...frame.toClient(h.at) }))
     },
 
