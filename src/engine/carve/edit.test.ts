@@ -108,6 +108,14 @@ describe('punch and groove handles', () => {
     expect(Math.abs(angle / 15 - Math.round(angle / 15))).toBeLessThan(1e-6)
   })
 
+  it('Alt with Shift turns it about its middle in 15° steps, as it lands', () => {
+    // From the other end this would read 30°; about the middle, which stays, it is 45°.
+    const next = dragCarveHandle(groove, 'to', { x: 100, y: 0 }, { x: 54, y: 50 }, { shift: true, alt: true }) as GrooveSpec
+    const angle = (Math.atan2(next.to.y - next.from.y, next.to.x - next.from.x) * 180) / Math.PI
+    expect(angle).toBeCloseTo(45, 9)
+    expect(add(next.from, next.to)).toEqual({ x: 0, y: 0 })
+  })
+
   it('Alt mirrors the other end about the middle', () => {
     const next = dragCarveHandle(groove, 'to', { x: 100, y: 0 }, { x: 120, y: 30 }, { shift: false, alt: true }) as GrooveSpec
     expect(next.from).toEqual({ x: -120, y: -30 })

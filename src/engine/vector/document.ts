@@ -1,5 +1,6 @@
 import { isObjectCarveValid } from '../carve/sync.ts'
 import { follow } from './follow.ts'
+import { breakPinLoops } from './pins.ts'
 import type {
   ConstructionRole,
   Contour,
@@ -70,7 +71,8 @@ export function isBlankDocument(document: Pick<VectorDocument, 'objects' | 'guid
  *   describes its contours, is dropped, and so is a frame that is not a
  *   finite turn or sits on a recipe;
  * - a link or guide link of a kind it does not know, or to an object that
- *   is not there, is detached, and so is a pin;
+ *   is not there, is detached, and so is a pin; pins that would hold each
+ *   other in a loop lose the pin that closes it;
  * - a guide of a shape it does not know is dropped, and so is a fillet
  *   between objects that are not there;
  * - a construction guide is rebuilt from the shape it follows, or detached
@@ -113,14 +115,14 @@ export function repairVectorDocument(value: unknown): VectorDocument | null {
     if (object) read.push(object)
   }
   const structured = repairStructure(uniqueIds(read))
-  const objects = repairReferences(structured)
-  if (objects !== read) changed = true
+  const referenced = breakPinLoops(repairReferences(structured))
 
-  const ids = new Set(objects.map((object) => object.id))
+  const ids = new Set(referenced.map((object) => object.id))
   const readGuides = readList(value.guides, (raw) => readGuide(raw, ids))
   const fillets = readList(value.fillets, (raw) => readFillet(raw, ids))
-  // What follows an object is brought up to date with it once, as the document opens.
-  const { guides } = follow(null, { objects, guides: readGuides, fillets })
+  // What follows an object is brought up to date with it once, as the document opens. Pins are only checked: a pinned recipe stays where it was stored.
+  const { objects, guides } = follow(null, { objects: referenced, guides: readGuides, fillets })
+  if (objects !== read) changed = true
   const artboards = value.artboards.map((artboard) =>
     onlyKeys(artboard, ARTBOARD_KEYS) && onlyKeys(artboard.rect, RECT_KEYS) ? artboard : cleanArtboard(artboard),
   )

@@ -8,6 +8,7 @@ import {
   maxChordDeviation,
   normalizeDegrees,
   rotate,
+  scale,
   sub,
   type Bounds,
   type Cubic,
@@ -65,20 +66,24 @@ import {
 import {
   carveKeyPoints,
   documentSizes,
-  documentSnapTargets,
+  documentSnapIndex,
   freeBoxPoints,
+  lineTouchHints,
   NO_SNAP,
-  snapCircleTangent,
+  shapeContours,
   snapMoving,
+  snapRadiusTangent,
   snapValue,
-  type EdgeHit,
   type SnapHint,
   type SnapIndex,
   type SnapResult,
   type SnapTarget,
 } from '../../engine/snap/snapping.ts'
+import { asCircle, type Circle } from '../../engine/geometry/asCircle.ts'
+import { roundPrimitives, tangentAtAngle, tangentThrough } from '../../engine/geometry/tangent.ts'
+import { PIN_SLACK, recipeCentre, shapeCentre } from '../../engine/vector/pins.ts'
 import { boxGeometryFor, carveOutline, grooveSpine, type SideRef } from '../../engine/carve/outline.ts'
-import { bentEdgeCount, isGroove, type CarveSpec } from '../../engine/carve/spec.ts'
+import { bentEdgeCount, isGroove, type CarveSpec, type SlabSpec } from '../../engine/carve/spec.ts'
 import { bakedEditableShape } from '../../engine/illustrator/layerPath.ts'
 import { createComposeSession, type ComposeSession } from '../../engine/illustrator/composeSession.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
@@ -185,14 +190,17 @@ interface PendingPoint {
 /** A move of some layers (and the cuts they carry), previewable and committable. */
 interface MovePlan {
   preview(d: Vec): void
-  commit(d: Vec): void
+  /** Commit the move; `pins` pins (or with null lets go of) the recipes it names. */
+  commit(d: Vec, pins?: Map<string, string | null>): void
   cancel(): void
   editedIds: Set<string>
   drawOverlay(layer: paper.Layer): void
   /** Points of the moved shapes (not the cuts they carry) that snap: corners, middles, centres. */
   keyPoints: Vec[]
-  /** The one round punch being moved, if that's all it is: it can snap to touch an edge. */
-  roundPunch: { center: Vec; radius: number } | null
+  /** Which recipe's centre each key point is, if it is one that can be pinned. */
+  keyCentres: Array<string | null>
+  /** The one shape being moved, when it is a circle: it can snap to touch a line, an edge or a circle. */
+  circle: Circle | null
 }
 
 /**
@@ -445,10 +453,30 @@ function guideKeyPoints(shape: GuideShape, grab: Vec): Vec[] {
   }
 }
 
+/** The index of the point nearest `p`, or null when there are none. */
+function nearestIndex(points: readonly Vec[], p: Vec): number | null {
+  let best: number | null = null
+  for (let i = 0; i < points.length; i++) if (best === null || distance(points[i], p) < distance(points[best], p)) best = i
+  return best
+}
+
+/** The shape whose centre a snap landed a point on, for a pin: a shape's, never a guide's or the artboard's. */
+function pinTargetOf(snap: SnapResult): string | null {
+  const hit = snap.hit
+  return hit && hit.kind === 'centre' && hit.owner !== null && !hit.guide ? hit.owner : null
+}
+
+/** A line snapped to touch circles, marked where it touches. */
+function tangentResult(hints: SnapHint[]): SnapResult {
+  return { d: { x: 0, y: 0 }, label: 'tangent', hints }
+}
+
 const DOUBLE_CLICK_MS = 300
 const DOUBLE_CLICK_PX = 6
 /** How long the size or angle that Alt with the arrow keys reached stays by the box. */
 const KEY_CHIP_MS = 1000
+/** How long "unpinned" shows over every other label when a pin is let go of. */
+const UNPINNED_MS = 1000
 
 /**
  * Direct editing for Vector Maker: one mode, where what you press decides what
@@ -481,9 +509,13 @@ export class DirectEditController {
   /** Pink hints of the snap in effect, drawn on top of everything. */
   private snapHints: SnapHint[] = []
   /** While a tool places something: its snap index (for one document), where it started, the modifiers held. */
-  private toolIndex: { doc: IllustratorDocument; index: SnapIndex } | null = null
+  private toolIndex: { doc: IllustratorDocument; guides: boolean; index: SnapIndex } | null = null
+  /** The shape a tool's press started on the centre of, when the tool pins what it places. */
+  private startPin: string | null = null
   private toolStart: SnapResult | null = null
   private toolMods: Modifiers = { shift: false, alt: false, noSnap: false }
+  /** Is the tool's pointer a finger? Then its snaps reach as far as a finger's. */
+  private toolTouch = false
   /** Which handles take presses: fewer while a tool is active, so its presses reach it. */
   private live: LiveHandles = 'all'
   /** Under the Guide tool, guides take presses first. */
@@ -565,6 +597,8 @@ export class DirectEditController {
   /* ─── Pointer ─── */
 
   pointerDown(p: Vec, mods: Modifiers, touch: boolean): void {
+    // A new gesture: "unpinned" held from the last edit goes, so it never covers what this one shows.
+    hud.letGo()
     this.resting = { p, touch }
     let ctx = this.context(touch)
     let zone = findZone(ctx, p)
@@ -620,9 +654,13 @@ export class DirectEditController {
     if (session) {
       this.session = null
       this.press = null
+      const before = this.host.getDoc()
       session.commit()
       // What a keyboard edit read out before no longer holds.
       hud.silence()
+      // "unpinned" stays its moment only if a pin was let go of: one the drag showed letting go may have come back.
+      if (this.noteUnpinned(before)) this.announceEdit(before, null)
+      else hud.letGo()
       this.endGesture()
       return
     }
@@ -638,6 +676,8 @@ export class DirectEditController {
     this.press = null
     if (session) {
       session.cancel()
+      // Nothing was written: no pin was let go of, whatever the drag showed.
+      hud.letGo()
       this.endGesture()
     }
   }
@@ -851,28 +891,107 @@ export class DirectEditController {
   }
 
   /**
-   * What a drag can snap to: every visible shape except the edited ones, plus
-   * the artboard centre. The edges of the rest of the ink are composed only
-   * if something asks for them.
+   * What a drag can snap to: every visible shape except the edited ones and
+   * the recipes pinned to them, which move with them; the artboard centre;
+   * and the guides on the canvas, except those in `guideExclude` and those
+   * that follow an edited shape. Shapes and guides are read as pieces, so an
+   * edge buried inside the ink is a target too.
    */
-  private makeSnapIndex(doc: IllustratorDocument, exclude: Set<string>, extra: SnapTarget[] = []): SnapIndex {
-    const targets = [...documentSnapTargets(doc, exclude, (layer) => this.freePathOf(layer)), ...extra]
-    let edges: paper.CompoundPath | null | undefined
-    const nearestEdge = (p: Vec): EdgeHit | null => {
-      if (edges === undefined) {
-        const pathData = exclude.size
-          ? createComposeSession(doc, exclude).compose(new Map([...exclude].map((id) => [id, null])))
-          : this.host.getInkPathData()
-        this.scope.activate()
-        edges = pathData ? new this.scope.CompoundPath({ pathData, insert: false }) : null
+  private makeSnapIndex(
+    doc: IllustratorDocument,
+    exclude: Set<string>,
+    extra: SnapTarget[] = [],
+    guideExclude: ReadonlySet<string> = new Set(),
+  ): SnapIndex {
+    const left = new Set([...exclude, ...this.followersOf(doc, exclude)])
+    const guides = this.shownGuides(doc, left, guideExclude)
+    const index = documentSnapIndex({ doc, exclude: left, freePathOf: (layer) => this.freePathOf(layer), guides, extra })
+    this.scope.activate()
+    return index
+  }
+
+  /** The guides on the canvas that can be snapped to: none while guides are hidden; never those in `guideExclude` or following a shape in `left`. */
+  private shownGuides(doc: IllustratorDocument, left: ReadonlySet<string> = new Set(), guideExclude: ReadonlySet<string> = new Set()): Guide[] {
+    if (!this.host.guidesShown()) return []
+    return (doc.guides ?? []).filter((guide) => guide.visible && !guideExclude.has(guide.id) && !(guide.link && left.has(guide.link.of)))
+  }
+
+  /** Sizes in use for "same size", leaving out `exclude`: of shapes, and of the circle guides on the canvas. */
+  private sizesFor(doc: IllustratorDocument, exclude: ReadonlySet<string>) {
+    return documentSizes(doc, exclude, (layer) => this.freePathOf(layer), this.shownGuides(doc, exclude, exclude))
+  }
+
+  /** The recipes pinned to any of `ids`, and those pinned to them in turn: they move with them. */
+  private followersOf(doc: IllustratorDocument, ids: Iterable<string>): string[] {
+    const reached = new Set(ids)
+    const out: string[] = []
+    for (let grew = true; grew; ) {
+      grew = false
+      for (const layer of doc.layers) {
+        if (!layer.pin || !reached.has(layer.pin) || reached.has(layer.id)) continue
+        reached.add(layer.id)
+        out.push(layer.id)
+        grew = true
       }
-      if (!edges) return null
-      const loc = edges.getNearestLocation(new this.scope.Point(p.x, p.y))
-      if (!loc) return null
-      const tangent = loc.tangent
-      return { point: { x: loc.point.x, y: loc.point.y }, distance: loc.distance, tangent: { x: tangent.x, y: tangent.y } }
     }
-    return { targets, nearestEdge }
+    return out
+  }
+
+  /** A live composition for a gesture on some layers, and on the recipes pinned to them, which move with them. */
+  private composeFor(doc: IllustratorDocument, ids: Iterable<string>): ComposeSession {
+    const list = [...ids]
+    return createComposeSession(doc, [...list, ...this.followersOf(doc, list)])
+  }
+
+  /** The centre a pin holds to, of a layer as it is now. */
+  private layerCentre(layer: IllustratorLayer): Vec | null {
+    if (layer.carve) return recipeCentre(layer.carve)
+    const shape = this.freePathOf(layer)
+    return shape ? shapeCentre({ contours: shapeContours(shape), frame: { rotation: layer.frameRotation ?? 0 } }) : null
+  }
+
+  /** A layer read as a circle: a circle slab or punch, a spark circle. Null otherwise. */
+  private layerCircle(layer: IllustratorLayer): Circle | null {
+    if (layer.carve) return asCircle({ carve: layer.carve, contours: [] })
+    const shape = this.freePathOf(layer)
+    return shape ? asCircle({ contours: shapeContours(shape) }) : null
+  }
+
+  /**
+   * The recipes pinned to layers a live frame replaces, moved as far as the
+   * centres they are pinned to move, put in the frame too: the drag shows
+   * them going with what they are pinned to, as the follow pass will put them.
+   */
+  private withFollowers(replacements: Map<string, string | null>, carves: Map<string, CarveSpec>, frames: Map<string, number>): void {
+    const doc = this.host.getDoc()
+    if (!doc.layers.some((layer) => layer.pin)) return
+    const shifts = new Map<string, Vec | null>()
+    const shiftOf = (id: string): Vec | null => {
+      if (shifts.has(id)) return shifts.get(id)!
+      const layer = this.layer(id)
+      const pathData = replacements.get(id)
+      const carve = carves.get(id)
+      const before = layer ? this.layerCentre(layer) : null
+      const rotation = frames.get(id) ?? layer?.frameRotation ?? 0
+      const after = carve ? recipeCentre(carve) : pathData ? shapeCentre({ contours: pathDataToContours(pathData), frame: { rotation } }) : null
+      this.scope.activate()
+      const shift = before && after ? sub(after, before) : null
+      shifts.set(id, shift)
+      return shift
+    }
+    for (let grew = true; grew; ) {
+      grew = false
+      for (const layer of doc.layers) {
+        if (!layer.pin || !layer.carve || replacements.has(layer.id) || !replacements.has(layer.pin)) continue
+        const shift = shiftOf(layer.pin)
+        if (!shift) continue
+        const moved = translateCarve(layer.carve, shift)
+        replacements.set(layer.id, carveOutline(moved).pathData)
+        carves.set(layer.id, moved)
+        shifts.set(layer.id, shift)
+        grew = true
+      }
+    }
   }
 
   /** Show a snap: its hints on the canvas, its label by the pointer. */
@@ -886,7 +1005,14 @@ export class DirectEditController {
   /** The pointer moved while a tool is active: remember the modifiers and keep the label by it. */
   toolPointer(p: Vec, mods: Modifiers, touch = false): void {
     this.toolMods = mods
+    this.toolTouch = touch
     this.placeHud(p, touch)
+  }
+
+  /** A tool's press starts a gesture: "unpinned" held from the last edit goes, so it never covers what the tool shows. */
+  toolDown(p: Vec, mods: Modifiers, touch = false): void {
+    hud.letGo()
+    this.toolPointer(p, mods, touch)
   }
 
   /**
@@ -894,37 +1020,100 @@ export class DirectEditController {
    * where a press would land; a press remembers its snap, so the label
    * stays while the rest is dragged out. Rays come from `rays` (the other
    * end of a channel, the pen's previous point); `extra` adds targets the
-   * document doesn't have yet (the pen's own points).
+   * document doesn't have yet (the pen's own points). With `pins`, a start
+   * on a shape's centre says the new recipe will be pinned there: see
+   * `toolStartPin`.
    */
-  snapToolPoint(p: Vec, role: 'hover' | 'start' | 'end', options: { rays?: Vec[]; extra?: SnapTarget[] } = {}): Vec {
-    const result = this.toolSnap(role, (index) =>
-      snapMoving(
-        options.extra?.length ? { ...index, targets: [...index.targets, ...options.extra] } : index,
-        [p],
-        { tolerance: this.snapTolerance(), edges: true, rays: options.rays },
-      ),
-    )
+  snapToolPoint(p: Vec, role: 'hover' | 'start' | 'end', options: { rays?: Vec[]; extra?: SnapTarget[]; pins?: boolean } = {}): Vec {
+    if (role === 'start') this.startPin = null
+    const result = this.toolSnap(role, (index) => {
+      const found = snapMoving(index, [p], { tolerance: this.snapTolerance(this.toolTouch), edges: true, rays: options.rays, extra: options.extra })
+      const target = options.pins && role !== 'end' ? pinTargetOf(found) : null
+      if (!target) return found
+      if (role === 'start') this.startPin = target
+      return { ...found, label: 'pinned', hints: [{ kind: 'pin', p: add(p, found.d) }] }
+    })
     return add(p, result.d)
   }
 
-  /** Snap the radius of a punch being drawn: the same size as another, or just touching an edge. */
-  snapToolRadius(center: Vec, radius: number): number {
+  /** The shape the last tool press started on the centre of, when it asked for pins: what a punch placed there is pinned to. */
+  toolStartPin(): string | null {
+    return this.startPin
+  }
+
+  /**
+   * Snap the radius of a shape a tool is drawing about its centre. A circle
+   * (a round punch, a circle guide) takes the size of another circle or
+   * punch, or just touches an edge, a guide or another circle. Any other
+   * punch, whose sides are not where a circle of its radius would be, takes
+   * only the radius of another punch.
+   */
+  snapToolRadius(center: Vec, radius: number, round = true): number {
     let snapped = radius
     this.toolSnap('end', (index, doc) => {
-      const tolerance = this.snapTolerance()
-      const same = snapValue(radius, documentSizes(doc, new Set()).punchRadii, tolerance)
-      if (same !== null) {
+      const sizes = this.sizesFor(doc, new Set())
+      const tolerance = this.snapTolerance(this.toolTouch)
+      if (!round) {
+        const same = snapValue(radius, sizes.punchRadii, tolerance)
+        if (same === null) return NO_SNAP
         snapped = same
-        return { d: { x: 0, y: 0 }, label: 'same size', hints: [] }
+        return { ...NO_SNAP, label: 'same size' }
       }
-      const touch = snapCircleTangent(index, center, radius, tolerance, 'radius')
-      if (touch) {
-        snapped = touch.radius
-        return { d: { x: 0, y: 0 }, label: 'tangent', hints: [{ kind: 'mark', p: touch.touch }] }
-      }
-      return NO_SNAP
+      const found = this.snapCircleSize(index, [...sizes.punchRadii, ...sizes.circleRadii], { c: center, r: radius }, center, tolerance)
+      if (!found) return NO_SNAP
+      snapped = found.radius
+      return found.snap
     })
     return snapped
+  }
+
+  /**
+   * Snap a guide line the Guide tool draws from `start` towards `current`.
+   * With `angle` (Shift's 15° steps) the line keeps it, and moves across
+   * itself to touch a circle, unless `start` snapped: then the line stays
+   * through it, as point snaps rank above tangency. Otherwise its far end lands on a point, or the
+   * line turns about `start` to touch a circle, or its end lands on an
+   * alignment, an edge or a 15° ray. Null when nothing snaps: the line then
+   * runs through `current`.
+   */
+  snapGuideLine(start: Vec, current: Vec, angle: number | null): { p: Vec; angle: number } | null {
+    let line: { p: Vec; angle: number } | null = null
+    this.toolSnap('end', (index) => {
+      const tolerance = this.snapTolerance(this.toolTouch)
+      const rounds = roundPrimitives(index.primitives ?? [])
+      if (angle !== null) {
+        // A start that snapped (to a point, an edge or an alignment) stays on the line: only a free one moves across.
+        if (this.toolStart?.label) return NO_SNAP
+        const touch = tangentAtAngle(start, angle, rounds, tolerance)
+        if (!touch) return NO_SNAP
+        line = { p: touch.p, angle }
+        return tangentResult(lineTouchHints(rounds, touch.p, angle, touch.touch))
+      }
+      const end = snapMoving(index, [current], { tolerance, edges: true, rays: [start] })
+      const onPoint = end.hit && end.hit.kind !== 'edge' && end.hit.kind !== 'tangent'
+      const touch = onPoint ? null : tangentThrough(start, current, rounds, tolerance)
+      if (touch) {
+        line = { p: start, angle: touch.angle }
+        return tangentResult(lineTouchHints(rounds, start, touch.angle, touch.touch))
+      }
+      if (!end.label) return NO_SNAP
+      const to = add(current, end.d)
+      if (distance(to, start) < 1e-6) return NO_SNAP
+      line = { p: start, angle: (Math.atan2(to.y - start.y, to.x - start.x) * 180) / Math.PI }
+      return end
+    })
+    return line
+  }
+
+  /**
+   * Snap the radius of a circle sized about `pivot`: to the size of another
+   * ("same size"), else to touch a piece ("tangent"). Null when nothing is in reach.
+   */
+  private snapCircleSize(index: SnapIndex, sizes: number[], circle: Circle, pivot: Vec, tolerance: number): { radius: number; snap: SnapResult } | null {
+    const same = snapValue(circle.r, sizes, tolerance)
+    if (same !== null) return { radius: same, snap: { ...NO_SNAP, label: 'same size' } }
+    const touch = snapRadiusTangent(index, circle, pivot, tolerance)
+    return touch && { radius: touch.radius, snap: touch.snap }
   }
 
   /** The tool's gesture ended, or the pointer left: drop its hints and label. */
@@ -944,12 +1133,15 @@ export class DirectEditController {
       this.drawOverlay()
       return NO_SNAP
     }
-    if (this.toolIndex?.doc !== doc) this.toolIndex = { doc, index: this.makeSnapIndex(doc, new Set()) }
+    const guides = this.host.guidesShown()
+    if (this.toolIndex?.doc !== doc || this.toolIndex.guides !== guides) this.toolIndex = { doc, guides, index: this.makeSnapIndex(doc, new Set()) }
     const result = run(this.toolIndex.index, doc)
     if (role === 'start') this.toolStart = result
     const start = role === 'end' ? this.toolStart : null
     this.snapHints = [...(start?.hints ?? []), ...result.hints]
-    hud.set({ label: result.label ?? start?.label ?? null })
+    // A start that will be pinned keeps saying so while the rest snaps too.
+    const pinned = start?.label === 'pinned' && result.label !== null && result.label !== 'pinned'
+    hud.set({ label: pinned ? `${result.label} · pinned` : (result.label ?? start?.label ?? null) })
     this.drawOverlay()
     return result
   }
@@ -1168,7 +1360,7 @@ export class DirectEditController {
     const moved = this.moveStarts(doc, ids, carry)
     const { starts, carried } = moved
     if (!starts.size) return null
-    const compose = createComposeSession(doc, starts.keys())
+    const compose = this.composeFor(doc, starts.keys())
     const restore = () => setInkPathData(this.scope, this.host.getInkPathData())
     const pathFor = (id: string, d: Vec): string => {
       const start = starts.get(id)!
@@ -1176,18 +1368,32 @@ export class DirectEditController {
     }
     const carriedSet = new Set(carried)
     const keyPoints: Vec[] = []
+    const keyCentres: Array<string | null> = []
+    const lone = ids.length === 1 ? this.layer(ids[0]) : undefined
+    const circle = lone ? this.layerCircle(lone) : null
     for (const id of ids) {
       const start = starts.get(id)
-      if (start?.carve) keyPoints.push(...carveKeyPoints(start.carve).map((target) => target.p))
-      else if (start?.path) keyPoints.push(...freeBoxPoints(start.path))
+      if (circle) {
+        // A circle snaps by its centre and its quadrants: the corners of its box are off its ink.
+        keyPoints.push(circle.c, ...[0, 90, 180, 270].map((deg) => add(circle.c, rotate({ x: 0, y: -circle.r }, deg))))
+        keyCentres.push(start?.carve ? id : null, null, null, null, null)
+      } else if (start?.carve) {
+        const targets = carveKeyPoints(start.carve)
+        keyPoints.push(...targets.map((target) => target.p))
+        // A recipe's centre, or a groove's middle, is what a pin holds.
+        keyCentres.push(...targets.map((target) => (target.kind === 'centre' ? id : null)))
+      } else if (start?.path) {
+        const points = freeBoxPoints(start.path)
+        keyPoints.push(...points)
+        keyCentres.push(...points.map(() => null))
+      }
     }
-    const only = ids.length === 1 && !carried.length ? starts.get(ids[0])?.carve : undefined
-    const roundPunch = only && only.kind === 'punch' && only.shape === 'circle' ? { center: only.center, radius: only.radius } : null
 
     return {
       keyPoints,
-      roundPunch,
-      editedIds: new Set(starts.keys()),
+      keyCentres,
+      circle,
+      editedIds: new Set([...starts.keys(), ...this.followersOf(doc, starts.keys())]),
       preview: (d) => {
         const replacements = new Map<string, string | null>()
         const carves = new Map<string, CarveSpec>()
@@ -1198,12 +1404,17 @@ export class DirectEditController {
         this.showInk(compose, replacements, carves)
         this.drawOverlay()
       },
-      commit: (d) => {
-        if (Math.hypot(d.x, d.y) < 0.5) {
+      commit: (d, asked = new Map<string, string | null>()) => {
+        const still = Math.hypot(d.x, d.y) < 0.5
+        // Dropped about where it was, nothing lets go; but a new pin is written, the move with it, so the centre
+        // lands exactly on the one it is pinned to, as for a recipe near a centre dropped back on it.
+        const pins = still ? new Map([...asked].filter(([layerId, pin]) => pin !== null && this.layer(layerId)?.pin !== pin)) : asked
+        if (still && !pins.size) {
           restore()
           return
         }
-        this.host.commitLayerEdits(moveCommit(moved, ids, d))
+        const commit = { ...moveCommit(moved, ids, d), ...(still ? { label: 'Pin' } : {}) }
+        this.host.commitLayerEdits(pins.size ? { ...commit, edits: commit.edits.map((edit) => (pins.has(edit.layerId) ? { ...edit, pin: pins.get(edit.layerId) } : edit)) } : commit)
       },
       cancel: restore,
       drawOverlay: (layer) => {
@@ -1226,6 +1437,7 @@ export class DirectEditController {
     carves = new Map<string, CarveSpec>(),
     frames = new Map<string, number>(),
   ) {
+    this.withFollowers(replacements, carves, frames)
     this.preview = { paths: replacements, carves, frames }
     let ink: string
     try {
@@ -1286,6 +1498,15 @@ export class DirectEditController {
     if (!plan) return null
     let index: SnapIndex | null = null
     let d: Vec = { x: 0, y: 0 }
+    // The recipes moved that are pinned to something staying put: dragged, they let go, unless dropped back on a centre.
+    const pinned = plan.keyCentres.filter((id): id is string => {
+      const pin = id === null ? undefined : this.layer(id)?.pin
+      return pin !== undefined && !plan.editedIds.has(pin)
+    })
+    let pinTo: { id: string; target: string } | null = null
+    const letGo = this.letGoWatch()
+    // Only the key point nearest where the press grabbed lands where edges cross: finding crossings costs too much for every point.
+    const primary = nearestIndex(plan.keyPoints, sub(press.point, this.center()))
     return {
       editedIds: plan.editedIds,
       update: (p, m) => {
@@ -1294,45 +1515,153 @@ export class DirectEditController {
         const axes = m.shift ? (Math.abs(d.x) >= Math.abs(d.y) ? { x: true, y: false } : { x: false, y: true }) : undefined
         if (axes) d = { x: axes.x ? d.x : 0, y: axes.y ? d.y : 0 }
         let snap: SnapResult = NO_SNAP
+        pinTo = null
         if (this.snapsOn(m)) {
           index ??= this.makeSnapIndex(doc, plan.editedIds)
           const tolerance = this.snapTolerance(press.touch)
-          snap = snapMoving(index, plan.keyPoints.map((k) => add(k, d)), { tolerance, axes })
-          if (!snap.label && !axes && plan.roundPunch) {
-            const moved = add(plan.roundPunch.center, d)
-            const touch = snapCircleTangent(index, moved, plan.roundPunch.radius, tolerance, 'move')
-            if (touch) snap = { d: sub(touch.center, moved), label: 'tangent', hints: [{ kind: 'mark', p: touch.touch }] }
-          }
+          const circle = plan.circle && { c: add(plan.circle.c, d), r: plan.circle.r }
+          snap = snapMoving(index, plan.keyPoints.map((k) => add(k, d)), { tolerance, axes, circle: circle ?? undefined, primary })
           d = add(d, snap.d)
+          // A recipe's centre dropped on another shape's centre is pinned there.
+          const target = pinTargetOf(snap)
+          const id = target && snap.hit ? plan.keyCentres[snap.hit.moving] : null
+          if (id && target && this.canPin(doc, id, target)) {
+            pinTo = { id, target }
+            snap = { ...snap, label: 'pinned', hints: [{ kind: 'pin', p: add(plan.keyPoints[snap.hit!.moving], d) }] }
+          }
         }
         this.showSnap(snap)
+        letGo.update(Math.hypot(d.x, d.y) >= 0.5 && pinned.some((id) => pinTo?.id !== id))
         plan.preview(d)
         hud.set({ chip: `${Math.round(d.x)}, ${Math.round(d.y)}` })
       },
-      commit: () => plan.commit(d),
+      commit: () => {
+        const pins = new Map<string, string | null>(pinned.map((id) => [id, null]))
+        if (pinTo) pins.set(pinTo.id, pinTo.target)
+        plan.commit(d, pins)
+      },
       cancel: () => plan.cancel(),
       drawOverlay: (layer) => plan.drawOverlay(layer),
     }
   }
 
+  /** Can `id`'s centre be pinned to `target`'s: is it a recipe, and would the pin not hold in a loop? */
+  private canPin(doc: IllustratorDocument, id: string, target: string): boolean {
+    const layer = this.layer(id)
+    if (!layer?.carve || id === target) return false
+    const byId = new Map(doc.layers.map((each) => [each.id, each]))
+    const seen = new Set<string>()
+    for (let at: string | undefined = target; at !== undefined && !seen.has(at); at = byId.get(at)?.pin) {
+      if (at === id) return false
+      seen.add(at)
+    }
+    return true
+  }
+
+  /**
+   * Would a live frame let go of a pin: does a pinned recipe among `carves`,
+   * whose target is not among `edited`, have its centre off its target's?
+   */
+  private unpinning(carves: ReadonlyMap<string, CarveSpec>, edited: ReadonlySet<string>): boolean {
+    for (const [id, spec] of carves) {
+      const pin = this.layer(id)?.pin
+      if (pin === undefined || edited.has(pin)) continue
+      const target = this.layer(pin)
+      const centre = target ? this.layerCentre(target) : null
+      if (centre && distance(recipeCentre(spec), centre) > PIN_SLACK) return true
+    }
+    return false
+  }
+
+  /** Did the edit since `before` let go of a pin, on a recipe that is still there? */
+  private noteUnpinned(before: IllustratorDocument): boolean {
+    const after = new Map(this.host.getDoc().layers.map((layer) => [layer.id, layer]))
+    return before.layers.some((layer) => layer.pin !== undefined && after.has(layer.id) && after.get(layer.id)!.pin === undefined)
+  }
+
+  /**
+   * Watches a gesture's frames for a pin it would let go of: the moment one
+   * starts to, "unpinned" shows over any other label for a moment; when the
+   * gesture comes back onto the centre, the label goes at once.
+   */
+  private letGoWatch(): { update(lettingGo: boolean): void } {
+    let was = false
+    return {
+      update: (lettingGo) => {
+        if (lettingGo && !was) hud.hold('unpinned', UNPINNED_MS)
+        else if (!lettingGo && was) hud.letGo()
+        was = lettingGo
+      },
+    }
+  }
+
+  /**
+   * After an edit: read `status` out, and if the edit let go of a pin, show
+   * "unpinned" over any other label for a moment and say so too. A pin is
+   * never let go of without a word.
+   */
+  private announceEdit(before: IllustratorDocument, status: string | null) {
+    if (!this.noteUnpinned(before)) {
+      if (status) hud.announce(status)
+      return
+    }
+    hud.hold('unpinned', UNPINNED_MS)
+    const said = 'Unpinned: it no longer stays on the centre it was pinned to'
+    hud.announce(status ? `${status}. ${said}` : said)
+  }
+
+  /**
+   * Pins let go of because what they were pinned to went, by an edit made
+   * outside the canvas (deleted, made a guide, merged): "unpinned" shows by
+   * those recipes for a moment and is read out, so no pin goes without a word.
+   */
+  noteLostPins(ids: readonly string[]) {
+    const doc = this.host.getDoc()
+    // Numbered as the drawer numbers them, from 01 at the bottom.
+    const numbers = ids.flatMap((id) => {
+      const index = doc.layers.findIndex((layer) => layer.id === id)
+      return index < 0 ? [] : [String(index + 1).padStart(2, '0')]
+    })
+    if (!numbers.length) return
+    const around = selectionBox({ ...doc, selectedLayerIds: [...ids] }, (layer) => this.freePathOf(layer))
+    if (around) {
+      const corners = (['nw', 'ne', 'se', 'sw'] as const).map((id) => add(boxHandlePoint(around.box, id)!, this.center()))
+      this.placeHud({ x: Math.max(...corners.map((c) => c.x)), y: Math.min(...corners.map((c) => c.y)) })
+    }
+    hud.hold('unpinned', UNPINNED_MS)
+    hud.announce(
+      numbers.length > 1
+        ? `Unpinned ${numbers.join(', ')}: the shape they were pinned to is gone`
+        : `Unpinned ${numbers[0]}: the shape it was pinned to is gone`,
+    )
+  }
+
   /**
    * Drag one of a single recipe's own handles. The recipe alone changes:
-   * cuts that belong to it stay where they are, unlike under a box.
+   * cuts that belong to it stay where they are, unlike under a box. A
+   * pinned recipe resizes about its centre, as with Alt, so its pin holds.
+   * On touch, where there is no Shift, a circle slab's corner keeps it a
+   * circle.
    */
   private handleSession(press: Press, layerId: string, handle: CarveHandle): Session | null {
     const doc = this.host.getDoc()
     const layer = this.layer(layerId)
     if (!layer?.carve) return null
     const start = layer.carve
-    const compose = createComposeSession(doc, [layerId])
+    const compose = this.composeFor(doc, [layerId])
     const center = this.center()
     const startLocal = sub(press.point, center)
     const exclude = new Set([layerId])
+    const editedIds = new Set([...exclude, ...this.followersOf(doc, exclude)])
+    const aboutCentre = layer.pin !== undefined && (handle.kind === 'resize' || handle.kind === 'endpoint')
+    const evenCorner = press.touch && start.kind === 'slab' && isCornerHandle(handle.id) && asCircle({ carve: start, contours: [] }) !== null
     let index: SnapIndex | null = null
     let current = start
+    const letGo = this.letGoWatch()
     return {
-      editedIds: exclude,
-      update: (p, mods) => {
+      editedIds,
+      update: (p, given) => {
+        const mods = { ...given, alt: given.alt || aboutCentre, shift: given.shift || evenCorner }
         const pointer = sub(p, center)
         current = dragCarveHandle(start, handle.id, startLocal, pointer, mods)
         let snap: SnapResult = NO_SNAP
@@ -1345,7 +1674,9 @@ export class DirectEditController {
           if (!snap.label) current = wholeCarveDrag(start, current, handle.id, mods)
         }
         this.showSnap(snap)
-        this.showInk(compose, new Map([[layerId, carveOutline(current).pathData]]), new Map([[layerId, current]]))
+        const carves = new Map([[layerId, current]])
+        letGo.update(this.unpinning(carves, editedIds))
+        this.showInk(compose, new Map([[layerId, carveOutline(current).pathData]]), carves)
         hud.set({ chip: handleReadout(current, handle) })
         this.drawOverlay()
       },
@@ -1373,8 +1704,9 @@ export class DirectEditController {
     const moved = this.boxMembers(doc, ids, true)
     if (!moved) return null
     const { members } = moved
-    const editedIds = new Set([...members.keys(), ...moved.carried.keys()])
-    const compose = createComposeSession(doc, editedIds)
+    const changing = [...members.keys(), ...moved.carried.keys()]
+    const editedIds = new Set([...changing, ...this.followersOf(doc, changing)])
+    const compose = this.composeFor(doc, editedIds)
     const center = this.center()
     let move: BoxMove = turnMove(box.center, 0)
     let current = box
@@ -1441,6 +1773,10 @@ export class DirectEditController {
     // On touch there is no Shift: corners keep the proportions, and sides stretch one way.
     const evenly = set.uniform || press.touch
     let index: SnapIndex | null = null
+    const lone = plan.ids.length === 1 ? this.layer(plan.ids[0]) : undefined
+    const circle = lone ? this.layerCircle(lone) : null
+    let sizes: number[] | null = null
+    const letGo = this.letGoWatch()
     // With snapping on, a gesture lands on whole degrees and whole units, so
     // the number shown is the number stored. A snap lands exactly.
 
@@ -1460,6 +1796,7 @@ export class DirectEditController {
           hud.set({ chip: `${r0(rotation)}°` })
           this.showSnap(null)
           plan.preview(turnMove(box.center, turn), { ...box, rotation }, handle.id)
+          letGo.update(this.preview !== null && this.unpinning(this.preview.carves, plan.editedIds))
           return
         }
         let resized = resizeBox(box, handle.id, startLocal, pointer, mods, evenly)
@@ -1468,6 +1805,18 @@ export class DirectEditController {
           const snapped = this.snapBoxResize(index, box, resized, handle.id, startLocal, pointer, mods, evenly, press.touch)
           resized = snapped.resized
           snap = snapped.snap
+          // A circle alone, scaled evenly, takes another circle's size or grows until it touches.
+          const onPoint = snap.hit && snap.hit.kind !== 'edge'
+          if (circle && !onPoint && isCornerHandle(handle.id) && scalesEvenly(handle.id, mods, evenly)) {
+            const f = resized.sx
+            const now = { c: add(resized.pivot, scale(sub(circle.c, resized.pivot), f)), r: circle.r * f }
+            sizes ??= this.sizesFor(doc, plan.editedIds).circleRadii
+            const found = this.snapCircleSize(index, sizes, now, resized.pivot, this.snapTolerance(press.touch))
+            if (found) {
+              resized = scaleBoxBy(box, handle.id, found.radius / circle.r, mods.alt)
+              snap = found.snap
+            }
+          }
         }
         if (this.snapsOn(mods) && !snap.label) {
           const even = scalesEvenly(handle.id, mods, evenly) || (!isCornerHandle(handle.id) && mods.shift)
@@ -1476,6 +1825,8 @@ export class DirectEditController {
         hud.set({ chip: `${r0(resized.box.width)} × ${r0(resized.box.height)}` })
         this.showSnap(snap)
         plan.preview(resizeMove(resized), resized.box, handle.id)
+        // The frame just shown holds the recipes as they would land: one pinned to a shape left behind lets go.
+        letGo.update(this.preview !== null && this.unpinning(this.preview.carves, plan.editedIds))
       },
       // A turned box around several layers comes back upright on release:
       // it is measured afresh around them, and they keep no shared frame.
@@ -1557,36 +1908,35 @@ export class DirectEditController {
   ): { spec: CarveSpec; snap: SnapResult } {
     const tolerance = this.snapTolerance(touch)
     const none = { spec: raw, snap: NO_SNAP }
-    const sizes = () => documentSizes(doc, exclude)
+    const sizes = () => this.sizesFor(doc, exclude)
 
     if (handle.kind === 'resize' || handle.kind === 'endpoint') {
       const point = handleGeometry(raw, handle.id)
       const axes = isGroove(raw) ? { x: true, y: true } : handleAxes(raw.rotation, handle.id)
       if (!point || !axes) return none
-      const other = isGroove(raw) ? (handle.id === 'from' ? raw.to : raw.from) : null
+      // A groove's end follows 15° rays from what stays put: its other end, or with Alt its middle.
+      const origin = isGroove(raw) ? (mods.alt ? scale(add(raw.from, raw.to), 0.5) : handle.id === 'from' ? raw.to : raw.from) : null
       const snap = snapMoving(index, [point], {
         tolerance,
         axes,
         edges: handle.kind === 'endpoint',
-        rays: other && !mods.shift ? [other] : undefined,
+        rays: origin && !mods.shift ? [origin] : undefined,
       })
-      if (!snap.label) return none
-      return { spec: dragCarveHandle(start, handle.id, startPointer, add(pointer, snap.d), mods), snap }
+      const onPoint = snap.hit && snap.hit.kind !== 'edge' && snap.hit.kind !== 'tangent'
+      const pointed = () => ({ spec: dragCarveHandle(start, handle.id, startPointer, add(pointer, snap.d), mods), snap })
+      if (onPoint || start.kind !== 'slab' || raw.kind !== 'slab') return snap.label ? pointed() : none
+      const sized = this.snapSlabSize(index, sizes(), start, raw, handle.id, startPointer, pointer, mods, tolerance)
+      return sized ?? (snap.label ? pointed() : none)
     }
 
     if (handle.kind === 'scale' && raw.kind === 'punch') {
-      const same = snapValue(raw.radius, sizes().punchRadii, tolerance)
-      if (same !== null) return { spec: { ...raw, radius: same }, snap: { ...NO_SNAP, label: 'same size' } }
-      if (raw.shape === 'circle') {
-        const touchEdge = snapCircleTangent(index, raw.center, raw.radius, tolerance, 'radius')
-        if (touchEdge) {
-          return {
-            spec: { ...raw, radius: touchEdge.radius },
-            snap: { d: { x: 0, y: 0 }, label: 'tangent', hints: [{ kind: 'mark', p: touchEdge.touch }] },
-          }
-        }
+      const all = sizes()
+      if (raw.shape !== 'circle' || bentEdgeCount(raw)) {
+        const same = snapValue(raw.radius, all.punchRadii, tolerance)
+        return same === null ? none : { spec: { ...raw, radius: same }, snap: { ...NO_SNAP, label: 'same size' } }
       }
-      return none
+      const found = this.snapCircleSize(index, [...all.punchRadii, ...all.circleRadii], { c: raw.center, r: raw.radius }, raw.center, tolerance)
+      return found ? { spec: { ...raw, radius: found.radius }, snap: found.snap } : none
     }
 
     if (handle.kind === 'radius' && raw.kind === 'slab') {
@@ -1606,6 +1956,45 @@ export class DirectEditController {
       return { spec: { ...raw, rotation }, snap: NO_SNAP }
     }
     return none
+  }
+
+  /**
+   * A slab's own resize handle, with no point to land on. A circle slab
+   * pulled evenly by a corner stays a circle: it takes the size of another
+   * circle ("same size"), or grows about the corner that stays put until it
+   * touches a line, an edge or a circle ("tangent"). A side takes the width
+   * or height of another slab ("same size"). Null when nothing is in reach.
+   */
+  private snapSlabSize(
+    index: SnapIndex,
+    sizes: ReturnType<typeof documentSizes>,
+    start: SlabSpec,
+    raw: SlabSpec,
+    id: HandleId,
+    startPointer: Vec,
+    pointer: Vec,
+    mods: Modifiers,
+    tolerance: number,
+  ): { spec: CarveSpec; snap: SnapResult } | null {
+    const f = handleFraction(id)
+    if (!f) return null
+    const corner = f.x !== 0 && f.y !== 0
+    const circle = asCircle({ carve: raw, contours: [] })
+    if (corner && mods.shift && circle && asCircle({ carve: start, contours: [] })) {
+      const pivot = mods.alt ? start.center : add(start.center, rotate({ x: (-f.x * start.width) / 2, y: (-f.y * start.height) / 2 }, start.rotation))
+      const found = this.snapCircleSize(index, sizes.circleRadii, circle, pivot, tolerance)
+      if (!found) return null
+      return { spec: scaleCarveAbout(start, pivot, found.radius / (start.width / 2)), snap: found.snap }
+    }
+    if (corner) return null
+    const along = f.x !== 0 ? 'width' : 'height'
+    const same = snapValue(raw[along], sizes.slabSides, tolerance)
+    if (same === null) return null
+    // The pointer moves as far as the side must: half as far with Alt, which moves both sides.
+    const dir = rotate(f, start.rotation)
+    const nudged = add(pointer, scale(dir, (same - raw[along]) / (mods.alt ? 2 : 1)))
+    const spec = dragCarveHandle(start, id, startPointer, nudged, mods)
+    return spec.kind === 'slab' && Math.abs(spec[along] - same) < 1e-6 ? { spec, snap: { ...NO_SNAP, label: 'same size' } } : null
   }
 
   /** Outline, unbent ghost (if bent) and handles of a recipe being shown or edited. */
@@ -1677,11 +2066,11 @@ export class DirectEditController {
     if (!layer?.carve || layer.locked) return null
     const start = layer.carve
     const exclude = new Set([layerId])
-    const compose = createComposeSession(doc, exclude)
+    const compose = this.composeFor(doc, exclude)
     let index: SnapIndex | null = null
     let current = start
     return {
-      editedIds: exclude,
+      editedIds: new Set([...exclude, ...this.followersOf(doc, exclude)]),
       update: (p, mods) => {
         // The grabbed point follows the pointer's movement, wherever on the band it was pressed.
         let target = add(grab.point, sub(p, press.point))
@@ -1722,14 +2111,14 @@ export class DirectEditController {
     const t = clamp(zone.free.t, BEND_T_MIN, BEND_T_MAX)
     const base = cubicPoint(freeCurve(start, curveIndex), t)
     const exclude = new Set([layer.id])
-    const compose = createComposeSession(doc, exclude)
+    const compose = this.composeFor(doc, exclude)
     const center = this.center()
     const wasStraight = isCurveStraight(start, curveIndex)
     let index: SnapIndex | null = null
     let current = start
     let straight = wasStraight
     return {
-      editedIds: exclude,
+      editedIds: new Set([...exclude, ...this.followersOf(doc, exclude)]),
       update: (p, mods) => {
         let target = add(base, sub(p, press.point))
         let snap: SnapResult = NO_SNAP
@@ -1804,12 +2193,12 @@ export class DirectEditController {
             .map((i) => start.segs[(i + count) % count].p)
         : [seg.p]
     const exclude = new Set([layerId])
-    const compose = createComposeSession(doc, exclude)
+    const compose = this.composeFor(doc, exclude)
     let index: SnapIndex | null = null
     let current = start
     const center = this.center()
     return {
-      editedIds: exclude,
+      editedIds: new Set([...exclude, ...this.followersOf(doc, exclude)]),
       update: (p, mods) => {
         let d = sub(p, press.point)
         let snap: SnapResult = NO_SNAP
@@ -1868,6 +2257,9 @@ export class DirectEditController {
     if (!starts.length) return null
     const detaches = starts.some((guide) => guide.link)
     const keyPoints = starts.length === 1 ? guideKeyPoints(starts[0].shape, grab) : [grab]
+    // One circle or line moved alone can snap to touch.
+    const lone = starts.length === 1 && starts[0].shape.kind !== 'path' ? starts[0].shape : null
+    const primary = nearestIndex(keyPoints, grab)
     let index: SnapIndex | null = null
     let d: Vec = { x: 0, y: 0 }
     // Stored to hundredths, as shapes are: what the drag shows is what lands.
@@ -1881,11 +2273,16 @@ export class DirectEditController {
         if (axes) d = { x: axes.x ? d.x : 0, y: axes.y ? d.y : 0 }
         let snap: SnapResult = NO_SNAP
         if (this.snapsOn(mods)) {
-          index ??= this.makeSnapIndex(doc, new Set())
+          index ??= this.makeSnapIndex(doc, new Set(), [], ids)
+          const tolerance = this.snapTolerance(press.touch)
           snap = snapMoving(index, keyPoints.map((k) => add(k, d)), {
-            tolerance: this.snapTolerance(press.touch),
+            tolerance,
             axes,
             edges: keyPoints.length === 1,
+            primary,
+            circle: lone?.kind === 'circle' ? { c: add(lone.c, d), r: lone.r } : undefined,
+            // A line moved touches a circle, as a circle moved touches a line.
+            line: lone?.kind === 'line' ? { p: add(lone.p, d), angle: lone.angle } : undefined,
           })
           d = add(d, snap.d)
           // With nothing to snap to, whole units, so the number shown is the number the guide moves.
@@ -1910,7 +2307,8 @@ export class DirectEditController {
    * Drag a handle of the selected guide: a line's knob turns it about its
    * pivot (Shift in 15° steps; with snapping on, settling on them and landing
    * on whole degrees), a circle's squares set its radius (the same size as a
-   * punch, touching an edge, or else a whole unit). One commit per drag.
+   * punch or another circle, touching an edge, a guide or a circle, or else
+   * a whole unit). One commit per drag.
    */
   private guideHandleSession(press: Press, handle: GuideHandle): Session | null {
     const doc = this.host.getDoc()
@@ -1939,17 +2337,13 @@ export class DirectEditController {
         } else {
           let r = reach
           if (this.snapsOn(mods)) {
-            index ??= this.makeSnapIndex(doc, new Set())
-            const same = snapValue(r, documentSizes(doc, new Set()).punchRadii, tolerance)
-            const touch = same === null ? snapCircleTangent(index, handle.pivot, r, tolerance, 'radius') : null
-            if (same !== null) {
-              r = same
-              label = 'same size'
-            } else if (touch) {
-              r = touch.radius
-              label = 'tangent'
-            } else r = Math.max(1, Math.round(r))
-            this.snapHints = touch && same === null ? [{ kind: 'mark', p: touch.touch }] : []
+            const own = new Set([guide.id])
+            index ??= this.makeSnapIndex(doc, new Set(), [], own)
+            const sizes = this.sizesFor(doc, own)
+            const found = this.snapCircleSize(index, [...sizes.punchRadii, ...sizes.circleRadii], { c: handle.pivot, r }, handle.pivot, tolerance)
+            r = found ? found.radius : Math.max(1, Math.round(r))
+            label = found?.snap.label ?? null
+            this.snapHints = found?.snap.hints ?? []
           }
           r = r2(r)
           shape = { kind: 'circle', c: handle.pivot, r }
@@ -2273,7 +2667,8 @@ export class DirectEditController {
    * turned since it began.
    */
   private turnBy(step: number) {
-    const target = this.keyBox(this.host.getDoc(), 'key-turn')
+    const doc = this.host.getDoc()
+    const target = this.keyBox(doc, 'key-turn')
     if (!target) return
     const { moved, going } = target
     const center = going?.turn ? going.turn.center : target.box.center
@@ -2284,7 +2679,7 @@ export class DirectEditController {
     this.noteBurst('key-turn', [...moved.carried.keys()], { center, rotation })
     this.showKeyChip(`${r0(rotation)}°`)
     // Each key reads out where the selection now is, never how far the burst has gone.
-    hud.announce(`Turned to ${r0(rotation)}°`)
+    this.announceEdit(doc, `Turned to ${r0(rotation)}°`)
   }
 
   /**
@@ -2293,7 +2688,8 @@ export class DirectEditController {
    * size stays whole. Written at once; a burst is one undo step.
    */
   private growBy(step: number) {
-    const target = this.keyBox(this.host.getDoc(), 'key-scale')
+    const doc = this.host.getDoc()
+    const target = this.keyBox(doc, 'key-scale')
     if (!target) return
     const { box, moved } = target
     const longer = Math.max(box.width, box.height)
@@ -2306,7 +2702,7 @@ export class DirectEditController {
     this.noteBurst('key-scale', [...moved.carried.keys()])
     const size = `${r0(box.width * factor)} × ${r0(box.height * factor)}`
     this.showKeyChip(size)
-    hud.announce(`Size ${size}`)
+    this.announceEdit(doc, `Size ${size}`)
   }
 
   /**
@@ -2315,18 +2711,22 @@ export class DirectEditController {
    */
   private showKeyChip(chip: string, at?: Vec, label: string | null = null) {
     if (at) this.placeHud(add(at, this.center()))
-    else {
-      const around = selectionBox(this.host.getDoc(), (layer) => this.freePathOf(layer))
-      if (!around) return
-      const corners = (['nw', 'ne', 'se', 'sw'] as const).map((id) => add(boxHandlePoint(around.box, id)!, this.center()))
-      this.placeHud({ x: Math.max(...corners.map((c) => c.x)), y: Math.min(...corners.map((c) => c.y)) })
-    }
+    else if (!this.placeKeyHud()) return
     this.readoutShown = false
     hud.set({ label, chip })
     this.keyChipLayers = this.host.getDoc().layers
     window.clearTimeout(this.keyChipTimer)
     // Only the chip waits: the edit is already written.
     this.keyChipTimer = window.setTimeout(() => this.dropKeyChip(), KEY_CHIP_MS)
+  }
+
+  /** Put the HUD by the top right corner of the selection's box as it is now drawn. False when nothing is selected. */
+  private placeKeyHud(): boolean {
+    const around = selectionBox(this.host.getDoc(), (layer) => this.freePathOf(layer))
+    if (!around) return false
+    const corners = (['nw', 'ne', 'se', 'sw'] as const).map((id) => add(boxHandlePoint(around.box, id)!, this.center()))
+    this.placeHud({ x: Math.max(...corners.map((c) => c.x)), y: Math.min(...corners.map((c) => c.y)) })
+    return true
   }
 
   /** The key's number goes; a press that is not yet a drag shows none of its own, so it goes then too. */
@@ -2377,5 +2777,9 @@ export class DirectEditController {
     const keepPoint = point && ids.length === 1 && point.layerId === ids[0]
     this.host.commitLayerEdits({ ...moveCommit(moved, ids, d), ...(keepPoint ? { anchor: undefined } : {}), merge: 'nudge' })
     this.noteBurst('nudge', moved.carried)
+    if (!this.noteUnpinned(doc)) return
+    // Nothing else is shown for a nudge: the label goes by the selection.
+    this.placeKeyHud()
+    this.announceEdit(doc, null)
   }
 }

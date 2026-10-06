@@ -357,7 +357,7 @@ function shapeCircles(source: ConstructionSource, frame: SourceFrame): { circum:
  * Do two guides draw the same line or circle, to within a hundredth of a unit
  * and of a degree? A line is the same whichever of its points it is stored by.
  */
-function coincide(a: GuideShape, b: GuideShape): boolean {
+export function coincide(a: GuideShape, b: GuideShape): boolean {
   const NEAR = 0.01
   if (a.kind === 'line' && b.kind === 'line') {
     const turn = Math.abs(lineAngle(a.angle) - lineAngle(b.angle))

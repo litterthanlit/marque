@@ -10,10 +10,12 @@ import { createComposeSession, type ComposeSession } from '../../engine/illustra
 import type { IllustratorDocument } from '../../engine/illustrator/types.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../../engine/illustrator/types.ts'
 import { composeVectorMarkCached } from '../../engine/vector/export.ts'
-import { useLogoStore } from '../../store/logoStore.ts'
+import { tangentCircles, useLogoStore } from '../../store/logoStore.ts'
 import { PenTool } from '../../renderer/tools/PenTool.ts'
-import { GuideTool, type GhostSet } from '../../renderer/tools/GuideTool.ts'
-import { constructionLines } from '../../engine/vector/guides.ts'
+import { GuideTool, type Ghost, type GhostSet } from '../../renderer/tools/GuideTool.ts'
+import { coincide, constructionLines, lineShape } from '../../engine/vector/guides.ts'
+import { commonTangents } from '../../engine/geometry/tangent.ts'
+import { pinsLostWithTarget } from '../../engine/vector/pins.ts'
 import type { Contour } from '../../engine/vector/types.ts'
 import type { EditablePath } from '../../engine/path/editPath.ts'
 import { CanvasHud } from './CanvasHud.tsx'
@@ -76,16 +78,31 @@ function coveredInsets(canvas: HTMLCanvasElement): { top: number; bottom: number
   return { top, bottom }
 }
 
-/** The construction lines of one shape that are not guides yet, read from the document as it is now. */
+/**
+ * The construction lines of one shape that are not guides yet, read from
+ * the document as it is now. When it is one of two circles selected, the
+ * lines the two share are offered too, as plain guides.
+ */
 function ghostsOf(controller: DirectEditController | null, id: string): GhostSet | null {
-  const { vectorDocument } = useLogoStore.getState()
+  const state = useLogoStore.getState()
+  const { vectorDocument } = state
   const object = vectorDocument.objects.find((candidate) => candidate.id === id)
   const bounds = controller?.shapeBounds(id)
   if (!object || object.type !== 'path' || !bounds) return null
   const taken = new Set(vectorDocument.guides.flatMap((guide) => (guide.link?.of === object.id ? [guide.link.role] : [])))
-  const ghosts = constructionLines(object)
+  const ghosts: Ghost[] = constructionLines(object)
     .filter((line) => !taken.has(line.role))
-    .map((line) => ({ of: object.id, role: line.role, shape: line.shape, name: line.name }))
+    .map((line) => ({ of: object.id, role: line.role, key: line.role, shape: line.shape, name: line.name }))
+  const pair = tangentCircles(state)
+  if (pair?.length === 2 && pair.some((entry) => entry.id === id)) {
+    commonTangents(pair[0].circle, pair[1].circle).forEach((line, i) => {
+      const shape = lineShape(line.p, line.angle)
+      // A line already there, as a guide or as one of the shape's own ghosts, is not offered twice: the linked one stays.
+      if (vectorDocument.guides.some((guide) => coincide(guide.shape, shape)) || ghosts.some((ghost) => coincide(ghost.shape, shape))) return
+      const name = line.kind === 'external' ? 'Outer tangent' : 'Inner tangent'
+      ghosts.push({ of: object.id, role: null, key: `tangent-${i}`, shape, name, span: line.touches })
+    })
+  }
   return { of: object.id, bounds, ghosts }
 }
 
@@ -181,7 +198,16 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       coveredInsets: () => coveredInsets(canvas),
     })
     controllerRef.current = controller
+    // A pin let go of because its target went, by an edit made off the canvas, is said too. Undo and redo bring back what was.
+    const unwatch = useLogoStore.subscribe((state, before) => {
+      if (state.vectorDocument.objects === before.vectorDocument.objects) return
+      const step = state.vectorUndoStack.at(-1)
+      if (!step || before.vectorUndoStack.includes(step) || before.vectorRedoStack.includes(step)) return
+      const lost = pinsLostWithTarget(before.vectorDocument.objects, state.vectorDocument.objects)
+      if (lost.length) controller.noteLostPins(lost)
+    })
     return () => {
+      unwatch()
       controller.destroy()
       controllerRef.current = null
     }
@@ -269,11 +295,13 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
         toolRef.current = new CarveTool(scope, {
           onCut: (spec) => {
             carveSessionRef.current = null
-            addCarveCut(spec)
+            // A punch started on a shape's centre is pinned there.
+            addCarveCut(spec, spec.kind === 'punch' ? (controllerRef.current?.toolStartPin() ?? null) : null)
           },
           onPreview: previewCut,
-          snapPoint: (p, from, role) => controllerRef.current?.snapToolPoint(p, role, { rays: from ? [from] : [] }) ?? p,
-          snapRadius: (center, radius) => controllerRef.current?.snapToolRadius(center, radius) ?? radius,
+          snapPoint: (p, from, role) =>
+            controllerRef.current?.snapToolPoint(p, role, { rays: from ? [from] : [], pins: ui.activeTool === 'punch' }) ?? p,
+          snapRadius: (center, radius, round) => controllerRef.current?.snapToolRadius(center, radius, round) ?? radius,
           onGestureEnd: () => controllerRef.current?.endToolSnap(),
         }, {
           kind: ui.activeTool,
@@ -299,8 +327,8 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
           onGuide: (shape) => addGuides([shape], undefined, false),
           onGhosts: (ghosts) =>
             addGuides(
-              ghosts.map(({ shape, of, role, name }) => ({ shape, link: { kind: 'construction', of, role }, name })),
-              'Add construction guide',
+              ghosts.map(({ shape, of, role, name }) => (role ? { shape, link: { kind: 'construction', of, role }, name } : { shape, name })),
+              ghosts.every((ghost) => ghost.role) ? 'Add construction guide' : 'Add guide',
               false,
             ),
           ghostsAt: (p, touch) => ghostsAt(controllerRef.current, scopeRef.current, p, touch),
@@ -308,6 +336,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
           selectGuide: (id, additive) => useLogoStore.getState().selectGuides([id], additive),
           snapPoint: (p, role, rays) => controllerRef.current?.snapToolPoint(p, role, { rays }) ?? p,
           snapRadius: (center, radius) => controllerRef.current?.snapToolRadius(center, radius) ?? radius,
+          snapLine: (start, current, angle) => controllerRef.current?.snapGuideLine(start, current, angle) ?? null,
           snaps: (mods) => useLogoStore.getState().ui.carve.snapping && !mods.noSnap,
           onGestureEnd: () => controllerRef.current?.endToolSnap(),
         }, {
@@ -409,7 +438,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     const target = toolRef.current && controller ? controller.toolPressTarget(p, touch) : null
     if (toolRef.current && target?.kind !== 'editor') {
       pressOwnerRef.current = 'tool'
-      controller?.toolPointer(p, modifiersOf(e), touch)
+      controller?.toolDown(p, modifiersOf(e), touch)
       const tool = toolRef.current
       if (tool instanceof GuideTool) tool.onMouseDown(point, modifiersOf(e), touch, target?.kind === 'guide' ? target : null)
       else tool.onMouseDown(point)

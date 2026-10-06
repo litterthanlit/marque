@@ -35,9 +35,11 @@ import {
   objectFromLayer,
   removeObjects,
   updateObject,
+  updateObjects,
   writeFrame,
   writeLayerFields,
   writePathData,
+  writePin,
   writeRecipe,
 } from './objectEdits.ts'
 
@@ -81,6 +83,8 @@ export interface LayerEdit {
   contourIndex?: number
   /** How far a free shape's box is turned after the edit, in degrees. Missing keeps its frame as it was. */
   frameRotation?: number
+  /** Pin the recipe's centre to this object's centre, or with null let it go. Missing keeps its pin as it was. */
+  pin?: string | null
 }
 
 export interface LayerEditCommit {
@@ -188,7 +192,12 @@ interface LogoStore {
   setViewport: (viewport: { width: number; height: number }) => void
   toggleLook: () => void
   setLayersOpen: (open: boolean) => void
-  addCarveCut: (spec: CutSpec) => void
+  /** A cut drawn with a carve tool, on top and selected; `pinTo` pins a punch's centre to that object's centre. */
+  addCarveCut: (spec: CutSpec, pinTo?: string | null) => void
+  /** Let go of the selected recipes' pins: one undo step. */
+  unpinSelection: () => void
+  /** Let go of every pin held to an object's centre: one undo step. */
+  releasePinsTo: (id: string) => void
   /** A closed shape drawn with the pen (layer space): added on top, selected, back to direct editing. */
   addPenShape: (pathData: string) => void
   booleanIllustratorLayers: (op: 'unite' | 'subtract' | 'intersect') => void
@@ -202,7 +211,7 @@ interface LogoStore {
   setPenDraws: (draws: PenDraws) => void
   setGuideDraws: (draws: GuideDraws) => void
   /** New guides in the style for new guides: selected, unless `select` is false, when the selection stays as it is. */
-  addGuides: (shapes: Array<GuideShape | { shape: GuideShape; link: NonNullable<Guide['link']>; name?: string }>, label?: string, select?: boolean) => void
+  addGuides: (shapes: Array<GuideShape | { shape: GuideShape; link?: NonNullable<Guide['link']>; name?: string }>, label?: string, select?: boolean) => void
   /** Guides by id, or `null` for none; `additive` toggles them in the guides already selected. Guides not on the canvas are never picked. */
   selectGuides: (ids: string[] | null, additive?: boolean) => void
   /** The whole list of guides after a canvas gesture: one undo step. */
@@ -453,13 +462,32 @@ export const useLogoStore = create<LogoStore>()((set) => ({
   setLayersOpen: (open) =>
     set((state) => (state.ui.layersOpen === open ? {} : { ui: { ...state.ui, layersOpen: open } })),
 
-  addCarveCut: (spec) =>
+  addCarveCut: (spec, pinTo = null) =>
     set((state) => {
       const layer = recipeLayer(carveFromCut(spec), 'subtract')
       if (!layer.pathData) return {}
-      const cut = objectFromLayer(layer)
+      const made = objectFromLayer(layer)
+      const target = pinTo ? state.vectorDocument.objects.find((object) => object.id === pinTo) : undefined
+      const cut = target ? writePin(made, target.id) : made
       // The carve tool stays active so cuts can be made one after another.
       return commitObjects(state, `Add ${layer.name}`, insertObjects(state.vectorDocument.objects, [cut], 'top'), objectSelection([cut.id]))
+    }),
+
+  unpinSelection: () =>
+    set((state) => {
+      const ids = new Set(state.illustrator.selectedLayerIds)
+      const objects = updateObjects(state.vectorDocument.objects, (object) =>
+        object.type === 'path' && ids.has(object.id) ? writePin(object, null) : object,
+      )
+      return commitObjects(state, 'Unpin', objects)
+    }),
+
+  releasePinsTo: (id) =>
+    set((state) => {
+      const objects = updateObjects(state.vectorDocument.objects, (object) =>
+        object.type === 'path' && object.pin?.centreOf === id ? writePin(object, null) : object,
+      )
+      return commitObjects(state, 'Release pins', objects)
     }),
 
   addPenShape: (pathData) =>
@@ -1007,7 +1035,10 @@ function applyLayerEdits(state: LogoStore, commit: LayerEditCommit): Partial<Log
     done.add(edit.layerId)
     objects = updateObject(objects, edit.layerId, (object) => {
       if (object.type !== 'path') return object
-      if (edit.carve) return writeRecipe(object, edit.carve)
+      if (edit.carve) {
+        const written = writeRecipe(object, edit.carve)
+        return edit.pin === undefined || written.type !== 'path' ? written : writePin(written, edit.pin)
+      }
       const written = edit.pathData !== undefined ? writePathData(object, edit.pathData, edit.contourIndex) : object
       return edit.frameRotation === undefined ? written : writeFrame(written, edit.frameRotation)
     })

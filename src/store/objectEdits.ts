@@ -6,6 +6,7 @@ import { segsToContour, syncCarve } from '../engine/carve/sync.ts'
 import type { IllustratorLayer } from '../engine/illustrator/types.ts'
 import { bakeLegacyTransform } from '../engine/vector/migrate.ts'
 import { contoursToPathData, contourToPathData, pathDataToContours } from '../engine/vector/pathSerialization.ts'
+import { takesPin, unpinned } from '../engine/vector/pins.ts'
 import type { Contour, PathObject, VectorObject } from '../engine/vector/types.ts'
 
 /**
@@ -104,6 +105,16 @@ export function writeRecipe(object: PathObject, carve: CarveSpec): PathObject {
   const next: PathObject = { ...object, contours: [segsToContour(carveOutline(rounded).segs)], carve: rounded }
   delete next.frame
   return next
+}
+
+/**
+ * Pin a recipe's centre to another object's centre, or with null let it go.
+ * Only a recipe takes a pin; for a free shape this is no change.
+ */
+export function writePin(object: PathObject, centreOf: string | null): PathObject {
+  if (centreOf === null) return object.pin ? unpinned(object) : object
+  if (!takesPin(object) || centreOf === object.id || object.pin?.centreOf === centreOf) return object
+  return { ...object, pin: { centreOf } }
 }
 
 /** The rotation of a free path's box, rounded to 0.01°. Upright leaves no frame. */

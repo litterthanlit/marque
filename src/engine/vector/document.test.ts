@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { carveOutline } from '../carve/outline.ts'
-import { slabSpec } from '../carve/spec.ts'
+import { slabSpec, type CarveSpec } from '../carve/spec.ts'
 import { segsToContour } from '../carve/sync.ts'
 import { createEmptyVectorDocument, MAX_GROUP_DEPTH, repairStructure, repairVectorDocument } from './document.ts'
+import { shapeCentre } from './pins.ts'
 import type { Contour, Fillet, GroupObject, Guide, PathObject, VectorDocument, VectorObject } from './types.ts'
 
 const stored = <T>(value: T): T => JSON.parse(JSON.stringify(value))
@@ -33,11 +34,14 @@ const ids = (document: VectorDocument) => document.objects.map((object) => `${ob
 
 describe('reading a version 2 document', () => {
   it('gives back the very same document when nothing needs repair', () => {
-    const spec = slabSpec('square')
+    // Pinned on the centre of b, the middle of its points' box in its frame, as stored: to two places.
+    const b = path('b', { parentId: 'g', frame: { rotation: 30 }, link: { kind: 'offset', of: 'a', distance: -10 } })
+    const centre = shapeCentre(b)!
+    const spec = slabSpec('square', { x: Math.round(centre.x * 100) / 100, y: Math.round(centre.y * 100) / 100 })
     const document = doc([
       group('g', { isolated: true }),
       path('a', { parentId: 'g', carve: spec, contours: [segsToContour(carveOutline(spec).segs)], pin: { centreOf: 'b' } }),
-      path('b', { parentId: 'g', frame: { rotation: 30 }, link: { kind: 'offset', of: 'a', distance: -10 } }),
+      b,
     ])
     expect(repairVectorDocument(document)).toBe(document)
   })
@@ -108,6 +112,8 @@ describe('reading a version 2 document', () => {
   it('detaches a link of a kind it does not know, or to an object that is not there, and a pin likewise', () => {
     const spec = slabSpec('circle')
     const circle = segsToContour(carveOutline(spec).segs)
+    // On the centre of a, so its pin holds.
+    const onA = slabSpec('circle', { x: 50, y: 50 })
     const document = repaired(
       doc([
         path('a', { link: { kind: 'fillet', a: 'b' } as never }),
@@ -116,7 +122,7 @@ describe('reading a version 2 document', () => {
         path('d', { link: { kind: 'offset', of: 'a', distance: 4 } }),
         path('e', { carve: spec, contours: [circle], pin: { centreOf: 'gone' } }),
         path('f', { pin: { centreOf: 'a' } }),
-        path('g', { carve: spec, contours: [circle], pin: { centreOf: 'a' } }),
+        path('g', { carve: onA, contours: [segsToContour(carveOutline(onA).segs)], pin: { centreOf: 'a' } }),
       ]),
     )
     const [a, b, c, d, e, f, g] = document.objects as PathObject[]
@@ -126,6 +132,29 @@ describe('reading a version 2 document', () => {
     expect([e.pin, f.pin]).toEqual([undefined, undefined])
     expect(g.pin).toEqual({ centreOf: 'a' })
     expect(a.contours).toEqual([square])
+  })
+
+  it('drops the pin of a recipe off its target\'s centre and leaves it where it was stored, keeps one on it, a groove\'s too, and breaks a loop of pins', () => {
+    const spec = slabSpec('circle', { x: 300, y: -40 })
+    const outline = [segsToContour(carveOutline(spec).segs)]
+    // On the target's centre, (50, 50), by its middle.
+    const groove: CarveSpec = { v: 1, kind: 'channel', from: { x: 0, y: 50 }, to: { x: 100, y: 50 }, width: 20 }
+    const document = doc([
+      path('target'),
+      path('off', { carve: spec, contours: outline, pin: { centreOf: 'target' } }),
+      path('x', { carve: spec, contours: outline, pin: { centreOf: 'y' } }),
+      path('y', { carve: spec, contours: outline, pin: { centreOf: 'x' } }),
+      path('on', { operation: 'subtract', carve: groove, contours: [segsToContour(carveOutline(groove).segs)], pin: { centreOf: 'target' } }),
+    ])
+    const read = repaired(document)
+    const [, off, x, y, on] = read.objects as PathObject[]
+    // Reading moves nothing: a pin that does not hold is dropped instead.
+    expect(off.pin).toBeUndefined()
+    expect(off.carve).toEqual(spec)
+    expect(off.contours).toEqual(outline)
+    expect([x.pin, y.pin]).toEqual([undefined, { centreOf: 'x' }])
+    expect([x.carve, y.carve]).toEqual([spec, spec])
+    expect(on).toBe(document.objects[4])
   })
 
   it('moves an object whose group is not there to the root, and breaks a loop of groups', () => {

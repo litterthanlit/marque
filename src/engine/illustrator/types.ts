@@ -36,6 +36,8 @@ export interface IllustratorLayer {
   parentId?: string
   /** How many contours the path holds, when more than one: a hole is a further contour. */
   contourCount?: number
+  /** The object whose centre the recipe's centre is pinned to. */
+  pin?: string
 }
 
 /** A group of the document as the canvas reads it. Its members follow it in the layers. */

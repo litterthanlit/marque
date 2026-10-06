@@ -1,7 +1,7 @@
 import { expect, test as base, type Locator, type Page } from '@playwright/test'
 import LZString from 'lz-string'
 import type { DevHook } from '../src/devHook.ts'
-import type { CarveSpec, PunchSpec, SlabSpec } from '../src/engine/carve/spec.ts'
+import type { CarveSpec, GrooveSpec, PunchSpec, SlabSpec } from '../src/engine/carve/spec.ts'
 import { STAGE_1_LINK } from './fixtures/stage1Link.ts'
 
 declare global {
@@ -394,7 +394,7 @@ test('cuts snap into place, and a bent channel keeps its width', async ({ page }
   const punch = (await carves(page)).at(-1) as PunchSpec
   expect(punch.kind).toBe('punch')
 
-  // Grow it from a corner handle, then drag it to the middle: it snaps there and says so.
+  // Grow it from a corner handle, then drag it to the middle: it snaps onto the slab's centre and says it is pinned there.
   const corner = await handle(page, 'se')
   await drag(page, corner, { x: corner.x + 10, y: corner.y + 10 })
   const grown = (await carves(page)).at(-1) as PunchSpec
@@ -404,9 +404,10 @@ test('cuts snap into place, and a bent channel keeps its width', async ({ page }
   await page.mouse.down()
   const near = f.at(3, -2)
   await page.mouse.move(near.x, near.y, { steps: 12 })
-  await expect(hudLabel(page, 'centre')).toBeVisible()
+  await expect(hudLabel(page, 'pinned')).toBeVisible()
   await page.mouse.up()
   expect(((await carves(page)).at(-1) as PunchSpec).center).toEqual({ x: 0, y: 0 })
+  expect(await page.evaluate(() => window.__marque.store.getState().illustrator.layers.at(-1)?.pin)).toBe((await layers(page))[0].id)
 
   // A channel, then bend it by a rail: the groove stays the same width along its length.
   await pickTool(page, 'Channel')
@@ -2661,4 +2662,569 @@ test("under the Guide tool, the ghost being followed stays across another shape,
   await expect(page.locator('main').getByText(/^Centre ↕ · click adds/)).toBeVisible()
   await click(page, upright)
   expect((await guides(page)).at(-1)?.link).toEqual({ kind: 'construction', of: (await layers(page)).at(-1)!.id, role: 'centre-x' })
+})
+
+/* ─── Snapping to every shape, and pins ─── */
+
+/** Circle slabs where a test wants them, set through the store: `[x, y, r]` each. Returns their ids, bottom first. */
+async function circleSlabs(page: Page, circles: Array<[number, number, number]>): Promise<string[]> {
+  for (let i = 0; i < circles.length; i++) await addSlab(page, 'Circle')
+  return page.evaluate((list) => {
+    const store = window.__marque.store
+    const ids = store.getState().illustrator.layers.map((layer) => layer.id)
+    store.getState().commitLayerEdits({
+      label: 'Place circles',
+      edits: list.map(([x, y, r], i) => ({
+        layerId: ids[i],
+        carve: { v: 1, kind: 'slab', preset: 'circle', center: { x, y }, width: 2 * r, height: 2 * r, radius: r, rotation: 0 },
+      })),
+      select: [],
+    })
+    return ids
+  }, circles)
+}
+
+const slabOf = async (page: Page, id: string) => (await layers(page)).find((layer) => layer.id === id)!.carve as SlabSpec
+const pinOf = (page: Page, id: string) => page.evaluate((layerId) => window.__marque.store.getState().illustrator.layers.find((layer) => layer.id === layerId)?.pin ?? null, id)
+
+test("ref 2: a circle dragged near a line of the circles' tangent frame snaps to touch it", async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  // Two circles above, a larger one below: the frame's left line touches the upper left one.
+  const [left, right, lower] = await circleSlabs(page, [
+    [-150, -80, 90],
+    [150, -60, 100],
+    [0, 140, 110],
+  ])
+  await page.evaluate((ids) => window.__marque.store.getState().setSelection(ids), [left, right, lower])
+  await selectionBar(page).getByRole('button', { name: 'Guides ▸' }).click()
+  await page.getByRole('group', { name: 'Guides' }).getByRole('button', { name: 'Tangent frame' }).click()
+  const frameLeft = (await guides(page)).find((guide) => guide.link?.role === 'left')!
+  expect(frameLeft.shape).toEqual({ kind: 'line', p: { x: -240, y: -80 }, angle: 90 })
+  await page.keyboard.press('Escape')
+
+  // Drag the lower circle left until its rim is 2 units off the line: it snaps to touch it.
+  const f = await frame(page)
+  const depth = await undoDepth(page)
+  const from = f.at(0, 180)
+  const to = f.at(-128, 180)
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(to.x, to.y, { steps: 12 })
+  await expect(hudLabel(page, 'tangent')).toBeVisible()
+  await page.mouse.up()
+  const moved = await slabOf(page, lower)
+  expect(Math.abs(moved.center.x - -240 - moved.width / 2)).toBeLessThan(0.01)
+  expect(moved.center.y).toBeCloseTo(140, 6)
+  expect(await undoDepth(page)).toBe(depth + 1)
+})
+
+test('ref 4: circle C snaps into a corner of the frame, touching both lines, and circle B snaps to C’s size', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const [c, b] = await circleSlabs(page, [
+    [0, 40, 70],
+    [140, -120, 60],
+  ])
+  // The frame's left and bottom lines.
+  await page.evaluate(() =>
+    window.__marque.store.getState().addGuides([
+      { kind: 'line', p: { x: -200, y: 0 }, angle: 90 },
+      { kind: 'line', p: { x: 0, y: 200 }, angle: 0 },
+    ]),
+  )
+  await page.keyboard.press('Escape')
+  const f = await frame(page)
+
+  // C into the corner, 2 units shy of each line: it touches both.
+  let depth = await undoDepth(page)
+  const grab = f.at(0, 40)
+  const into = f.at(-128, 128)
+  await page.mouse.move(grab.x, grab.y)
+  await page.mouse.down()
+  await page.mouse.move(into.x, into.y, { steps: 12 })
+  await expect(hudLabel(page, 'tangent')).toBeVisible()
+  await page.mouse.up()
+  const cornered = await slabOf(page, c)
+  expect(Math.abs(cornered.center.x - cornered.width / 2 - -200)).toBeLessThan(0.01)
+  expect(Math.abs(cornered.center.y + cornered.width / 2 - 200)).toBeLessThan(0.01)
+  expect(await undoDepth(page)).toBe(depth + 1)
+
+  // B pulled out evenly by a corner to within 2 units of C's radius: it takes C's size.
+  await click(page, f.at(140, -120))
+  depth = await undoDepth(page)
+  const corner = await handle(page, 'se')
+  await page.keyboard.down('Shift')
+  await page.mouse.move(corner.x, corner.y)
+  await page.mouse.down()
+  await page.mouse.move(corner.x + 18 * f.unit, corner.y + 18 * f.unit, { steps: 10 })
+  await expect(hudLabel(page, 'same size')).toBeVisible()
+  await page.mouse.up()
+  await page.keyboard.up('Shift')
+  const grown = await slabOf(page, b)
+  expect(grown.width / 2).toBeCloseTo(70, 6)
+  expect(grown.radius).toBeCloseTo(70, 6)
+  expect(await undoDepth(page)).toBe(depth + 1)
+})
+
+test('a punch dropped on a circle’s centre is pinned there: it stays centred as the circle resizes and moves, and dragging it away unpins it', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const [slab] = await circleSlabs(page, [[0, 0, 150]])
+  const f = await frame(page)
+
+  // The punch starts a unit off the circle's centre: it snaps there, and the HUD says it will be pinned.
+  await pickTool(page, 'Punch')
+  const start = f.at(1, 1)
+  await page.mouse.move(start.x, start.y)
+  await page.mouse.down()
+  await expect(hudLabel(page, 'pinned')).toBeVisible()
+  await page.mouse.move(f.at(41, 1).x, start.y, { steps: 6 })
+  await page.mouse.up()
+  const punchId = (await layers(page)).at(-1)!.id
+  expect(await pinOf(page, punchId)).toBe(slab)
+  const centred = async () => {
+    const [circle, punch] = (await carves(page)) as [SlabSpec, PunchSpec]
+    return Math.hypot(circle.center.x - punch.center.x, circle.center.y - punch.center.y)
+  }
+  expect(await centred()).toBe(0)
+  await expect(selectionBar(page).getByText('Pinned to 01')).toBeVisible()
+  await expect(selectionBar(page).getByRole('button', { name: 'Unpin' })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+
+  // Resize the circle from a corner, evenly: its centre moves, and the punch with it, in one undo step.
+  await click(page, f.at(0, 110))
+  let depth = await undoDepth(page)
+  const corner = await handle(page, 'se')
+  await drag(page, corner, { x: corner.x + 30 * f.unit, y: corner.y + 30 * f.unit }, ['Shift'])
+  const resized = await slabOf(page, slab)
+  expect(resized.width).toBeGreaterThan(320)
+  expect(resized.center.x).toBeGreaterThan(10)
+  expect(await centred()).toBeLessThan(0.01)
+  expect(await undoDepth(page)).toBe(depth + 1)
+
+  // Move the circle alone, with Alt, which leaves cuts behind: the pinned punch goes with it, in one undo step.
+  depth = await undoDepth(page)
+  await drag(page, f.at(resized.center.x, resized.center.y + 110), f.at(resized.center.x - 60, resized.center.y + 130), ['Alt'])
+  expect((await slabOf(page, slab)).center.x).toBeCloseTo(resized.center.x - 60, 0)
+  expect(await centred()).toBeLessThan(0.01)
+  expect(await undoDepth(page)).toBe(depth + 1)
+
+  // Drag the punch itself away: it lets go of its pin, in one undo step.
+  const moved = await slabOf(page, slab)
+  await click(page, f.at(moved.center.x, moved.center.y))
+  expect(await selectedIds(page)).toEqual([punchId])
+  depth = await undoDepth(page)
+  // Pressed off the spot just clicked, so the press is not a double-click.
+  const from = f.at(moved.center.x + 15, moved.center.y)
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(from.x + 70 * f.unit, from.y + 23 * f.unit, { steps: 10 })
+  await expect(hudLabel(page, 'unpinned')).toBeVisible()
+  await page.mouse.up()
+  expect(await pinOf(page, punchId)).toBeNull()
+  expect(await centred()).toBeGreaterThan(50)
+  expect(await undoDepth(page)).toBe(depth + 1)
+  await expect(selectionBar(page).getByText(/Pinned to/)).toBeHidden()
+
+  // Dragged back onto the circle's centre, it is pinned there again, in one undo step.
+  const away = (await carves(page))[1] as PunchSpec
+  depth = await undoDepth(page)
+  const back = f.at(away.center.x + 15, away.center.y)
+  await page.mouse.move(back.x, back.y)
+  await page.mouse.down()
+  await page.mouse.move(f.at(moved.center.x + 16, moved.center.y + 1).x, f.at(moved.center.x + 16, moved.center.y + 1).y, { steps: 10 })
+  await expect(hudLabel(page, 'pinned')).toBeVisible()
+  await page.mouse.up()
+  expect(await pinOf(page, punchId)).toBe(slab)
+  expect(await centred()).toBeLessThan(0.01)
+  expect(await undoDepth(page)).toBe(depth + 1)
+
+  // Unpinned where it is, then dragged off and dropped back on the same centre: the HUD says pinned, and so it is, in one undo step.
+  await selectionBar(page).getByRole('button', { name: 'Unpin' }).click()
+  expect(await pinOf(page, punchId)).toBeNull()
+  depth = await undoDepth(page)
+  const grip = f.at(moved.center.x + 15, moved.center.y)
+  await page.mouse.move(grip.x, grip.y)
+  await page.mouse.down()
+  await page.mouse.move(grip.x + 60 * f.unit, grip.y + 20 * f.unit, { steps: 6 })
+  await page.mouse.move(grip.x + f.unit, grip.y - f.unit, { steps: 6 })
+  await expect(hudLabel(page, 'pinned')).toBeVisible()
+  await page.mouse.up()
+  expect(await pinOf(page, punchId)).toBe(slab)
+  expect(await centred()).toBeLessThan(0.01)
+  expect(await undoDepth(page)).toBe(depth + 1)
+
+  // The circle's bar says it holds the punch, and lets it go.
+  await page.keyboard.press('Escape')
+  await click(page, f.at(moved.center.x, moved.center.y + 110))
+  await expect(selectionBar(page).getByText('Holds 02')).toBeVisible()
+  depth = await undoDepth(page)
+  await selectionBar(page).getByRole('button', { name: 'Release' }).click()
+  expect(await pinOf(page, punchId)).toBeNull()
+  expect(await undoDepth(page)).toBe(depth + 1)
+  await expect(selectionBar(page).getByText(/Holds/)).toBeHidden()
+  await expect(page.locator('main').getByRole('status')).toHaveText(/^Released 02/)
+})
+
+test('a pin is never let go of without a word: a nudge says so, and a pinned slab resized by its own handle stays pinned', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const [circle] = await circleSlabs(page, [[0, 0, 150]])
+  await addSlab(page, 'Square')
+  // The square, 80 across, pinned on the circle's centre.
+  const square = await page.evaluate((target) => {
+    const store = window.__marque.store
+    const id = store.getState().illustrator.layers.at(-1)!.id
+    store.getState().commitLayerEdits({
+      label: 'Place square',
+      edits: [{ layerId: id, carve: { v: 1, kind: 'slab', preset: 'square', center: { x: 0, y: 0 }, width: 80, height: 80, radius: 0, rotation: 0 }, pin: target }],
+      select: [id],
+    })
+    return id
+  }, circle)
+  expect(await pinOf(page, square)).toBe(circle)
+  const f = await frame(page)
+
+  // Its own corner handle resizes it about its centre, so the pin holds.
+  let depth = await undoDepth(page)
+  const corner = await handle(page, 'se')
+  await drag(page, corner, { x: corner.x + 20 * f.unit, y: corner.y + 20 * f.unit })
+  const resized = await slabOf(page, square)
+  expect(resized.width).toBeGreaterThan(100)
+  expect(resized.center).toEqual({ x: 0, y: 0 })
+  expect(await pinOf(page, square)).toBe(circle)
+  expect(await undoDepth(page)).toBe(depth + 1)
+
+  // An arrow key moves it off the centre: the pin goes, and the HUD and the status line say so.
+  depth = await undoDepth(page)
+  await page.keyboard.press('ArrowRight')
+  expect(await pinOf(page, square)).toBeNull()
+  await expect(hudLabel(page, 'unpinned')).toBeVisible()
+  await expect(page.locator('main').getByRole('status')).toHaveText(/^Unpinned/)
+  expect(await undoDepth(page)).toBe(depth + 1)
+  // It shows for a moment only.
+  await expect(hudLabel(page, 'unpinned')).toBeHidden({ timeout: 3000 })
+
+  // Dragged back onto the circle's centre, it is pinned again.
+  // Pressed at `y`, off the last press, so it is not a double-click.
+  const dragBack = async (y: number) => {
+    const grip = f.at(21, y)
+    await page.mouse.move(grip.x, grip.y)
+    await page.mouse.down()
+    await page.mouse.move(grip.x + 30 * f.unit, grip.y + 10 * f.unit, { steps: 4 })
+    await page.mouse.move(f.at(20.2, y + 0.3).x, f.at(20.2, y + 0.3).y, { steps: 4 })
+    // Well inside the moment "unpinned" would otherwise be held for.
+    await expect(hudLabel(page, 'pinned')).toBeVisible({ timeout: 300 })
+    await expect(hudLabel(page, 'unpinned')).toBeHidden({ timeout: 300 })
+    await page.mouse.up()
+    expect(await pinOf(page, square)).toBe(circle)
+  }
+  await dragBack(0)
+  // Nudged off and dragged straight back: the drag shows "pinned", not the "unpinned" the nudge left, and pins it.
+  await page.keyboard.press('ArrowRight')
+  await expect(hudLabel(page, 'unpinned')).toBeVisible()
+  await dragBack(-20)
+  await page.keyboard.press('ArrowRight')
+  await expect(hudLabel(page, 'unpinned')).toBeVisible()
+  // A punch pressed on the circle's centre straight after is shown pinned, not "unpinned", and is stored so.
+  await pickTool(page, 'Punch')
+  const start = f.at(-1, 1)
+  await page.mouse.move(start.x, start.y)
+  await page.mouse.down()
+  await expect(hudLabel(page, 'pinned')).toBeVisible({ timeout: 300 })
+  await expect(hudLabel(page, 'unpinned')).toBeHidden({ timeout: 300 })
+  await page.mouse.move(f.at(30, 1).x, start.y, { steps: 4 })
+  await page.mouse.up()
+  expect(await pinOf(page, (await layers(page)).at(-1)!.id)).toBe(circle)
+})
+
+test('a punch a little off a centre, dropped back on it, is pinned and centred; a pin whose target goes is let go of with a word', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const [circle, other] = await circleSlabs(page, [[0, 0, 150], [260, 0, 60]])
+  const f = await frame(page)
+  await pickTool(page, 'Punch')
+  await drag(page, f.at(60, 60), f.at(90, 60))
+  await page.keyboard.press('Escape')
+  // The punch sits 0.3 off the circle's centre, not pinned: as a mark from before pins were.
+  const punch = await page.evaluate(() => {
+    const store = window.__marque.store
+    const id = store.getState().illustrator.layers.at(-1)!.id
+    store.getState().commitLayerEdits({
+      label: 'Place punch',
+      edits: [{ layerId: id, carve: { v: 1, kind: 'punch', shape: 'circle', center: { x: 0.3, y: 0 }, radius: 30, rotation: 0 } }],
+      select: [id],
+    })
+    return id
+  })
+  expect(await pinOf(page, punch)).toBeNull()
+  const centreOf = async () => ((await layers(page)).find((layer) => layer.id === punch)!.carve as PunchSpec).center
+
+  // Dragged off and dropped back about where it was: the HUD says pinned, and so it is, its centre on the circle's, in one undo step.
+  let depth = await undoDepth(page)
+  const grip = f.at(15, 0)
+  await page.mouse.move(grip.x, grip.y)
+  await page.mouse.down()
+  await page.mouse.move(grip.x + 60 * f.unit, grip.y + 20 * f.unit, { steps: 6 })
+  await page.mouse.move(grip.x + 0.2 * f.unit, grip.y, { steps: 6 })
+  await expect(hudLabel(page, 'pinned')).toBeVisible()
+  await page.mouse.up()
+  expect(await pinOf(page, punch)).toBe(circle)
+  const centre = await centreOf()
+  expect(Math.hypot(centre.x, centre.y)).toBeLessThan(0.01)
+  expect(await undoDepth(page)).toBe(depth + 1)
+
+  // The circle deleted: the punch lets go, and the HUD and the status line say so. Undo brings the pin back.
+  const status = page.locator('main').getByRole('status')
+  await page.evaluate((id) => window.__marque.store.getState().setSelection([id]), circle)
+  await page.keyboard.press('Delete')
+  expect(await pinOf(page, punch)).toBeNull()
+  await expect(hudLabel(page, 'unpinned')).toBeVisible()
+  await expect(status).toHaveText(/^Unpinned \d\d: the shape it was pinned to is gone/)
+  await page.evaluate(() => window.__marque.store.getState().undoVectorCommand())
+  expect(await pinOf(page, punch)).toBe(circle)
+
+  // Made a guide, or merged with another circle by Union: the same.
+  for (const act of [
+    async () => {
+      await page.evaluate((id) => window.__marque.store.getState().setSelection([id]), circle)
+      await selectionBar(page).getByRole('button', { name: 'Make guide' }).click()
+    },
+    async () => {
+      await page.evaluate((ids) => window.__marque.store.getState().setSelection(ids), [circle, other])
+      await selectionBar(page).getByRole('button', { name: 'Union' }).click()
+    },
+  ]) {
+    // The last "unpinned" has had its moment.
+    await expect(hudLabel(page, 'unpinned')).toBeHidden({ timeout: 3000 })
+    await act()
+    expect(await pinOf(page, punch)).toBeNull()
+    await expect(hudLabel(page, 'unpinned')).toBeVisible()
+    await expect(status).toHaveText(/^Unpinned \d\d: the shape it was pinned to is gone/)
+    await page.evaluate(() => window.__marque.store.getState().undoVectorCommand())
+    expect(await pinOf(page, punch)).toBe(circle)
+  }
+})
+
+test("a pinned channel's end turns it about its middle: Shift keeps 15° steps, and a 15° ray lands where its label says", async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const [circle] = await circleSlabs(page, [[0, 0, 150]])
+  const f = await frame(page)
+  for (const shift of [true, false]) {
+    const channel = await page.evaluate((target) => {
+      const state = () => window.__marque.store.getState()
+      state().addCarveCut({ kind: 'channel', from: { x: -60, y: 0 }, to: { x: 60, y: 0 }, width: 16 }, target)
+      const id = state().illustrator.layers.at(-1)!.id
+      state().setSelection([id])
+      return id
+    }, circle)
+    expect(await pinOf(page, channel)).toBe(circle)
+    const to = await handle(page, 'to')
+    await page.mouse.move(to.x, to.y)
+    if (shift) await page.keyboard.down('Shift')
+    await page.mouse.down()
+    await page.mouse.move(f.at(54, 50).x, f.at(54, 50).y, { steps: 10 })
+    const label = (await page.locator('main span.bg-pink-500').allTextContents()).join(' ')
+    await page.mouse.up()
+    if (shift) await page.keyboard.up('Shift')
+    const groove = (await layers(page)).find((layer) => layer.id === channel)!.carve as GrooveSpec
+    const angle = (Math.atan2(groove.to.y - groove.from.y, groove.to.x - groove.from.x) * 180) / Math.PI
+    // Its middle stays on the circle's centre, and it is still pinned there.
+    expect(Math.hypot(groove.from.x + groove.to.x, groove.from.y + groove.to.y)).toBeLessThan(0.02)
+    expect(await pinOf(page, channel)).toBe(circle)
+    expect(Math.abs(angle / 15 - Math.round(angle / 15))).toBeLessThan(1e-6)
+    // A ray's label reads as a protractor does: what it says is the line the channel lies on.
+    if (!shift) expect(label).toContain(`${((-Math.round(angle) % 180) + 180) % 180}°`)
+    await page.evaluate((id) => window.__marque.store.getState().deleteIllustratorLayers([id]), channel)
+  }
+})
+
+test('ref 4: B sitting on the bottom line grows from its top corner without snapping to that line, and touches the right line exactly', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const [b] = await circleSlabs(page, [[0, 140, 60]])
+  await page.evaluate(() =>
+    window.__marque.store.getState().addGuides([
+      { kind: 'line', p: { x: 0, y: 200 }, angle: 0 },
+      { kind: 'line', p: { x: 200, y: 0 }, angle: 90 },
+    ]),
+  )
+  await page.keyboard.press('Escape')
+  const f = await frame(page)
+  await click(page, f.at(0, 140))
+  expect(await selectedIds(page)).toEqual([b])
+
+  // Grown from its top right corner, about the bottom left one on the line: frame by frame, nothing says tangent.
+  const corner = await handle(page, 'ne')
+  await page.keyboard.down('Shift')
+  await page.mouse.move(corner.x, corner.y)
+  await page.mouse.down()
+  const labels: string[] = []
+  for (let i = 1; i <= 16; i++) {
+    // Out along its diagonal, to a radius of about 60 + 2.5 i.
+    await page.mouse.move(corner.x + 5 * i * f.unit, corner.y - 5 * i * f.unit)
+    labels.push((await page.locator('main span.bg-pink-500').allTextContents()).join(' '))
+  }
+  expect(labels.filter((label) => label.includes('tangent'))).toEqual([])
+  await page.mouse.up()
+  const grown = await slabOf(page, b)
+  expect(grown.width / 2).toBeGreaterThan(90)
+  expect(grown.width / 2).toBeLessThan(110)
+  expect(grown.center.y + grown.width / 2).toBeCloseTo(200, 6)
+
+  // Grown on to 2 short of the right line: it touches it, at radius 130 whatever the frame. The corner moves twice as far as the radius grows.
+  const far = await handle(page, 'ne')
+  const reach = 2 * (128 - grown.width / 2) * f.unit
+  const towards = { x: far.x + reach, y: far.y - reach }
+  await page.mouse.move(far.x, far.y)
+  await page.mouse.down()
+  await page.mouse.move(towards.x, towards.y, { steps: 10 })
+  await expect(hudLabel(page, 'tangent')).toBeVisible()
+  await page.mouse.up()
+  await page.keyboard.up('Shift')
+  const touching = await slabOf(page, b)
+  expect(touching.width / 2).toBeCloseTo(130, 6)
+  expect(touching.center.x + touching.width / 2).toBeCloseTo(200, 6)
+  expect(touching.center.y + touching.width / 2).toBeCloseTo(200, 6)
+})
+
+test('on touch, a circle slab pulled by a corner stays a circle and takes another circle’s size', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const [, b] = await circleSlabs(page, [
+    [0, 40, 70],
+    [140, -120, 60],
+  ])
+  const f = await frame(page)
+  await click(page, f.at(140, -120))
+  const depth = await undoDepth(page)
+  // Out and down, not along its diagonal, to a size of about 72.
+  const corner = await handle(page, 'se')
+  await touchDrag(page, corner, { x: corner.x + 14 * f.unit, y: corner.y + 10 * f.unit })
+  expect(await undoDepth(page)).toBe(depth + 1)
+  const grown = await slabOf(page, b)
+  expect(grown.width).toBe(grown.height)
+  expect(grown.width / 2).toBeCloseTo(70, 6)
+  expect(grown.radius).toBeCloseTo(70, 6)
+})
+
+test('the lines two selected circles share are offered once: never on top of a guide already there', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  // Equal circles side by side, with the lines along their tops and bottoms already guides.
+  const [b] = await circleSlabs(page, [
+    [-50, 125, 65],
+    [100, 125, 65],
+  ])
+  await page.evaluate(() => {
+    const store = window.__marque.store
+    store.getState().addGuides([
+      { kind: 'line', p: { x: -150, y: 60 }, angle: 0 },
+      { kind: 'line', p: { x: 0, y: 190 }, angle: 0 },
+    ])
+    store.getState().setSelection(store.getState().illustrator.layers.map((layer) => layer.id))
+  })
+  const f = await frame(page)
+  await pickTool(page, 'Guide')
+  const on = f.at(-50, 100)
+  await page.mouse.move(on.x, on.y)
+  await page.keyboard.down('Shift')
+  await click(page, on)
+  await page.keyboard.up('Shift')
+  const all = await guides(page)
+  const tangents = all.filter((guide) => /tangent/.test(guide.name))
+  // The two outer tangents are the guides already there; the two inner ones are new.
+  expect(tangents.map((guide) => guide.name)).toEqual(['Inner tangent', 'Inner tangent'])
+  const line = (guide: (typeof all)[number]) => (guide.shape.kind === 'line' ? guide.shape : null)
+  for (const tangent of tangents) {
+    const t = line(tangent)!
+    for (const other of all) {
+      const o = line(other)
+      if (other === tangent || !o) continue
+      const turn = Math.abs((((t.angle - o.angle) % 180) + 180) % 180)
+      const parallel = Math.min(turn, 180 - turn) < 0.01
+      const across = Math.abs((o.p.x - t.p.x) * Math.sin((t.angle * Math.PI) / 180) - (o.p.y - t.p.y) * Math.cos((t.angle * Math.PI) / 180))
+      expect(parallel && across < 0.01).toBe(false)
+    }
+  }
+  expect(b).toBeTruthy()
+})
+
+test('under the Guide tool, a Shift line started on a centre stays through it; started free, it moves across to touch a circle', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  await circleSlabs(page, [
+    [-120, 0, 50],
+    [120, 54, 50],
+  ])
+  const f = await frame(page)
+  await pickTool(page, 'Guide')
+
+  // Pressed by the first circle's centre, which it snaps to, and drawn flat with Shift past the second, 4 units off touching it.
+  await page.mouse.move(f.at(-119.5, 0.5).x, f.at(-119.5, 0.5).y)
+  await page.mouse.down()
+  await expect(hudLabel(page, 'centre')).toBeVisible()
+  await page.keyboard.down('Shift')
+  await page.mouse.move(f.at(120, 2).x, f.at(120, 2).y, { steps: 8 })
+  await page.mouse.up()
+  await page.keyboard.up('Shift')
+  const [through] = await guides(page)
+  expect(through.shape).toEqual({ kind: 'line', p: { x: -120, y: 0 }, angle: 0 })
+
+  // Pressed where nothing snaps, on a 45° line 3 units off touching the second circle: it moves across to touch it.
+  // (A flat line would not do: its start would align with the circle's top, which is where it touches.)
+  const along = { x: Math.SQRT1_2, y: Math.SQRT1_2 }
+  const free = { x: 120 - 53 * Math.SQRT1_2 - 150 * along.x, y: 54 + 53 * Math.SQRT1_2 - 150 * along.y }
+  await page.mouse.move(f.at(free.x, free.y).x, f.at(free.x, free.y).y)
+  await page.mouse.down()
+  await page.keyboard.down('Shift')
+  await page.mouse.move(f.at(free.x + 100 * along.x, free.y + 100 * along.y).x, f.at(free.x + 100 * along.x, free.y + 100 * along.y).y, { steps: 8 })
+  await page.mouse.up()
+  await page.keyboard.up('Shift')
+  const touching = (await guides(page))[1]
+  expect(touching.shape.kind).toBe('line')
+  if (touching.shape.kind === 'line') {
+    const { p, angle } = touching.shape
+    const d = { x: Math.cos((angle * Math.PI) / 180), y: Math.sin((angle * Math.PI) / 180) }
+    expect(Math.abs(Math.abs(d.x * (54 - p.y) - d.y * (120 - p.x)) - 50)).toBeLessThan(1e-6)
+  }
+})
+
+test('under the Guide tool, a short drag adds no line, and a far circle never draws a line off its drag', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  await circleSlabs(page, [
+    [-120, 0, 80],
+    [120, 40, 50],
+  ])
+  const f = await frame(page)
+  await pickTool(page, 'Guide')
+  const from = f.at(200, -200)
+  const towards = (px: number) => ({ x: from.x + px * Math.cos((14 * Math.PI) / 180), y: from.y - px * Math.sin((14 * Math.PI) / 180) })
+
+  // 4 pixels: too short to give the line an angle.
+  await drag(page, from, towards(4))
+  expect(await guides(page)).toEqual([])
+
+  // 40 pixels: a line along the drag, not turned to touch either circle.
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  const labels: string[] = []
+  for (let px = 2; px <= 40; px += 2) {
+    const at = towards(px)
+    await page.mouse.move(at.x, at.y)
+    labels.push((await page.locator('main span.bg-pink-500').allTextContents()).join(' '))
+  }
+  await page.mouse.up()
+  expect(labels.filter((label) => label.includes('tangent'))).toEqual([])
+  const [line] = await guides(page)
+  // Along the drag, to the whole degree it lands on: the pointer sits on whole pixels.
+  expect(line.shape.kind).toBe('line')
+  if (line.shape.kind === 'line') {
+    const turn = (((line.shape.angle + 14) % 180) + 180) % 180
+    expect(Math.min(turn, 180 - turn)).toBeLessThanOrEqual(2)
+  }
 })

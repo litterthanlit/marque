@@ -1,4 +1,5 @@
 import { constructionLine, sameGuideShape } from './guides.ts'
+import { followPins } from './pins.ts'
 import type { Fillet, Guide, PathObject, VectorObject } from './types.ts'
 
 /**
@@ -7,8 +8,9 @@ import type { Fillet, Guide, PathObject, VectorObject } from './types.ts'
  * each of them whose source changed, so it follows the source. One whose
  * source is gone, or no longer has what it was made from, is detached in the
  * same edit: it keeps its last geometry and becomes a plain one, and an undo
- * restores both. Later steps add their own followers here (bands, offsets,
- * pins, fillets); each reads the lists the earlier ones left.
+ * restores both. A recipe pinned to an object's centre moves with it. Later
+ * steps add their own followers here (bands, offsets, fillets); each reads
+ * the lists the earlier ones left.
  *
  * It is pure, and hands back the very same arrays, and the very same items in
  * them, wherever nothing changed.
@@ -37,7 +39,8 @@ interface FollowContext {
 
 type Follower = (context: FollowContext) => DocumentLists
 
-const FOLLOWERS: Follower[] = [followConstructionGuides]
+/** Pins move objects, so they go first: what follows a pinned object follows it where it lands. */
+const FOLLOWERS: Follower[] = [followPinned, followConstructionGuides]
 
 /**
  * Bring everything that follows an object up to date after an edit from
@@ -49,8 +52,12 @@ export function follow(before: DocumentLists | null, after: DocumentLists): Docu
   const freshGuides = before ? freshLinkedGuides(before.guides, after.guides) : null
   if (changed && changed.size === 0 && freshGuides?.size === 0) return after
   let lists = after
+  let moved = changed
   for (const follower of FOLLOWERS) {
-    lists = follower({ lists, byId: new Map(lists.objects.map((object) => [object.id, object])), changed, freshGuides })
+    const next = follower({ lists, byId: new Map(lists.objects.map((object) => [object.id, object])), changed: moved, freshGuides })
+    // An object a follower moved counts as changed for the ones after it.
+    if (moved && next.objects !== lists.objects) moved = new Set([...moved, ...changedIds(lists.objects, next.objects)])
+    lists = next
   }
   return lists
 }
@@ -74,6 +81,13 @@ export function changedIds(before: readonly VectorObject[], after: readonly Vect
   }
   for (const object of before) if (!present.has(object.id)) changed.add(object.id)
   return changed
+}
+
+/* ─── Pins ─── */
+
+function followPinned({ lists, changed }: FollowContext): DocumentLists {
+  const { objects } = followPins(lists.objects, changed)
+  return objects === lists.objects ? lists : { ...lists, objects }
 }
 
 /* ─── Construction guides ─── */

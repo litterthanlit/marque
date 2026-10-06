@@ -6,6 +6,7 @@ import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustr
 import { closedContourOf, describeGuide } from '../../engine/vector/guides.ts'
 import type { Guide, VectorObject } from '../../engine/vector/types.ts'
 import { selectionBox } from '../../renderer/directEdit/handleSet.ts'
+import { hud } from '../../renderer/directEdit/hud.ts'
 import { cn } from '../../lib/utils.ts'
 import { Divider, EditorButton, FLOATING_SURFACE, Segmented } from './controls.tsx'
 import { layerNumber } from './layerNumber.ts'
@@ -127,6 +128,9 @@ function LayerBar() {
           {description?.numbers && <span> · {description.numbers}</span>}
         </p>
 
+        {selectedLayer?.pin && <PinnedTo target={selectedLayer.pin} />}
+        {selectedLayer && <Holds id={selectedLayer.id} />}
+
         {selectedLayer && (
           <Segmented
             label="Add or cut"
@@ -184,6 +188,53 @@ function LayerBar() {
           </EditorButton>
         </div>
       </div>
+    </div>
+  )
+}
+
+/** A recipe's centre pinned to another shape's: which, by its number, and a way to let go. */
+function PinnedTo({ target }: { target: string }) {
+  const layers = useLogoStore((s) => s.illustrator.layers)
+  const unpinSelection = useLogoStore((s) => s.unpinSelection)
+  const number = layerNumber(layers, target)
+  return (
+    <div className="flex items-center gap-1" role="group" aria-label="Pin">
+      <span className="px-1 text-xs text-sidebar-text" title="Its centre stays on that shape's centre when the shape moves or resizes">
+        Pinned to {number ?? '—'}
+      </span>
+      <EditorButton
+        title="Let go of the pin: the shape stays where it is"
+        onClick={() => {
+          unpinSelection()
+          hud.announce('Unpinned: it no longer stays on the centre it was pinned to')
+        }}
+      >
+        Unpin
+      </EditorButton>
+    </div>
+  )
+}
+
+/** A shape that recipes are pinned to: which, by their numbers, and a way to let them all go. Nothing when none is. */
+function Holds({ id }: { id: string }) {
+  const layers = useLogoStore((s) => s.illustrator.layers)
+  const releasePinsTo = useLogoStore((s) => s.releasePinsTo)
+  const numbers = layers.flatMap((layer, index) => (layer.pin === id ? [String(index + 1).padStart(2, '0')] : []))
+  if (!numbers.length) return null
+  return (
+    <div className="flex items-center gap-1" role="group" aria-label="Pins held">
+      <span className="px-1 text-xs text-sidebar-text" title="Their centres stay on this shape's centre when it moves or resizes">
+        Holds {numbers.join(', ')}
+      </span>
+      <EditorButton
+        title="Let go of every pin held to this shape: the shapes stay where they are"
+        onClick={() => {
+          releasePinsTo(id)
+          hud.announce(numbers.length > 1 ? `Released ${numbers.join(', ')}: they no longer stay on this centre` : `Released ${numbers[0]}: it no longer stays on this centre`)
+        }}
+      >
+        Release
+      </EditorButton>
     </div>
   )
 }

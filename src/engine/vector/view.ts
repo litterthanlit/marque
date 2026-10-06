@@ -42,6 +42,7 @@ export function vectorObjectToLayer(object: PathObject): IllustratorLayer {
     ...(object.frame && !object.carve ? { frameRotation: object.frame.rotation } : {}),
     ...(object.parentId !== null ? { parentId: object.parentId } : {}),
     ...(object.contours.length > 1 ? { contourCount: object.contours.length } : {}),
+    ...(object.pin ? { pin: object.pin.centreOf } : {}),
   }
   layerCache.set(object, layer)
   return layer

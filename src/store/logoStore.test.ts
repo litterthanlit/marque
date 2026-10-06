@@ -1440,3 +1440,121 @@ describe('guides', () => {
     if (decoded.kind === 'vector') expect(decoded.document.guides).toEqual(guides())
   })
 })
+
+describe('centre pins', () => {
+  beforeEach(() => reset())
+
+  const punchOf = () => layers().find((layer) => layer.carve?.kind === 'punch')!
+  const carveOf = (id: string) => layers().find((layer) => layer.id === id)!.carve!
+
+  it('places a punch pinned to a circle slab, and the punch follows a resize of the slab in the same undo step', () => {
+    useLogoStore.getState().addSlab('circle')
+    const slab = layers()[0]
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 30 }, slab.id)
+    expect(punchOf().pin).toBe(slab.id)
+    const depth = undoDepth()
+    const grown: SlabSpec = { ...(slab.carve as SlabSpec), center: { x: 40, y: 40 }, width: 480, height: 480, radius: 240 }
+    useLogoStore.getState().commitLayerEdits({ label: 'Resize', edits: [{ layerId: slab.id, carve: grown }] })
+    expect((punchOf().carve as PunchSpec).center).toEqual({ x: 40, y: 40 })
+    expect(undoDepth()).toBe(depth + 1)
+    useLogoStore.getState().undoVectorCommand()
+    expect((punchOf().carve as PunchSpec).center).toEqual({ x: 0, y: 0 })
+  })
+
+  it('pins, re-pins and lets go through a gesture’s edits, and Unpin is one undo step', () => {
+    useLogoStore.getState().addSlab('circle')
+    const slab = layers()[0]
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 30 })
+    const punch = punchOf()
+    expect(punch.pin).toBeUndefined()
+    useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: punch.id, carve: punch.carve!, pin: slab.id }] })
+    expect(punchOf().pin).toBe(slab.id)
+    useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: punch.id, carve: { ...punch.carve!, center: { x: 90, y: 0 } } as PunchSpec, pin: null }] })
+    expect(punchOf().pin).toBeUndefined()
+    useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: punch.id, carve: punch.carve!, pin: slab.id }] })
+    useLogoStore.getState().setSelection([punch.id])
+    const depth = undoDepth()
+    useLogoStore.getState().unpinSelection()
+    expect(punchOf().pin).toBeUndefined()
+    expect(undoDepth()).toBe(depth + 1)
+    useLogoStore.getState().undoVectorCommand()
+    expect(punchOf().pin).toBe(slab.id)
+    expect(carveOf(slab.id)).toEqual(slab.carve)
+  })
+
+  it('lets go of every pin held to a shape at once, in one undo step', () => {
+    useLogoStore.getState().addSlab('circle')
+    const slab = layers()[0]
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 30 }, slab.id)
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'square', center: { x: 0, y: 0 }, radius: 10 }, slab.id)
+    expect(layers().map((layer) => layer.pin)).toEqual([undefined, slab.id, slab.id])
+    const depth = undoDepth()
+    useLogoStore.getState().releasePinsTo(slab.id)
+    expect(layers().map((layer) => layer.pin)).toEqual([undefined, undefined, undefined])
+    expect(undoDepth()).toBe(depth + 1)
+    useLogoStore.getState().undoVectorCommand()
+    expect(layers().map((layer) => layer.pin)).toEqual([undefined, slab.id, slab.id])
+  })
+
+  it('a free shape turned with the punch pinned to it keeps the punch where the turn put it, on the centre of its turned box', () => {
+    useLogoStore.getState().addPenShape('M-150,-100L150,-100L-150,131Z')
+    const shape = layers()[0]
+    // The middle of its box, where the punch is pinned.
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 15.5 }, radius: 20 }, shape.id)
+    const punch = punchOf()
+    expect(punch.pin).toBe(shape.id)
+    // Both turned 30° about a point off the centre, as a box turn of the two does.
+    const pivot = { x: 40, y: -20 }
+    const turn = (p: { x: number; y: number }) => {
+      const [c, s] = [Math.cos(Math.PI / 6), Math.sin(Math.PI / 6)]
+      const d = { x: p.x - pivot.x, y: p.y - pivot.y }
+      return { x: pivot.x + d.x * c - d.y * s, y: pivot.y + d.x * s + d.y * c }
+    }
+    const [a, b, c] = [{ x: -150, y: -100 }, { x: 150, y: -100 }, { x: -150, y: 131 }].map(turn)
+    const centre = turn({ x: 0, y: 15.5 })
+    useLogoStore.getState().commitLayerEdits({
+      label: 'Turn',
+      edits: [
+        { layerId: shape.id, pathData: `M${a.x},${a.y}L${b.x},${b.y}L${c.x},${c.y}Z`, frameRotation: 30 },
+        { layerId: punch.id, carve: { ...(punch.carve as PunchSpec), center: centre } },
+      ],
+    })
+    const after = (punchOf().carve as PunchSpec).center
+    expect(Math.hypot(after.x - centre.x, after.y - centre.y)).toBeLessThan(0.02)
+    expect(punchOf().pin).toBe(shape.id)
+    // Turned alone, the shape takes the punch along, turned as its box turns.
+    const [a2, b2, c2] = [a, b, c].map(turn)
+    useLogoStore.getState().commitLayerEdits({
+      label: 'Turn',
+      edits: [{ layerId: shape.id, pathData: `M${a2.x},${a2.y}L${b2.x},${b2.y}L${c2.x},${c2.y}Z`, frameRotation: 60 }],
+    })
+    const again = (punchOf().carve as PunchSpec).center
+    const twice = turn(centre)
+    expect(Math.hypot(again.x - twice.x, again.y - twice.y)).toBeLessThan(0.02)
+  })
+
+  it('deleting the object a punch is pinned to lets go of the pin in the same undo step', () => {
+    useLogoStore.getState().addSlab('circle')
+    const slab = layers()[0]
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 30 }, slab.id)
+    const depth = undoDepth()
+    useLogoStore.getState().deleteIllustratorLayers([slab.id])
+    expect(punchOf().pin).toBeUndefined()
+    expect(undoDepth()).toBe(depth + 1)
+    useLogoStore.getState().undoVectorCommand()
+    expect(punchOf().pin).toBe(slab.id)
+  })
+
+  it('pins a channel or a slice by its middle: both ends move as far as the centre it is pinned to', () => {
+    useLogoStore.getState().addSlab('circle')
+    const slab = layers()[0]
+    useLogoStore.getState().addCarveCut({ kind: 'channel', from: { x: -50, y: 0 }, to: { x: 50, y: 0 }, width: 20 }, slab.id)
+    useLogoStore.getState().addCarveCut({ kind: 'slice', from: { x: 0, y: -40 }, to: { x: 0, y: 40 }, width: 4 }, slab.id)
+    const [, channel, slice] = layers()
+    expect([channel.pin, slice.pin]).toEqual([slab.id, slab.id])
+    const moved: SlabSpec = { ...(slab.carve as SlabSpec), center: { x: 40, y: -30 } }
+    useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: slab.id, carve: moved }] })
+    expect(carveOf(channel.id)).toMatchObject({ from: { x: -10, y: -30 }, to: { x: 90, y: -30 }, width: 20 })
+    expect(carveOf(slice.id)).toMatchObject({ from: { x: 40, y: -70 }, to: { x: 40, y: 10 } })
+  })
+})

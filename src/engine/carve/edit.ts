@@ -253,7 +253,8 @@ function dragGroove(start: GrooveSpec, id: HandleId, startPointer: Vec, pointer:
   if (id !== 'from' && id !== 'to') return start
   const other = id === 'from' ? 'to' : 'from'
   let moved = add(start[id], delta)
-  if (mods.shift) moved = snapAngleAround(start[other], moved)
+  // With Alt the groove turns about its middle, which stays: the 15° steps are read from there.
+  if (mods.shift) moved = snapAngleAround(mods.alt ? scale(add(start.from, start.to), 0.5) : start[other], moved)
   const next: GrooveSpec = id === 'from' ? { ...start, from: moved } : { ...start, to: moved }
   if (mods.alt) next[other] = sub(start[other], sub(moved, start[id]))
   return next

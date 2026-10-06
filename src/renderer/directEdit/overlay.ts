@@ -114,7 +114,11 @@ export function drawGhostPoint(scope: paper.PaperScope, layer: paper.Layer, poin
   layer.addChild(square)
 }
 
-/** Snap hints: pink alignment lines, and a cross where the geometry landed. */
+/**
+ * Snap hints: pink alignment lines; a cross where the geometry landed; a
+ * short stroke along the line a circle touches, ringed at the touch; a
+ * ringed cross where a centre is pinned.
+ */
 export function drawSnapHints(scope: paper.PaperScope, layer: paper.Layer, hints: SnapHint[], center: Vec) {
   const pink = new scope.Color(HINT_COLOR)
   const at = (v: Vec) => new scope.Point(v.x + center.x, v.y + center.y)
@@ -126,6 +130,43 @@ export function drawSnapHints(scope: paper.PaperScope, layer: paper.Layer, hints
       line.dashArray = [3 * u, 3 * u]
       line.locked = true
       layer.addChild(line)
+      continue
+    }
+    if (hint.kind === 'tangent') {
+      const reach = 9 * u
+      const stroke = new scope.Path.Line({
+        from: at({ x: hint.p.x - hint.dir.x * reach, y: hint.p.y - hint.dir.y * reach }),
+        to: at({ x: hint.p.x + hint.dir.x * reach, y: hint.p.y + hint.dir.y * reach }),
+        insert: false,
+      })
+      stroke.strokeColor = pink
+      stroke.strokeWidth = 1.5 * u
+      stroke.locked = true
+      layer.addChild(stroke)
+      // An open ring, as large as the cross of a point snap, reads against the outline it sits on.
+      const ring = new scope.Path.Circle({ center: at(hint.p), radius: 4.5 * u, insert: false })
+      ring.strokeColor = pink
+      ring.strokeWidth = 2 * u
+      ring.locked = true
+      layer.addChild(ring)
+      continue
+    }
+    if (hint.kind === 'pin') {
+      const ring = new scope.Path.Circle({ center: at(hint.p), radius: 6 * u, insert: false })
+      ring.strokeColor = pink
+      ring.strokeWidth = 1.5 * u
+      ring.locked = true
+      layer.addChild(ring)
+      for (const [dx, dy] of [
+        [1, 0],
+        [0, 1],
+      ]) {
+        const arm = new scope.Path.Line({ from: at({ x: hint.p.x - dx * 9 * u, y: hint.p.y - dy * 9 * u }), to: at({ x: hint.p.x + dx * 9 * u, y: hint.p.y + dy * 9 * u }), insert: false })
+        arm.strokeColor = pink
+        arm.strokeWidth = 1.25 * u
+        arm.locked = true
+        layer.addChild(arm)
+      }
       continue
     }
     const p = at(hint.p)

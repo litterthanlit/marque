@@ -1,4 +1,4 @@
-import { distance, sub, type Bounds, type Vec } from '../../engine/path/bezier.ts'
+import { distance, type Bounds, type Vec } from '../../engine/path/bezier.ts'
 import { lineReading, lineShape, nearestOnGuide, type GuideShape } from '../../engine/vector/guides.ts'
 import type { ConstructionRole } from '../../engine/vector/types.ts'
 import type { Modifiers } from '../directEdit/DirectEditController.ts'
@@ -7,13 +7,18 @@ import { SELECTION_COLOR } from '../directEdit/overlay.ts'
 import { guidePathItem, visibleLayerRect } from '../guideItems.ts'
 import { unitsPerCssPixel } from '../viewFit.ts'
 
-/** A construction line of a shape, with the shape it would follow. */
+/** A construction line of a shape, with the shape it would follow, or a line it offers that follows nothing. */
 export interface Ghost {
   of: string
-  role: ConstructionRole
+  /** The construction line it would follow; null for a plain line, such as a tangent two selected circles share. */
+  role: ConstructionRole | null
+  /** Tells ghosts of one shape apart. */
+  key: string
   shape: GuideShape
   /** What the guide would be called. */
   name: string
+  /** Where a line touches the two shapes it is offered for: it draws from one to the other, a little past each, so it reaches both. */
+  span?: readonly [Vec, Vec]
 }
 
 /** The construction lines of one shape that are not guides yet, and the shape's bounds (layer space). */
@@ -41,6 +46,11 @@ export interface GuideCallbacks {
   snapPoint?(p: Vec, role: 'hover' | 'start' | 'end', rays: Vec[]): Vec
   /** Snap a circle's radius about its centre. */
   snapRadius?(center: Vec, radius: number): number
+  /**
+   * Snap a line drawn from `start` towards `current`: at `angle` when Shift
+   * holds one, else turning about `start`. The line it lands on, or null.
+   */
+  snapLine?(start: Vec, current: Vec, angle: number | null): { p: Vec; angle: number } | null
   /** Is snapping on for these modifiers? Then angles land on whole degrees. */
   snaps(mods: Modifiers): boolean
   /** The press ended, or the pointer left: snap hints can go. */
@@ -76,9 +86,13 @@ interface Press {
 
 const LAYER_NAME = '__guide_tool'
 const DRAG_PX = 3
+/** How long a drag must be, in CSS pixels, before it gives a line an angle. */
+const LINE_PX = 6
 const GHOST_PX = 6
 /** How far past its shape a ghost line draws, in CSS pixels: only the one under the pointer crosses the canvas. */
 const GHOST_REACH_PX = 40
+/** How far past the points it touches a line two shapes share draws, in CSS pixels. */
+const SPAN_REACH_PX = 16
 /** Within this many CSS pixels of each other, a circle ghost wins over a line one: the lines crowd its corners. */
 const GHOST_TIE_PX = 1.5
 
@@ -110,7 +124,7 @@ export const pinnedGhosts = {
   },
 }
 
-const sameGhost = (a: Ghost | null, b: Ghost | null) => a !== null && b !== null && a.of === b.of && a.role === b.role
+const sameGhost = (a: Ghost | null, b: Ghost | null) => a !== null && b !== null && a.of === b.of && a.key === b.key
 
 const round2 = (v: number) => Math.round(v * 100) / 100
 
@@ -176,11 +190,31 @@ export class GuideTool {
     return { minX: minX - pad, minY: minY - pad, maxX: maxX + pad, maxY: maxY + pad }
   }
 
+  /** Where a ghost line draws while it is not under the pointer: between the points it touches, a little past each, or else beside its shape. */
+  private ghostBounds(set: GhostSet, ghost: Ghost): Bounds {
+    if (!ghost.span) return this.ghostRect(set)
+    const [a, b] = ghost.span
+    const pad = this.px(SPAN_REACH_PX, false)
+    const along = distance(a, b) > 1e-9 ? { x: (b.x - a.x) / distance(a, b), y: (b.y - a.y) / distance(a, b) } : { x: 0, y: 0 }
+    const ends = [
+      { x: a.x - along.x * pad, y: a.y - along.y * pad },
+      { x: b.x + along.x * pad, y: b.y + along.y * pad },
+    ]
+    // A hair wider than the two ends, so a level or upright line is not clipped away.
+    const hair = this.px(0.5, false)
+    return {
+      minX: Math.min(ends[0].x, ends[1].x) - hair,
+      minY: Math.min(ends[0].y, ends[1].y) - hair,
+      maxX: Math.max(ends[0].x, ends[1].x) + hair,
+      maxY: Math.max(ends[0].y, ends[1].y) + hair,
+    }
+  }
+
   /** How far `p` is from a ghost where it draws, or Infinity off the part of a line that draws. */
   private ghostDistance(set: GhostSet, ghost: Ghost, p: Vec): number {
     const { point, distance } = nearestOnGuide(ghost.shape, p)
     if (ghost.shape.kind !== 'line' || sameGhost(ghost, this.hot) || sameGhost(ghost, this.followed)) return distance
-    const rect = this.ghostRect(set)
+    const rect = this.ghostBounds(set, ghost)
     const inside = point.x >= rect.minX && point.x <= rect.maxX && point.y >= rect.minY && point.y <= rect.maxY
     return inside ? distance : Infinity
   }
@@ -269,11 +303,12 @@ export class GuideTool {
   onMouseUp(point: paper.Point, mods: Modifiers) {
     const press = this.press
     this.press = null
+    // The last frame is snapped before the gesture's snapping ends, while what its start snapped to still holds.
+    const end = this.toLocal(point)
+    const shape = press?.dragging ? (press.circle ? this.circleTo(press.start, end, mods) : this.lineTo(press.start, end, mods)) : null
     this.callbacks.onGestureEnd?.()
     if (!press) return
     if (press.dragging) {
-      const end = this.toLocal(point)
-      const shape = press.circle ? this.circleTo(press.start, end, mods) : this.lineTo(press.start, end, mods)
       this.shape = null
       hud.clear()
       this.draw()
@@ -312,23 +347,28 @@ export class GuideTool {
   }
 
   private lineTo(start: Vec, current: Vec, mods: Modifiers): GuideShape | null {
-    if (distance(start, current) < 1e-6) return null
+    // Until the drag is long enough, its angle means nothing: no line yet, and nothing to read.
+    if (distance(start, current) < this.px(LINE_PX, false)) {
+      hud.set({ label: null, chip: null })
+      return null
+    }
+    const raw = (Math.atan2(current.y - start.y, current.x - start.x) * 180) / Math.PI
+    let through = start
     let angle: number
     if (mods.shift) {
-      const raw = (Math.atan2(current.y - start.y, current.x - start.x) * 180) / Math.PI
+      // Shift keeps 15° steps; the line may still move across itself to touch a circle.
       angle = Math.round(raw / 15) * 15
+      through = this.callbacks.snapLine?.(start, current, angle)?.p ?? start
     } else {
-      // A snapped end gives the exact line through both points; a free one lands on a whole degree.
-      const end = this.callbacks.snapPoint?.(current, 'end', [start]) ?? current
-      const d = sub(end, start)
-      angle = (Math.atan2(d.y, d.x) * 180) / Math.PI
-      const snapped = end.x !== current.x || end.y !== current.y
-      if (!snapped && this.callbacks.snaps(mods)) angle = Math.round(angle)
+      // A snapped line is exact: through a point, or touching a circle. A free one lands on a whole degree.
+      const snapped = this.callbacks.snapLine?.(start, current, null)
+      angle = snapped ? snapped.angle : this.callbacks.snaps(mods) ? Math.round(raw) : raw
+      if (snapped) through = snapped.p
     }
-    const shape = lineShape(start, angle)
+    const shape = lineShape(through, angle)
     if (shape.kind === 'line') {
       // A ray snap's label reads as a protractor does elsewhere; here the line's own reading stands for it.
-      const label = hud.get().label
+      const label = hud.asked()
       hud.set({ chip: `${lineReading(shape.angle)}°`, label: label?.endsWith('°') ? null : label })
     }
     return shape
@@ -484,10 +524,9 @@ export class GuideTool {
     // shape; the one under the pointer solid and across the canvas, as it would be added.
     const set = this.set
     if (set) {
-      const near = this.ghostRect(set)
       // A line being followed while a circle it crosses is under the pointer still runs across the canvas.
       for (const ghost of set.ghosts) {
-        if (!sameGhost(ghost, this.hot)) put(ghost.shape, sameGhost(ghost, this.followed) ? rect : near, 0.4, 1, [3, 3])
+        if (!sameGhost(ghost, this.hot)) put(ghost.shape, sameGhost(ghost, this.followed) ? rect : this.ghostBounds(set, ghost), 0.4, 1, [3, 3])
       }
     }
     if (this.hot) put(this.hot.shape, rect, 1, 1.25, [])

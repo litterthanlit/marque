@@ -8,8 +8,8 @@ interface CarveCallbacks {
   onPreview: (spec: CutSpec | null) => void
   /** Snap a point being placed (or about to be, on hover); `from` is the other end of a channel or slice. */
   snapPoint?: (p: Vec, from: Vec | null, role: 'hover' | 'start' | 'end') => Vec
-  /** Snap a punch's radius around its centre. */
-  snapRadius?: (center: Vec, radius: number) => number
+  /** Snap a punch's radius around its centre; `round` for a circle punch, which can snap to touch. */
+  snapRadius?: (center: Vec, radius: number, round: boolean) => number
   /** The press ended (cut, cancelled or not): snap hints can go. */
   onGestureEnd?: () => void
 }
@@ -62,7 +62,7 @@ export class CarveTool {
         kind: 'punch',
         shape: this.options.punchShape,
         center: start,
-        radius: round2(this.callbacks.snapRadius?.(start, radius) ?? radius),
+        radius: round2(this.callbacks.snapRadius?.(start, radius, this.options.punchShape === 'circle') ?? radius),
       }
     }
     let end = current
