@@ -2,13 +2,14 @@ import paper from 'paper'
 import { compressToEncodedURIComponent } from 'lz-string'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useLogoStore } from './logoStore.ts'
-import type { SlabSpec } from '../engine/carve/spec.ts'
+import type { PunchSpec, SlabSpec } from '../engine/carve/spec.ts'
 import { composeIllustratorMark } from '../engine/illustrator/compose.ts'
 import type { IllustratorLayer } from '../engine/illustrator/types.ts'
 import { rollSparks } from '../engine/sparks/sparks.ts'
-import { composeVectorMark } from '../engine/vector/export.ts'
+import { composeVectorMark, composeVectorMarkCached } from '../engine/vector/export.ts'
 import { readLegacyLayers } from '../engine/vector/migrate.ts'
-import type { VectorObject } from '../engine/vector/types.ts'
+import { constructionLines, guideRows } from '../engine/vector/guides.ts'
+import type { PathObject, VectorObject } from '../engine/vector/types.ts'
 import { decodeLink, encodeLink } from '../engine/vector/link.ts'
 import { createSavedVariation, type SavedVariation } from '../engine/vector/saved.ts'
 
@@ -1032,5 +1033,410 @@ describe('the spark shuffle', () => {
     const seeds = [await load(), await load(), await load()]
     expect(seeds.every(Number.isSafeInteger)).toBe(true)
     expect(new Set(seeds).size).toBe(3)
+  })
+})
+
+describe('guides', () => {
+  beforeEach(() => reset())
+
+  const guides = () => useLogoStore.getState().vectorDocument.guides
+  const selectedGuides = () => useLogoStore.getState().illustrator.selectedGuideIds
+  const line = (y: number) => ({ kind: 'line' as const, p: { x: 0, y }, angle: 0 })
+
+  it('adds a guide as one undo step, selected, and undo and redo put back the very same guides array', () => {
+    useLogoStore.getState().addSlab('square')
+    const before = guides()
+    const depth = undoDepth()
+    useLogoStore.getState().addGuides([line(40)])
+    const after = guides()
+    expect(after).toHaveLength(1)
+    expect(after[0]).toMatchObject({ name: 'Line', style: 'solid', visible: true, locked: false, shape: line(40) })
+    expect(selectedGuides()).toEqual([after[0].id])
+    expect(useLogoStore.getState().illustrator.selectedLayerIds).toEqual([])
+    expect(undoDepth()).toBe(depth + 1)
+
+    useLogoStore.getState().undoVectorCommand()
+    expect(guides()).toBe(before)
+    expect(selectedGuides()).toEqual([])
+    useLogoStore.getState().redoVectorCommand()
+    expect(guides()).toBe(after)
+    expect(selectedGuides()).toEqual([after[0].id])
+  })
+
+  it('a guide edit keeps the objects array, so the mark is not composed again', () => {
+    useLogoStore.getState().addSlab('square')
+    const objectsBefore = objects()
+    const mark = composeVectorMarkCached(useLogoStore.getState().vectorDocument)
+    useLogoStore.getState().addGuides([line(40), line(80)])
+    const ids = guides().map((guide) => guide.id)
+    useLogoStore.getState().setGuidesStyle(ids, 'dotted')
+    useLogoStore.getState().setGuidesLocked([ids[0]], true)
+    useLogoStore.getState().toggleGuideVisibility(ids[1])
+    useLogoStore.getState().deleteGuides([ids[1]])
+    expect(objects()).toBe(objectsBefore)
+    expect(composeVectorMarkCached(useLogoStore.getState().vectorDocument)).toBe(mark)
+    expect(guides()).toMatchObject([{ style: 'dotted', locked: true }])
+  })
+
+  it('deleting a guide by id keeps a selection of shapes, and drops it from a selection of guides', () => {
+    useLogoStore.getState().addSlab('square')
+    useLogoStore.getState().addGuides([line(10), line(20)])
+    const [a, b] = guides().map((guide) => guide.id)
+    const slab = layers()[0].id
+    useLogoStore.getState().setSelection([slab])
+    useLogoStore.getState().deleteGuides([a])
+    expect(useLogoStore.getState().illustrator.selectedLayerIds).toEqual([slab])
+    useLogoStore.getState().selectGuides([b])
+    useLogoStore.getState().deleteGuides([b])
+    expect(selectedGuides()).toEqual([])
+    expect(useLogoStore.getState().illustrator.selectedLayerIds).toEqual([])
+  })
+
+  it('a guide edit that changes nothing is no undo step', () => {
+    useLogoStore.getState().addGuides([line(40)])
+    const id = guides()[0].id
+    const depth = undoDepth()
+    const before = guides()
+    useLogoStore.getState().setGuidesStyle([id], 'solid')
+    useLogoStore.getState().setGuidesLocked([id], false)
+    useLogoStore.getState().commitGuides('Move guide', [...guides()])
+    useLogoStore.getState().detachGuides([id])
+    expect(undoDepth()).toBe(depth)
+    expect(guides()).toBe(before)
+  })
+
+  it("a circle slab's construction guides follow a resize of the slab, in the same undo step", () => {
+    useLogoStore.getState().addSlab('circle')
+    const slab = layers()[0]
+    useLogoStore.getState().addConstructionGuides()
+    const before = guides()
+    expect(before.map((guide) => guide.link?.role)).toEqual(['centre-x', 'centre-y', 'top', 'right', 'bottom', 'left', 'circumcircle'])
+    const depth = undoDepth()
+    useLogoStore.getState().commitLayerEdits({
+      label: 'Resize',
+      edits: [{ layerId: slab.id, carve: { ...(slab.carve as SlabSpec), width: 500, height: 500, radius: 250, center: { x: 10, y: 0 } } }],
+    })
+    expect(undoDepth()).toBe(depth + 1)
+    expect(guides().find((guide) => guide.link?.role === 'circumcircle')!.shape).toEqual({ kind: 'circle', c: { x: 10, y: 0 }, r: 250 })
+    expect(guides().find((guide) => guide.link?.role === 'right')!.shape).toEqual({ kind: 'line', p: { x: 260, y: 0 }, angle: 90 })
+    useLogoStore.getState().undoVectorCommand()
+    expect(guides()).toBe(before)
+  })
+
+  it("keeps a slab's top guide on the slab's own top side as it turns from 0° to 90° in 5° steps", () => {
+    const store = () => useLogoStore.getState()
+    store().addSlab('tall')
+    const slab = layers()[0]
+    const spec = slab.carve as SlabSpec
+    store().addConstructionGuides()
+    const half = spec.height / 2
+    for (let rotation = 0; rotation <= 90; rotation += 5) {
+      store().commitLayerEdits({ label: 'Turn', edits: [{ layerId: slab.id, carve: { ...spec, rotation } }] })
+      const top = guides().find((guide) => guide.link?.role === 'top')!
+      if (top.shape.kind !== 'line') throw new Error('no line')
+      // Along its own top: at its turn, half its height from its centre, on the side its top turned to.
+      expect(top.link).toEqual({ kind: 'construction', of: slab.id, role: 'top' })
+      expect(top.shape.angle).toBeCloseTo(rotation, 6)
+      const up = { x: Math.sin((rotation * Math.PI) / 180), y: -Math.cos((rotation * Math.PI) / 180) }
+      const off = { x: top.shape.p.x - spec.center.x, y: top.shape.p.y - spec.center.y }
+      expect(off.x * up.x + off.y * up.y).toBeCloseTo(half, 6)
+    }
+  })
+
+  it('names construction guides for where they lie, renaming them as their shape turns, so guides made before and after a turn never read the same', () => {
+    const store = () => useLogoStore.getState()
+    store().addSlab('tall')
+    const slab = layers()[0]
+    const spec = slab.carve as SlabSpec
+    const top = constructionLines(store().vectorDocument.objects[0] as PathObject).find((line) => line.role === 'top')!
+    store().addGuides([{ shape: top.shape, link: { kind: 'construction', of: slab.id, role: 'top' }, name: top.name }])
+    store().commitLayerEdits({ label: 'Turn', edits: [{ layerId: slab.id, carve: { ...spec, rotation: 90 } }] })
+    store().addConstructionGuides([slab.id])
+    const named = guides().map((guide) => [guide.link?.role, guide.name])
+    // A quarter turn on, its own top is the line on the right, and its upright centre line is flat.
+    expect(named.slice(0, 7)).toEqual([
+      ['top', 'Right'],
+      ['centre-x', 'Centre ↔'],
+      ['centre-y', 'Centre ↕'],
+      ['right', 'Bottom'],
+      ['bottom', 'Left'],
+      ['left', 'Top'],
+      ['circumcircle', 'Circumcircle'],
+    ])
+    const rows = guideRows(guides(), (id) => (id === slab.id ? '01' : null)).map(({ label, tag }) => `${label} · ${tag}`)
+    expect(new Set(rows).size).toBe(rows.length)
+  })
+
+  it('nudges the selected guides at once, a burst one undo step, each detached from its shape and stored to hundredths', () => {
+    const store = () => useLogoStore.getState()
+    store().addSlab('square')
+    store().addConstructionGuides()
+    const linked = guides().find((guide) => guide.link?.role === 'circumcircle')!
+    store().addGuides([{ kind: 'line', p: { x: 0.004, y: 10 }, angle: 0 }])
+    const plain = guides().at(-1)!
+    store().selectGuides([linked.id, plain.id])
+    const before = guides()
+    const depth = undoDepth()
+    store().nudgeGuides({ x: 1, y: 0 })
+    store().nudgeGuides({ x: 0, y: 10 })
+    expect(undoDepth()).toBe(depth + 1)
+    const moved = guides().find((guide) => guide.id === plain.id)!
+    expect(moved.shape).toEqual({ kind: 'line', p: { x: 1, y: 20 }, angle: 0 })
+    const circle = guides().find((guide) => guide.id === linked.id)!
+    expect(circle.link).toBeUndefined()
+    expect(circle.shape).toMatchObject({ kind: 'circle', c: { x: 1, y: 10 } })
+    store().undoVectorCommand()
+    expect(guides()).toBe(before)
+
+    // A locked guide stays put, and hidden guides take no nudge.
+    store().setGuidesLocked([plain.id], true)
+    store().selectGuides([plain.id])
+    const locked = guides()
+    store().nudgeGuides({ x: 1, y: 0 })
+    expect(guides()).toBe(locked)
+  })
+
+  it('deleting a shape detaches its guides in the same undo step, and undo links them again', () => {
+    useLogoStore.getState().addSlab('circle')
+    const slab = layers()[0]
+    useLogoStore.getState().addConstructionGuides([slab.id])
+    const linkedGuides = guides()
+    const depth = undoDepth()
+    useLogoStore.getState().deleteIllustratorLayers([slab.id])
+    expect(undoDepth()).toBe(depth + 1)
+    expect(guides()).toHaveLength(linkedGuides.length)
+    expect(guides().every((guide) => guide.link === undefined)).toBe(true)
+    expect(guides().map((guide) => guide.shape)).toEqual(linkedGuides.map((guide) => guide.shape))
+    useLogoStore.getState().undoVectorCommand()
+    expect(guides()).toBe(linkedGuides)
+  })
+
+  it('a construction guide added from a stale reading of its shape lands on the shape as it is now, and one linked to a shape gone lands as a plain guide', () => {
+    useLogoStore.getState().addSlab('square')
+    const slab = layers()[0]
+    useLogoStore.getState().addGuides([
+      { shape: { kind: 'line', p: { x: 0, y: 80 }, angle: 0 }, link: { kind: 'construction', of: slab.id, role: 'centre-y' } },
+      { shape: { kind: 'line', p: { x: 0, y: 40 }, angle: 0 }, link: { kind: 'construction', of: 'gone', role: 'top' } },
+    ])
+    const [stale, dangling] = guides()
+    expect(stale.shape).toEqual({ kind: 'line', p: { x: 0, y: 0 }, angle: 0 })
+    expect(stale.link).toEqual({ kind: 'construction', of: slab.id, role: 'centre-y' })
+    expect(dangling.shape).toEqual({ kind: 'line', p: { x: 0, y: 40 }, angle: 0 })
+    expect(dangling.link).toBeUndefined()
+  })
+
+  it('adds no construction guide twice', () => {
+    useLogoStore.getState().addSlab('square')
+    useLogoStore.getState().addConstructionGuides()
+    const count = guides().length
+    const depth = undoDepth()
+    useLogoStore.getState().setSelection([layers()[0].id])
+    useLogoStore.getState().addConstructionGuides()
+    expect(guides()).toHaveLength(count)
+    expect(undoDepth()).toBe(depth)
+  })
+
+  it('makes a tangent frame only for two or more circles, linked so it keeps touching them', () => {
+    const store = () => useLogoStore.getState()
+    store().addPenShape('M0,0L100,0L100,100Z')
+    store().addSlab('circle')
+    const circle = layers()[1]
+    const spec = circle.carve as SlabSpec
+    store().setSelection([circle.id])
+    store().addTangentFrame()
+    expect(guides()).toEqual([])
+    store().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 300, y: 0 }, radius: 50 })
+    const punch = layers()[2]
+    store().setSelection([circle.id, punch.id, layers()[0].id])
+    store().addTangentFrame()
+    expect(guides()).toEqual([])
+    store().setSelection([circle.id, punch.id])
+    store().addTangentFrame()
+    const frame = guides().map((guide) => ({ ...guide.link, shape: guide.shape }))
+    expect(frame).toEqual([
+      { kind: 'construction', of: circle.id, role: 'top', shape: { kind: 'line', p: { x: spec.center.x, y: spec.center.y - spec.width / 2 }, angle: 0 } },
+      { kind: 'construction', of: punch.id, role: 'right', shape: { kind: 'line', p: { x: 350, y: 0 }, angle: 90 } },
+      expect.objectContaining({ of: circle.id, role: 'bottom' }),
+      expect.objectContaining({ of: circle.id, role: 'left' }),
+    ])
+    // The punch moves right: the right line keeps touching it.
+    store().commitLayerEdits({ label: 'Move', edits: [{ layerId: punch.id, carve: { ...(punch.carve as PunchSpec), center: { x: 340, y: 20 } } }] })
+    expect(guides()[1].shape).toEqual({ kind: 'line', p: { x: 390, y: 20 }, angle: 90 })
+  })
+
+  it('makes a guide of each contour of the selected paths, and a shape of each closed guide, and back', () => {
+    const store = () => useLogoStore.getState()
+    store().addSlab('square')
+    store().addPenShape('M0,0L100,0L100,100Z')
+    const contours = objects().map((object) => (object.type === 'path' ? object.contours : []))
+    store().setSelection(layers().map((layer) => layer.id))
+    const depth = undoDepth()
+    store().makeGuidesFromSelection()
+    expect(undoDepth()).toBe(depth + 1)
+    expect(objects()).toEqual([])
+    expect(guides().map((guide) => guide.shape)).toEqual(contours.flat().map((contour) => ({ kind: 'path', contour })))
+    expect(selectedGuides()).toEqual(guides().map((guide) => guide.id))
+
+    store().makeShapeFromGuides()
+    expect(guides()).toEqual([])
+    expect(objects().map((object) => (object.type === 'path' ? object.contours : []))).toEqual(contours)
+    expect(objects().every((object) => object.type === 'path' && object.operation === 'add' && !object.carve)).toBe(true)
+    expect(useLogoStore.getState().illustrator.selectedLayerIds).toEqual(objects().map((object) => object.id))
+    store().undoVectorCommand()
+    store().undoVectorCommand()
+    expect(objects()).toHaveLength(2)
+    expect(guides()).toEqual([])
+  })
+
+  it('makes no shape of an open path guide or a line', () => {
+    const open = { kind: 'path' as const, contour: { closed: false, segments: [{ point: { x: 0, y: 0 }, handleIn: null, handleOut: null }, { point: { x: 50, y: 0 }, handleIn: null, handleOut: null }] } }
+    useLogoStore.getState().addGuides([open, line(10)])
+    useLogoStore.getState().makeShapeFromGuides()
+    expect(objects()).toEqual([])
+    expect(guides()).toHaveLength(2)
+  })
+
+  it('keeps a pen path as a guide and goes back to selecting', () => {
+    useLogoStore.getState().setActiveTool('pen')
+    const contour = { closed: false, segments: [{ point: { x: 0, y: 0 }, handleIn: null, handleOut: null }, { point: { x: 50, y: 20 }, handleIn: null, handleOut: null }] }
+    useLogoStore.getState().addPenGuide(contour)
+    expect(guides()).toMatchObject([{ name: 'Path', shape: { kind: 'path', contour } }])
+    expect(objects()).toEqual([])
+    expect(useLogoStore.getState().ui.activeTool).toBeNull()
+  })
+
+  it('selects guides and shapes apart: a guide selection drops the shapes, and Shift toggles among guides', () => {
+    useLogoStore.getState().addSlab('square')
+    useLogoStore.getState().addGuides([line(10), line(20)])
+    const [a, b] = guides().map((guide) => guide.id)
+    useLogoStore.getState().setSelection([layers()[0].id])
+    useLogoStore.getState().selectGuides([a])
+    expect(useLogoStore.getState().illustrator.selectedLayerIds).toEqual([])
+    useLogoStore.getState().selectGuides([b], true)
+    expect(selectedGuides()).toEqual([a, b])
+    useLogoStore.getState().selectGuides([a], true)
+    expect(selectedGuides()).toEqual([b])
+    useLogoStore.getState().setSelection([layers()[0].id])
+    expect(selectedGuides()).toEqual([])
+  })
+
+  it('Start over clears the guides as one undo step, and undo brings them back', () => {
+    useLogoStore.getState().addSlab('square')
+    useLogoStore.getState().addGuides([line(10)])
+    const before = guides()
+    const depth = undoDepth()
+    useLogoStore.getState().startOver()
+    expect(guides()).toEqual([])
+    expect(undoDepth()).toBe(depth + 1)
+    useLogoStore.getState().undoVectorCommand()
+    expect(guides()).toBe(before)
+  })
+
+  it('shows and hides guides outside the history', () => {
+    const depth = undoDepth()
+    expect(useLogoStore.getState().ui.showGuides).toBe(true)
+    useLogoStore.getState().toggleShowGuides()
+    expect(useLogoStore.getState().ui.showGuides).toBe(false)
+    expect(undoDepth()).toBe(depth)
+  })
+
+  it('drops guides from the selection when they leave the canvas, and picks none while they are hidden', () => {
+    const store = () => useLogoStore.getState()
+    store().addSlab('square')
+    const slab = layers()[0].id
+    store().addGuides([line(10), line(20)])
+    const [a, b] = guides().map((guide) => guide.id)
+    store().selectGuides([a])
+    store().toggleShowGuides()
+    expect(selectedGuides()).toEqual([])
+    // Delete then has nothing to act on: no guide goes unseen.
+    store().deleteGuides()
+    expect(guides()).toHaveLength(2)
+
+    store().toggleShowGuides()
+    store().selectGuides([b])
+    store().toggleLook()
+    expect(selectedGuides()).toEqual([])
+
+    // A selection of shapes stays as the guides leave.
+    store().toggleLook()
+    store().setSelection([slab])
+    store().toggleShowGuides()
+    expect(store().illustrator.selectedLayerIds).toEqual([slab])
+
+    // An undo while hidden does not select a guide back.
+    store().toggleShowGuides()
+    store().selectGuides([a])
+    store().deleteGuides()
+    store().toggleShowGuides()
+    store().undoVectorCommand()
+    expect(guides()).toHaveLength(2)
+    expect(selectedGuides()).toEqual([])
+
+    // Nothing picks a guide while guides are hidden, and the view stays as it is.
+    store().selectGuides([a])
+    expect(selectedGuides()).toEqual([])
+    expect(store().ui.showGuides).toBe(false)
+    store().toggleShowGuides()
+    store().toggleLook()
+    store().selectGuides([a])
+    expect(selectedGuides()).toEqual([])
+    expect(store().ui.look).toBe('final')
+
+    // A guide turned off leaves the selection, and one off cannot be picked.
+    store().toggleLook()
+    store().selectGuides([a, b])
+    store().toggleGuideVisibility(a)
+    expect(selectedGuides()).toEqual([b])
+    store().selectGuides([a])
+    expect(selectedGuides()).toEqual([b])
+    // The drawer still deletes a guide while it is off.
+    store().deleteGuides([a])
+    expect(guides().map((guide) => guide.id)).toEqual([b])
+
+    // A gesture that commits after the guides left the canvas does not select them back.
+    store().selectGuides(null)
+    store().toggleShowGuides()
+    store().commitGuides('Move guide', guides().map((guide) => ({ ...guide, shape: line(40) })), [b])
+    expect(selectedGuides()).toEqual([])
+  })
+
+  it('puts guides on the canvas when the Guide tool is picked or a guide is made, so nothing is made unseen', () => {
+    const store = () => useLogoStore.getState()
+    const view = () => ({ look: store().ui.look, showGuides: store().ui.showGuides })
+    store().toggleLook()
+    store().toggleShowGuides()
+    store().setActiveTool('guide')
+    expect(view()).toEqual({ look: 'construction', showGuides: true })
+
+    store().setActiveTool(null)
+    store().toggleLook()
+    store().addGuides([line(10)])
+    expect(view()).toEqual({ look: 'construction', showGuides: true })
+
+    store().toggleShowGuides()
+    store().setActiveTool('pen')
+    expect(view().showGuides).toBe(false)
+    store().setPenDraws('guide')
+    expect(view()).toEqual({ look: 'construction', showGuides: true })
+
+    // Showing, hiding or deleting guides leaves the view as it is.
+    store().toggleLook()
+    store().deleteGuides([guides()[0].id])
+    expect(view()).toEqual({ look: 'final', showGuides: true })
+  })
+
+  it('freezes a guide as it enters the document in development, so an edit in place throws', () => {
+    useLogoStore.getState().addGuides([line(10)])
+    expect(Object.isFrozen(guides()[0].shape)).toBe(true)
+  })
+
+  it('writes guides into the link and reads them back, still following their shape', () => {
+    useLogoStore.getState().addSlab('circle')
+    useLogoStore.getState().addConstructionGuides()
+    const state = useLogoStore.getState()
+    const decoded = decodeLink(encodeLink(state.vectorDocument, state.params.fillColor))
+    expect(decoded.kind).toBe('vector')
+    if (decoded.kind === 'vector') expect(decoded.document.guides).toEqual(guides())
   })
 })

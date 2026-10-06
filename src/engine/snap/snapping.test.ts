@@ -48,10 +48,10 @@ describe('snapping priority', () => {
     const both = snapMoving(index, [{ x: 103, y: 54 }], { tolerance: tol })
     expect(both.label).toBe('aligned')
     expect(both.d).toEqual({ x: -3, y: -4 })
-    expect(both.guides).toHaveLength(2)
+    expect(both.hints).toHaveLength(2)
     const one = snapMoving(index, [{ x: 103, y: 200 }], { tolerance: tol })
     expect(one.d).toEqual({ x: -3, y: 0 })
-    expect(one.guides).toEqual([{ kind: 'line', a: { x: 100, y: 0 }, b: { x: 100, y: 200 } }])
+    expect(one.hints).toEqual([{ kind: 'line', a: { x: 100, y: 0 }, b: { x: 100, y: 200 } }])
   })
 
   it('only snaps along the axes the geometry may move on', () => {

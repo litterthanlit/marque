@@ -226,14 +226,35 @@ describe('reading a version 2 document', () => {
         visible: true,
         locked: false,
         style: 'dashed',
-        shape: { kind: 'path', contour: square },
-        link: { kind: 'construction', of: 'a', role: 'axis-2' },
+        shape: { kind: 'line', p: { x: 50, y: 50 }, angle: 0 },
+        link: { kind: 'construction', of: 'a', role: 'centre-y' },
       },
     ]
     const document = repaired(doc([path('a')], { guides: guides as Guide[] }))
     expect(document.guides.map((guide) => guide.id)).toEqual(['line', 'circle', 'axis'])
     expect(document.guides[1]).toEqual({ id: 'circle', name: 'Circle', visible: true, locked: false, style: 'solid', shape: guides[2].shape })
-    expect(document.guides[2].link).toEqual({ kind: 'construction', of: 'a', role: 'axis-2' })
+    expect(document.guides[2].link).toEqual({ kind: 'construction', of: 'a', role: 'centre-y' })
+  })
+
+  it('rebuilds a construction guide from its shape as it opens, and detaches one whose line the shape does not have', () => {
+    const guides: Guide[] = [
+      // Written by hand, out of step with the triangle it follows.
+      { id: 'top', name: 'Top', visible: true, locked: false, style: 'solid', shape: { kind: 'line', p: { x: 0, y: -40 }, angle: 0 }, link: { kind: 'construction', of: 'a', role: 'top' } },
+      // A free triangle has no spokes.
+      { id: 'axis', name: 'Axis 3', visible: true, locked: false, style: 'dashed', shape: { kind: 'line', p: { x: 0, y: 0 }, angle: 30 }, link: { kind: 'construction', of: 'a', role: 'axis-2' } },
+    ]
+    const document = repaired(doc([path('a')], { guides }))
+    expect(document.guides[0].shape).toEqual({ kind: 'line', p: { x: 50, y: 0 }, angle: 0 })
+    expect(document.guides[0].link).toEqual({ kind: 'construction', of: 'a', role: 'top' })
+    expect(document.guides[1]).toEqual({ id: 'axis', name: 'Axis 3', visible: true, locked: false, style: 'dashed', shape: guides[1].shape })
+  })
+
+  it('gives back the very same document when its construction guides already follow their shapes', () => {
+    const guides: Guide[] = [
+      { id: 'top', name: 'Top', visible: true, locked: false, style: 'solid', shape: { kind: 'line', p: { x: 50, y: 0 }, angle: 0 }, link: { kind: 'construction', of: 'a', role: 'top' } },
+    ]
+    const document = doc([path('a')], { guides })
+    expect(repairVectorDocument(document)).toBe(document)
   })
 
   it('drops a guide or a fillet that is null, as JSON writes a gap in a list', () => {

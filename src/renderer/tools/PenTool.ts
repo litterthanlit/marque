@@ -1,5 +1,5 @@
 import { add, BEND_T_MAX, BEND_T_MIN, clamp, cubicPoint, maxChordDeviation, sub, type Vec } from '../../engine/path/bezier.ts'
-import { editablePathToPathData, isCurveStraight, straightenCurve } from '../../engine/path/editPath.ts'
+import { editablePathToPathData, isCurveStraight, straightenCurve, type EditablePath } from '../../engine/path/editPath.ts'
 import {
   bendDraftEdge,
   canClose,
@@ -22,15 +22,19 @@ import { unitsPerCssPixel } from '../viewFit.ts'
 export interface PenCallbacks {
   /** The closed shape, as path data in layer space. */
   onShape(pathData: string): void
+  /** In Guide mode: the path drawn, open or closed, in layer space. */
+  onGuide?(path: EditablePath): void
   /** Snap a point (layer space) with rays from `rays` and the draft's own points as extra targets. */
   snapPoint?(p: Vec, role: 'hover' | 'start' | 'end', rays: Vec[], extra: SnapTarget[]): Vec
-  /** A press ended, or the pointer left: snap guides can go. */
+  /** A press ended, or the pointer left: snap hints can go. */
   onGestureEnd?(): void
 }
 
 interface PenOptions {
   /** The colour the shape will fill with once closed. Asked on every draw: it follows the canvas's look. */
   fillColor(): string
+  /** What finishing makes: a filled shape, or a guide. Asked when it finishes, so the switch applies at once. */
+  draws(): 'shape' | 'guide'
 }
 
 type Gesture =
@@ -195,7 +199,7 @@ export class PenTool {
     this.callbacks.onGestureEnd?.()
     if (!gesture) return
     if (gesture.kind === 'close') {
-      this.finalize()
+      this.finalize(true)
       return
     }
     if (gesture.kind === 'move' && !gesture.moved) this.history.pop()
@@ -234,14 +238,31 @@ export class PenTool {
 
   /* ─── Commands ─── */
 
-  /** Enter or double-click: close the shape if it can be. Returns whether it closed. */
-  finalize(): boolean {
+  /**
+   * Enter or double-click: close the shape if it can be. Returns whether it
+   * finished. In Guide mode the path is kept as a guide as it is drawn, open,
+   * or closed when finished on its first point (`closing`).
+   */
+  finalize(closing = false): boolean {
+    if (this.options.draws() === 'guide') {
+      const path = closing ? closeDraft(this.draft) : this.draft.segs.length >= 2 ? this.openPath() : null
+      if (!path) return false
+      this.reset()
+      this.draw()
+      this.callbacks.onGuide?.(path)
+      return true
+    }
     const shape = closeDraft(this.draft)
     if (!shape) return false
     const pathData = editablePathToPathData(shape)
     this.reset()
     this.callbacks.onShape(pathData)
     return true
+  }
+
+  /** The draft as an open path, as drawn. */
+  private openPath(): EditablePath {
+    return { closed: false, segs: this.draft.segs.map((seg) => ({ ...seg })) }
   }
 
   /** Backspace: take back the last point. */
@@ -324,8 +345,8 @@ export class PenTool {
     }
 
     if (segs.length) {
-      // What the shape will be once closed, faintly filled.
-      if (canClose(this.draft) || (this.cursor && segs.length >= 2)) {
+      // What the shape will be once closed, faintly filled. A guide has no fill.
+      if (this.options.draws() === 'shape' && (canClose(this.draft) || (this.cursor && segs.length >= 2))) {
         const preview = this.cursor ? placePoint(this.draft, this.cursor) : this.draft
         const ghost = new this.scope.CompoundPath({ pathData: editablePathToPathData({ ...preview, closed: true }), insert: false })
         ghost.translate(center)

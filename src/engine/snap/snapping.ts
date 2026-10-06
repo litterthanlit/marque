@@ -38,17 +38,18 @@ export interface SnapIndex {
   nearestEdge?: ((p: Vec) => EdgeHit | null) | null
 }
 
-export type SnapGuide = { kind: 'line'; a: Vec; b: Vec } | { kind: 'mark'; p: Vec }
+/** What a snap shows on the canvas, in pink: an alignment line, or a cross where the geometry landed. */
+export type SnapHint = { kind: 'line'; a: Vec; b: Vec } | { kind: 'mark'; p: Vec }
 
 export interface SnapResult {
   /** Offset to add to the dragged geometry. */
   d: Vec
   /** Shown next to the pointer: "point", "centre", "aligned", "edge", "45°"… */
   label: string | null
-  guides: SnapGuide[]
+  hints: SnapHint[]
 }
 
-export const NO_SNAP: SnapResult = { d: { x: 0, y: 0 }, label: null, guides: [] }
+export const NO_SNAP: SnapResult = { d: { x: 0, y: 0 }, label: null, hints: [] }
 
 export interface SnapOptions {
   /** Layer units (8 screen pixels at the current zoom). */
@@ -82,8 +83,8 @@ function bestAxis(targets: SnapTarget[], moving: Vec[], axis: 'x' | 'y', toleran
   return best
 }
 
-/** A guide through every target on the line, and the snapped geometry. */
-function alignGuide(axis: 'x' | 'y', value: number, targets: SnapTarget[], snapped: Vec[]): SnapGuide {
+/** A hint line through every target on the line, and the snapped geometry. */
+function alignHint(axis: 'x' | 'y', value: number, targets: SnapTarget[], snapped: Vec[]): SnapHint {
   const other = axis === 'x' ? 'y' : 'x'
   let lo = Infinity
   let hi = -Infinity
@@ -121,7 +122,7 @@ export function snapMoving(index: SnapIndex, moving: Vec[], options: SnapOptions
       }
     }
     if (best) {
-      return { d: sub(best.t.p, best.m), label: best.t.kind === 'centre' ? 'centre' : 'point', guides: [{ kind: 'mark', p: best.t.p }] }
+      return { d: sub(best.t.p, best.m), label: best.t.kind === 'centre' ? 'centre' : 'point', hints: [{ kind: 'mark', p: best.t.p }] }
     }
   }
 
@@ -135,7 +136,7 @@ export function snapMoving(index: SnapIndex, moving: Vec[], options: SnapOptions
     return {
       d,
       label: 'aligned',
-      guides: [alignGuide('x', bx.value, index.targets, snapped), alignGuide('y', by.value, index.targets, snapped)],
+      hints: [alignHint('x', bx.value, index.targets, snapped), alignHint('y', by.value, index.targets, snapped)],
     }
   }
 
@@ -150,7 +151,7 @@ export function snapMoving(index: SnapIndex, moving: Vec[], options: SnapOptions
       return {
         d: sub(combo, single),
         label: 'edge',
-        guides: [{ kind: 'mark', p: combo }, alignGuide(axis, (bx ?? by)!.value, index.targets, [combo])],
+        hints: [{ kind: 'mark', p: combo }, alignHint(axis, (bx ?? by)!.value, index.targets, [combo])],
       }
     }
   }
@@ -159,13 +160,13 @@ export function snapMoving(index: SnapIndex, moving: Vec[], options: SnapOptions
   if (bx || by) {
     const d = { x: bx?.delta ?? 0, y: by?.delta ?? 0 }
     const snapped = moving.map((m) => add(m, d))
-    const guides = bx ? [alignGuide('x', bx.value, index.targets, snapped)] : [alignGuide('y', by!.value, index.targets, snapped)]
-    return { d, label: 'aligned', guides }
+    const hints = bx ? [alignHint('x', bx.value, index.targets, snapped)] : [alignHint('y', by!.value, index.targets, snapped)]
+    return { d, label: 'aligned', hints }
   }
 
   // 5. Onto an edge.
   if (onEdge && single) {
-    return { d: sub(onEdge.point, single), label: 'edge', guides: [{ kind: 'mark', p: onEdge.point }] }
+    return { d: sub(onEdge.point, single), label: 'edge', hints: [{ kind: 'mark', p: onEdge.point }] }
   }
 
   // 6. Along a 15° ray.
@@ -207,7 +208,7 @@ function nearestRay(p: Vec, origins: Vec[], tolerance: number): SnapResult | nul
   return {
     d: sub(best.point, p),
     label: `${shown}°`,
-    guides: [{ kind: 'line', a: best.origin, b: add(best.point, scale(normalize(sub(best.point, best.origin)), tolerance * 2)) }],
+    hints: [{ kind: 'line', a: best.origin, b: add(best.point, scale(normalize(sub(best.point, best.origin)), tolerance * 2)) }],
   }
 }
 

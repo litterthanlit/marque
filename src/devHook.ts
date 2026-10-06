@@ -12,6 +12,7 @@ import { composeVectorMarkCached } from './engine/vector/export.ts'
 import { DESIGN_SPAN } from './renderer/viewFit.ts'
 import { CURSORS } from './renderer/directEdit/cursors.ts'
 import { scaledHandleLayout, selectionHandles } from './renderer/directEdit/handleSet.ts'
+import { guideAnchor } from './engine/vector/guides.ts'
 
 function canvasFrame() {
   const canvas = document.querySelector('main canvas') as HTMLCanvasElement | null
@@ -54,6 +55,22 @@ function createDevHook() {
     /** The composed mark: exactly what the canvas draws and Copy SVG copies. */
     mark() {
       return composeVectorMarkCached(useLogoStore.getState().vectorDocument)
+    },
+
+    /** The document's guides: never composed, never in `mark()`. */
+    guides() {
+      return useLogoStore.getState().vectorDocument.guides
+    },
+
+    /**
+     * Client positions of the guides on the canvas: for each, the point of it
+     * nearest a layer-space point (the middle of the canvas unless given),
+     * or a path guide's first point.
+     */
+    guidesOnCanvas(near: Vec = { x: 0, y: 0 }) {
+      const frame = canvasFrame()
+      if (!frame) return []
+      return useLogoStore.getState().vectorDocument.guides.map((guide) => ({ id: guide.id, ...frame.toClient(guideAnchor(guide.shape, near)) }))
     },
 
     /** A point on a channel's or slice's spine and the unit normal there, in client space. */

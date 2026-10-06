@@ -141,8 +141,15 @@ export function vectorDocumentToIllustratorDocument(
   previous?: IllustratorDocument | null,
 ): IllustratorDocument {
   const view = viewOf(document.objects)
-  const ids = [...new Set(selection.targets.flatMap((target) => view.leaves.get(target.objectId) ?? [target.objectId]))]
+  const ids = [
+    ...new Set(
+      selection.targets.flatMap((target) => (target.type === 'guide' ? [] : (view.leaves.get(target.objectId) ?? [target.objectId]))),
+    ),
+  ]
   const selectedLayerIds = previous && sameIds(previous.selectedLayerIds, ids) ? previous.selectedLayerIds : ids
+  const guideIds = selection.targets.flatMap((target) => (target.type === 'guide' ? [target.guideId] : []))
+  const selectedGuideIds =
+    previous?.selectedGuideIds && sameIds(previous.selectedGuideIds, guideIds) ? previous.selectedGuideIds : guideIds
   const point = pointSelectionOf(selection)
   const pointSelection = previous && samePoint(previous.pointSelection, point) ? previous.pointSelection : point
   return {
@@ -153,12 +160,14 @@ export function vectorDocumentToIllustratorDocument(
     pointSelection,
     mode: previous?.mode ?? (point ? 'points' : 'object'),
     ...(view.groups ? { groups: view.groups } : {}),
+    guides: document.guides,
+    selectedGuideIds,
   }
 }
 
 function pointSelectionOf(selection: VectorSelection): PointSelection | null {
   for (const target of selection.targets) {
-    if (target.type === 'object') continue
+    if (target.type === 'object' || target.type === 'guide') continue
     return {
       layerId: target.objectId,
       contourIndex: target.contourIndex,

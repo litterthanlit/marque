@@ -8,6 +8,7 @@ import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustr
 import { DEFAULT_HANDLE_LAYOUT } from '../../engine/box/box.ts'
 import { scaledHandleLayout, selectionHandles } from './handleSet.ts'
 import { findZone, zoneKey, type HitContext } from './hitZones.ts'
+import type { Guide } from '../../engine/vector/types.ts'
 
 const scope = new paper.PaperScope()
 scope.setup(new paper.Size(1, 1))
@@ -404,5 +405,42 @@ describe('a free shape with a hole', () => {
     const curved: IllustratorLayer = { ...ring, pathData: 'M-100,-100L100,-100L100,100L-100,100Z M-40,-40C-60,0 -60,0 -40,40L40,40L40,-40Z' }
     const ctx = { ...ringContext({ contourIndex: 1, index: 0 }), freePath: { layerId: 'ring', shape: bakedEditableShape(curved)! } }
     expect(findZone(ctx, { x: -60, y: 0 })).toEqual({ kind: 'bezier', layerId: 'ring', contourIndex: 1, index: 0, which: 'out' })
+  })
+})
+
+describe('guide hit zones', () => {
+  // A guide lying exactly along the slab's right edge, x = 190, and one across empty canvas.
+  const onEdge: Guide = { id: 'edge-guide', name: 'Line', visible: true, locked: false, style: 'solid', shape: { kind: 'line', p: { x: 190, y: 0 }, angle: 90 } }
+  const apart: Guide = { id: 'apart', name: 'Line', visible: true, locked: false, style: 'solid', shape: { kind: 'line', p: { x: 0, y: 260 }, angle: 0 } }
+  const withGuides = (guidesFirst: boolean, guides: Guide[] = [onEdge, apart]): HitContext => ({ ...context([]), guides, guidesFirst })
+
+  it('under Select, leaves a press on a guide that lies along an edge to the edge', () => {
+    const zone = findZone(withGuides(false), { x: 192, y: 20 })
+    expect(zone.kind).toBe('edge')
+    if (zone.kind === 'edge') expect(zone.layerId).toBe('slab')
+  })
+
+  it('under Select, gives a guide the press where nothing else is', () => {
+    expect(findZone(withGuides(false), { x: -250, y: 262 })).toEqual({ kind: 'guide', guideId: 'apart', point: { x: -250, y: 260 } })
+  })
+
+  it('under the Guide tool, gives the guide on the edge the press first', () => {
+    const zone = findZone(withGuides(true), { x: 192, y: 20 })
+    expect(zone.kind).toBe('guide')
+    if (zone.kind === 'guide') expect(zone.guideId).toBe('edge-guide')
+  })
+
+  it('reaches a guide within 4 pixels, twice that on touch', () => {
+    expect(findZone(withGuides(true), { x: -250, y: 265 }).kind).toBe('empty')
+    expect(findZone({ ...withGuides(true), touch: true }, { x: -250, y: 267 }).kind).toBe('guide')
+  })
+
+  it('never reaches a guide it is not given, as a locked or hidden one is not', () => {
+    expect(findZone(withGuides(true, []), { x: 192, y: 20 }).kind).toBe('edge')
+  })
+
+  it("puts the selected guide's handles before everything", () => {
+    const handle = { guideId: 'apart', id: 'rotate' as const, at: { x: 190, y: 40 }, pivot: { x: 190, y: 0 } }
+    expect(findZone({ ...withGuides(false), guideHandles: [handle] }, { x: 191, y: 41 })).toEqual({ kind: 'guide-handle', handle })
   })
 })

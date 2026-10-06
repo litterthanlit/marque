@@ -1,4 +1,5 @@
 import { isObjectCarveValid } from '../carve/sync.ts'
+import { follow } from './follow.ts'
 import type {
   ConstructionRole,
   Contour,
@@ -51,6 +52,11 @@ export function createEmptyVectorDocument(name = 'Untitled Vector Maker document
   }
 }
 
+/** Nothing drawn: no objects, no guides, no fillets. Such a document has no link and nothing to start over. */
+export function isBlankDocument(document: Pick<VectorDocument, 'objects' | 'guides' | 'fillets'>): boolean {
+  return document.objects.length === 0 && document.guides.length === 0 && document.fillets.length === 0
+}
+
 /* ─── Reading version 2 ─── */
 
 /**
@@ -67,6 +73,8 @@ export function createEmptyVectorDocument(name = 'Untitled Vector Maker document
  *   is not there, is detached, and so is a pin;
  * - a guide of a shape it does not know is dropped, and so is a fillet
  *   between objects that are not there;
+ * - a construction guide is rebuilt from the shape it follows, or detached
+ *   when that shape no longer has the line it was made from;
  * - an object whose group is missing moves to the root, a group's members
  *   are gathered right after its header, and an empty group goes;
  * - an object of a type it does not know is dropped; a name, flag, parent,
@@ -109,8 +117,10 @@ export function repairVectorDocument(value: unknown): VectorDocument | null {
   if (objects !== read) changed = true
 
   const ids = new Set(objects.map((object) => object.id))
-  const guides = readList(value.guides, (raw) => readGuide(raw, ids))
+  const readGuides = readList(value.guides, (raw) => readGuide(raw, ids))
   const fillets = readList(value.fillets, (raw) => readFillet(raw, ids))
+  // What follows an object is brought up to date with it once, as the document opens.
+  const { guides } = follow(null, { objects, guides: readGuides, fillets })
   const artboards = value.artboards.map((artboard) =>
     onlyKeys(artboard, ARTBOARD_KEYS) && onlyKeys(artboard.rect, RECT_KEYS) ? artboard : cleanArtboard(artboard),
   )

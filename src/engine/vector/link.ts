@@ -12,6 +12,7 @@ import {
   normalizeInitials,
   STYLE_FAMILIES,
 } from '../../store/modes.ts'
+import { isBlankDocument } from './document.ts'
 import { createVectorDocumentFromGeneration } from './fromGeneration.ts'
 import { readVectorDocument } from './migrate.ts'
 import type { VectorDocument } from './types.ts'
@@ -88,9 +89,12 @@ export function decodeLink(hash: string): DecodedLink {
   return { kind: 'generator', params: generatorParams(query, modeId) }
 }
 
-/** The hash for a document, as `location.hash` reads it. An empty document has none. The selection is never in it. */
+/**
+ * The hash for a document, as `location.hash` reads it. A blank document has
+ * none; one with only guides has one. The selection is never in it.
+ */
 export function encodeLink(document: VectorDocument, inkColor: string): string {
-  if (document.objects.length === 0) return ''
+  if (isBlankDocument(document)) return ''
   const query = new URLSearchParams({
     fillColor: inkColor,
     vd: compressToEncodedURIComponent(JSON.stringify(document)),

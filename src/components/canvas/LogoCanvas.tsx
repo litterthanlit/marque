@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { usePaperScope } from '../../renderer/usePaperScope.ts'
-import { previewColor, renderIllustratorOnScope, scaleConstructionLines, setInkPathData } from '../../renderer/IllustratorRenderer.ts'
+import { previewColor, renderGuides, renderIllustratorOnScope, scaleConstructionLines, setInkPathData } from '../../renderer/IllustratorRenderer.ts'
 import { CarveTool } from '../../renderer/tools/CarveTool.ts'
 import { DirectEditController, type Modifiers } from '../../renderer/directEdit/DirectEditController.ts'
 import { registerEditorKeys } from '../../renderer/directEdit/keyboard.ts'
@@ -12,17 +12,81 @@ import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../../engine/illustrator/types.ts
 import { composeVectorMarkCached } from '../../engine/vector/export.ts'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { PenTool } from '../../renderer/tools/PenTool.ts'
+import { GuideTool, type GhostSet } from '../../renderer/tools/GuideTool.ts'
+import { constructionLines } from '../../engine/vector/guides.ts'
+import type { Contour } from '../../engine/vector/types.ts'
+import type { EditablePath } from '../../engine/path/editPath.ts'
 import { CanvasHud } from './CanvasHud.tsx'
 import { isShuffleKey, toolForKey } from '../editor/tools.ts'
 import { canvasPixelRatio, fitView, visibleUnits } from '../../renderer/viewFit.ts'
 import { useActiveMark } from '../../hooks/useActiveMark.ts'
 
-type Tool = PenTool | CarveTool
+type Tool = PenTool | CarveTool | GuideTool
 
 const CARVE_PREVIEW_ID = '__carve_preview'
 
 function modifiersOf(e: React.PointerEvent | PointerEvent): Modifiers {
   return { shift: e.shiftKey, alt: e.altKey, noSnap: e.metaKey || e.ctrlKey }
+}
+
+/** Guides show on the canvas in the construction look, while they are shown. */
+function guidesShown(): boolean {
+  const { ui } = useLogoStore.getState()
+  return ui.look === 'construction' && ui.showGuides
+}
+
+/** The guides to draw now, or null while none draw. */
+function guidesToDraw() {
+  return guidesShown() ? useLogoStore.getState().vectorDocument.guides : null
+}
+
+/** A pen path as a contour of the document, to a thousandth of a unit as path data keeps a shape's points. */
+function contourOf(path: EditablePath): Contour {
+  const round = (v: { x: number; y: number }) => ({ x: Math.round(v.x * 1000) / 1000 || 0, y: Math.round(v.y * 1000) / 1000 || 0 })
+  return {
+    closed: path.closed,
+    segments: path.segs.map((seg) => ({ point: round(seg.p), handleIn: seg.hIn && round(seg.hIn), handleOut: seg.hOut && round(seg.hOut) })),
+  }
+}
+
+/** The construction lines of the shape under `p` (layer space) that are not yet guides following it, and its bounds. */
+function ghostsAt(controller: DirectEditController | null, scope: paper.PaperScope | null, p: { x: number; y: number }, touch: boolean): GhostSet | null {
+  if (!controller || !scope) return null
+  const center = scope.view.center
+  const id = controller.shapeAt({ x: p.x + center.x, y: p.y + center.y }, touch)
+  return id ? ghostsOf(controller, id) : null
+}
+
+/**
+ * How far the bars floating over the canvas (those marked data-canvas-cover)
+ * reach in from its top and its bottom, in CSS pixels: a bar in the upper
+ * half covers from the top, one in the lower half from the bottom.
+ */
+function coveredInsets(canvas: HTMLCanvasElement): { top: number; bottom: number } {
+  const box = canvas.getBoundingClientRect()
+  const middle = box.top + box.height / 2
+  let top = 0
+  let bottom = 0
+  for (const cover of canvas.parentElement?.querySelectorAll('[data-canvas-cover]') ?? []) {
+    const rect = cover.getBoundingClientRect()
+    if (rect.height === 0 || rect.right < box.left || rect.left > box.right) continue
+    if ((rect.top + rect.bottom) / 2 < middle) top = Math.max(top, rect.bottom - box.top)
+    else bottom = Math.max(bottom, box.bottom - rect.top)
+  }
+  return { top, bottom }
+}
+
+/** The construction lines of one shape that are not guides yet, read from the document as it is now. */
+function ghostsOf(controller: DirectEditController | null, id: string): GhostSet | null {
+  const { vectorDocument } = useLogoStore.getState()
+  const object = vectorDocument.objects.find((candidate) => candidate.id === id)
+  const bounds = controller?.shapeBounds(id)
+  if (!object || object.type !== 'path' || !bounds) return null
+  const taken = new Set(vectorDocument.guides.flatMap((guide) => (guide.link?.of === object.id ? [guide.link.role] : [])))
+  const ghosts = constructionLines(object)
+    .filter((line) => !taken.has(line.role))
+    .map((line) => ({ of: object.id, role: line.role, shape: line.shape, name: line.name }))
+  return { of: object.id, bounds, ghosts }
 }
 
 /** The drawing surface. `children` float over it, inside the card. */
@@ -41,6 +105,8 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
   const illustrator = useLogoStore((s) => s.illustrator)
   const addCarveCut = useLogoStore((s) => s.addCarveCut)
   const addPenShape = useLogoStore((s) => s.addPenShape)
+  const addPenGuide = useLogoStore((s) => s.addPenGuide)
+  const addGuides = useLogoStore((s) => s.addGuides)
   const setActiveTool = useLogoStore((s) => s.setActiveTool)
   const setViewport = useLogoStore((s) => s.setViewport)
   const activeMark = useActiveMark()
@@ -71,7 +137,11 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       cssSizeRef.current = { width, height }
       applyView()
       setViewport(visibleUnits(width, height))
-      if (scopeRef.current) scaleConstructionLines(scopeRef.current)
+      if (scopeRef.current) {
+        // Lines are clipped to the view: a new size draws them afresh.
+        renderGuides(scopeRef.current, guidesToDraw())
+        scaleConstructionLines(scopeRef.current)
+      }
       controllerRef.current?.refresh()
     }
     const onPixelRatio = () => {
@@ -104,6 +174,11 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       setSelection: (ids, anchor) => useLogoStore.getState().setSelection(ids, anchor),
       commitLayerEdits: (commit) => useLogoStore.getState().commitLayerEdits(commit),
       editAnchor: (layerId, index, op, contourIndex) => useLogoStore.getState().editAnchor(layerId, index, op, contourIndex),
+      guidesShown,
+      selectGuides: (ids, additive) => useLogoStore.getState().selectGuides(ids, additive),
+      commitGuides: (label, guides, select) => useLogoStore.getState().commitGuides(label, guides, select),
+      nudgeGuides: (d) => useLogoStore.getState().nudgeGuides(d),
+      coveredInsets: () => coveredInsets(canvas),
     })
     controllerRef.current = controller
     return () => {
@@ -123,17 +198,31 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       look: ui.look,
       survival,
       mark: activeMark,
+      guides: guidesToDraw(),
     })
     controllerRef.current?.sync(itemMap)
-    // A render clears the canvas: the pen's drawing in progress goes back on top.
-    if (toolRef.current instanceof PenTool) toolRef.current.redraw()
+    // A render clears the canvas: the drawing in progress goes back on top.
+    const tool = toolRef.current
+    if (tool instanceof PenTool || tool instanceof GuideTool) tool.redraw()
   }, [layers, activeMark, survival, ui.viewport, ui.look, params.fillColor, scopeRef])
+
+  // Guides draw on their own: a guide edit, or showing and hiding them, redraws only them.
+  const guides = useLogoStore((s) => s.vectorDocument.guides)
+  const selectedGuideIds = illustrator.selectedGuideIds
+  useEffect(() => {
+    const scope = scopeRef.current
+    if (!scope) return
+    renderGuides(scope, ui.showGuides && ui.look === 'construction' ? guides : null)
+    controllerRef.current?.refresh()
+    // The Guide tool's ghosts leave out the lines that are guides now.
+    if (toolRef.current instanceof GuideTool) toolRef.current.redraw()
+  }, [guides, ui.showGuides, ui.look, scopeRef])
 
   // The editor draws the selection over the canvas: a new selection redraws only that.
   const { selectedLayerIds, pointSelection } = illustrator
   useEffect(() => {
     controllerRef.current?.refresh()
-  }, [selectedLayerIds, pointSelection])
+  }, [selectedLayerIds, pointSelection, selectedGuideIds])
 
   /** Live preview of a cut mid-drag: the document below it is composed once per drag. */
   const previewCut = useCallback((spec: CutSpec | null) => {
@@ -195,18 +284,44 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       case 'pen':
         toolRef.current = new PenTool(scope, {
           onShape: (pathData) => addPenShape(pathData),
+          onGuide: (path) => addPenGuide(contourOf(path)),
           snapPoint: (p, role, rays, extra) => controllerRef.current?.snapToolPoint(p, role, { rays, extra }) ?? p,
           onGestureEnd: () => controllerRef.current?.endToolSnap(),
         }, {
           // Read at draw time, so switching the look keeps the drawing in progress.
           fillColor: () => previewColor(useLogoStore.getState().ui.look, color),
+          draws: () => useLogoStore.getState().ui.penDraws,
+        })
+        break
+      case 'guide':
+        // What the tool draws is not selected: the tool stays on, and a selected guide's knob would sit in the way of the next line.
+        toolRef.current = new GuideTool(scope, {
+          onGuide: (shape) => addGuides([shape], undefined, false),
+          onGhosts: (ghosts) =>
+            addGuides(
+              ghosts.map(({ shape, of, role, name }) => ({ shape, link: { kind: 'construction', of, role }, name })),
+              'Add construction guide',
+              false,
+            ),
+          ghostsAt: (p, touch) => ghostsAt(controllerRef.current, scopeRef.current, p, touch),
+          ghostsOf: (of) => ghostsOf(controllerRef.current, of),
+          selectGuide: (id, additive) => useLogoStore.getState().selectGuides([id], additive),
+          snapPoint: (p, role, rays) => controllerRef.current?.snapToolPoint(p, role, { rays }) ?? p,
+          snapRadius: (center, radius) => controllerRef.current?.snapToolRadius(center, radius) ?? radius,
+          snaps: (mods) => useLogoStore.getState().ui.carve.snapping && !mods.noSnap,
+          onGestureEnd: () => controllerRef.current?.endToolSnap(),
+        }, {
+          draws: () => useLogoStore.getState().ui.guideDraws,
         })
         break
     }
 
     canvas.style.cursor = toolRef.current ? 'crosshair' : 'default'
-    // The pen hides every handle; a carve tool keeps only a recipe's own, to adjust the cut just made.
-    controllerRef.current?.setHandlesLive(toolRef.current instanceof PenTool ? 'none' : toolRef.current ? 'recipe' : 'all')
+    // The pen and the Guide tool hide every handle; a carve tool keeps only a recipe's own, to adjust the cut just made.
+    const current = toolRef.current
+    controllerRef.current?.setHandlesLive(current instanceof PenTool || current instanceof GuideTool ? 'none' : current ? 'recipe' : 'all')
+    // Under the Guide tool, guides take presses before the tool does.
+    controllerRef.current?.setGuidesFirst(current instanceof GuideTool)
 
     // Tool keys take precedence over the editor's while a tool is active.
     const unregister = registerEditorKeys((event) => {
@@ -232,6 +347,14 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
         }
         return false
       }
+      if (tool instanceof GuideTool) {
+        // Escape drops the line being drawn (or the ghosts a tap pinned) first, then the tool.
+        if (event.key === 'Escape') {
+          if (!tool.dismiss()) setActiveTool(null)
+          return true
+        }
+        return false
+      }
       if (event.key === 'Escape') {
         tool.cancel()
         setActiveTool(null)
@@ -247,6 +370,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
         toolRef.current = null
       }
       controllerRef.current?.setHandlesLive('all')
+      controllerRef.current?.setGuidesFirst(false)
     }
   }, [
     ui.activeTool,
@@ -256,6 +380,8 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     scopeRef,
     addCarveCut,
     addPenShape,
+    addPenGuide,
+    addGuides,
     setActiveTool,
     previewCut,
   ])
@@ -280,10 +406,13 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     const controller = controllerRef.current
     const p = { x: point.x, y: point.y }
     const touch = e.pointerType === 'touch'
-    if (toolRef.current && !controller?.handleAt(p, touch)) {
+    const target = toolRef.current && controller ? controller.toolPressTarget(p, touch) : null
+    if (toolRef.current && target?.kind !== 'editor') {
       pressOwnerRef.current = 'tool'
       controller?.toolPointer(p, modifiersOf(e), touch)
-      toolRef.current.onMouseDown(point)
+      const tool = toolRef.current
+      if (tool instanceof GuideTool) tool.onMouseDown(point, modifiersOf(e), touch, target?.kind === 'guide' ? target : null)
+      else tool.onMouseDown(point)
       return
     }
     pressOwnerRef.current = 'editor'
@@ -300,12 +429,14 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     const touch = e.pointerType === 'touch'
     const tool = toolRef.current
     if (tool && pressOwnerRef.current !== 'editor') {
-      if (e.buttons === 0 && controller) {
+      const hovering = e.buttons === 0 && controller !== null
+      if (hovering) {
         const penCursor = tool instanceof PenTool ? tool.cursorAt(point) : null
         e.currentTarget.style.cursor = penCursor ?? controller.toolHover(p, touch) ?? 'crosshair'
       }
       controller?.toolPointer(p, modifiersOf(e), touch)
-      tool.onMouseDrag(point)
+      if (tool instanceof GuideTool) tool.onMouseDrag(point, modifiersOf(e), touch, hovering && controller.toolPressTarget(p, touch) !== null)
+      else tool.onMouseDrag(point)
       return
     }
     controller?.pointerMove(p, modifiersOf(e), touch)
@@ -319,8 +450,10 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
 
     const owner = pressOwnerRef.current
     pressOwnerRef.current = null
-    if (owner === 'tool' && toolRef.current) {
-      toolRef.current.onMouseUp(point)
+    const tool = toolRef.current
+    if (owner === 'tool' && tool) {
+      if (tool instanceof GuideTool) tool.onMouseUp(point, modifiersOf(e))
+      else tool.onMouseUp(point)
       return
     }
     controllerRef.current?.pointerUp()
@@ -329,14 +462,14 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
   /** The gesture was interrupted (pointer cancelled or capture lost): undo the preview. */
   const handlePointerCancel = useCallback(() => {
     pressOwnerRef.current = null
-    if (toolRef.current instanceof CarveTool) toolRef.current.cancel()
+    if (toolRef.current instanceof CarveTool || toolRef.current instanceof GuideTool) toolRef.current.cancel()
     controllerRef.current?.cancel()
   }, [])
 
-  /** Hover outlines, snap guides and labels go when the pointer leaves (a captured drag keeps them). */
+  /** Hover outlines, snap hints and labels go when the pointer leaves (a captured drag keeps them). */
   const handlePointerLeave = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) return
-    if (toolRef.current instanceof PenTool) toolRef.current.pointerLeave()
+    if (toolRef.current instanceof PenTool || toolRef.current instanceof GuideTool) toolRef.current.pointerLeave()
     controllerRef.current?.pointerLeave()
   }, [])
 

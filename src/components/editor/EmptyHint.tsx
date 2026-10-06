@@ -1,7 +1,9 @@
 import { useLogoStore } from '../../store/logoStore.ts'
+import { isBlankDocument } from '../../engine/vector/document.ts'
 
 export function EmptyHint() {
-  const empty = useLogoStore((s) => s.illustrator.layers.length === 0)
+  // Guides are something drawn: the hint never lies over them.
+  const empty = useLogoStore((s) => isBlankDocument(s.vectorDocument))
   const idle = useLogoStore((s) => s.ui.activeTool === null)
   if (!empty || !idle) return null
 

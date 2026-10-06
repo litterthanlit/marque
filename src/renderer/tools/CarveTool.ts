@@ -10,7 +10,7 @@ interface CarveCallbacks {
   snapPoint?: (p: Vec, from: Vec | null, role: 'hover' | 'start' | 'end') => Vec
   /** Snap a punch's radius around its centre. */
   snapRadius?: (center: Vec, radius: number) => number
-  /** The press ended (cut, cancelled or not): snap guides can go. */
+  /** The press ended (cut, cancelled or not): snap hints can go. */
   onGestureEnd?: () => void
 }
 

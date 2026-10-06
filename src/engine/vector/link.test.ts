@@ -134,6 +134,14 @@ describe('writing a link', () => {
     expect(encodeLink(createEmptyVectorDocument(), '#ff3300')).toBe('')
   })
 
+  it('writes a document with only guides, and reads its guides back', () => {
+    const guide = { id: 'g', name: 'Line', visible: true, locked: false, style: 'dashed' as const, shape: { kind: 'line' as const, p: { x: 0, y: 40 }, angle: 60 } }
+    const document = { ...createEmptyVectorDocument(), guides: [guide] }
+    const decoded = decodeLink(encodeLink(document, '#ff3300'))
+    expect(decoded.kind).toBe('vector')
+    if (decoded.kind === 'vector') expect(decoded.document.guides).toEqual([guide])
+  })
+
   it('writes the ink colour and the document, and reads them back', () => {
     const hash = encodeLink(squareDocument, '#ff3300')
     expect([...new URLSearchParams(hash.slice(1)).keys()]).toEqual(['fillColor', 'vd'])

@@ -34,6 +34,12 @@ function App() {
 
       if (e.metaKey || e.ctrlKey) {
         const key = e.key.toLowerCase()
+        // Cmd+; shows and hides guides, as in Illustrator. View state: no undo step, nothing in the link.
+        if (e.key === ';' && !e.altKey) {
+          e.preventDefault()
+          useLogoStore.getState().toggleShowGuides()
+          return
+        }
         // Undo waits for the drag to finish: the gesture is not a step yet.
         if (key === 'z' && isEditorInteracting()) {
           e.preventDefault()
@@ -89,12 +95,16 @@ function App() {
         }
       }
 
-      // Delete/Backspace removes the selected layers (not while a slider has focus)
+      // Delete/Backspace removes the selected layers or guides (not while a slider has focus)
       const onSlider = Boolean((e.target as HTMLElement).closest?.('[role="slider"]'))
       if ((e.key === 'Delete' || e.key === 'Backspace') && !e.metaKey && !e.ctrlKey && !onSlider) {
-        if (useLogoStore.getState().illustrator.selectedLayerIds.length) {
+        const { illustrator, deleteIllustratorLayers, deleteGuides } = useLogoStore.getState()
+        if (illustrator.selectedLayerIds.length) {
           e.preventDefault()
-          useLogoStore.getState().deleteIllustratorLayers()
+          deleteIllustratorLayers()
+        } else if (illustrator.selectedGuideIds?.length) {
+          e.preventDefault()
+          deleteGuides()
         }
       }
     }

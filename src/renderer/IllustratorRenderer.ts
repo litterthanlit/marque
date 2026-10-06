@@ -2,7 +2,9 @@ import type { IllustratorDocument, MarkData } from '../engine/illustrator/types.
 import { composeIllustratorMark, getLayerPathItem } from '../engine/illustrator/compose.ts'
 import type { SurvivalResult } from '../engine/carve/survival.ts'
 import type { CanvasLook } from '../store/logoStore.ts'
+import type { Guide } from '../engine/vector/types.ts'
 import { unitsPerCssPixel } from './viewFit.ts'
+import { guidePathItem, styleGuideItem, visibleLayerRect } from './guideItems.ts'
 
 interface IllustratorRenderOptions {
   fillColor: string
@@ -10,11 +12,14 @@ interface IllustratorRenderOptions {
   survival?: SurvivalResult | null
   /** The composed mark, shared with previews and export. Composed here only if missing. */
   mark?: MarkData
+  /** The guides to draw, or null while they are hidden. They draw only in the construction look. */
+  guides?: readonly Guide[] | null
 }
 
 const INK_ITEM_NAME = '__illustrator_ink'
 const OUTLINE_ITEM_NAME = '__illustrator_outline'
 const SURVIVAL_ITEM_NAME = '__survival'
+const GUIDES_ITEM_NAME = '__guides'
 // Hit areas must have a fill to be hit-tested, but the fill should not be seen.
 const HIT_AREA_ALPHA = 0.001
 
@@ -93,6 +98,7 @@ export function renderIllustratorOnScope(
     outline.strokeColor = new scope.Color(CONSTRUCTION.outline.color)
     outline.locked = true
     ink.parent.addChild(outline)
+    renderGuides(scope, options.guides ?? null)
     scaleConstructionLines(scope)
   }
 
@@ -112,6 +118,58 @@ export function scaleConstructionLines(scope: paper.PaperScope): void {
     const line = CONSTRUCTION[operation]
     item.strokeWidth = line.width * u
     item.dashArray = line.dash.map((length) => length * u)
+  }
+  const guides = scope.project.getItem({ name: GUIDES_ITEM_NAME })
+  for (const item of guides?.children ?? []) {
+    const style = (item.data as { guideStyle?: Guide['style'] }).guideStyle
+    if (style) styleGuideItem(scope, item, style, u)
+  }
+}
+
+/**
+ * Draw the guides, or none: above the ink and the layers' own lines, below
+ * the mark's outline, so where a guide runs along the edge the edge wins.
+ * Only the construction look draws them: in the final look there is no
+ * outline to sit under, and this does nothing. Hidden guides do not draw.
+ * Lines are clipped to the view, so call this again when the view changes.
+ * Guides never reach the ink, the export or anything composed.
+ */
+export function renderGuides(scope: paper.PaperScope, guides: readonly Guide[] | null): void {
+  scope.activate()
+  const outline = scope.project.getItem({ name: OUTLINE_ITEM_NAME })
+  let group = scope.project.getItem({ name: GUIDES_ITEM_NAME }) as paper.Group | null
+  if (!outline) {
+    group?.remove()
+    return
+  }
+  if (!group) {
+    group = new scope.Group({ insert: false })
+    group.name = GUIDES_ITEM_NAME
+    group.locked = true
+    group.insertBelow(outline)
+  }
+  group.removeChildren()
+  const center = scope.view.center
+  const rect = visibleLayerRect(scope)
+  const u = unitsPerCssPixel(scope)
+  for (const guide of guides ?? []) {
+    if (!guide.visible) continue
+    const item = guidePathItem(scope, guide.shape, { x: center.x, y: center.y }, rect)
+    if (!item) continue
+    styleGuideItem(scope, item, guide.style, u)
+    item.data = { guideId: guide.id, guideStyle: guide.style }
+    group.addChild(item)
+  }
+  scope.view.update()
+}
+
+/** Hide the drawn guides that a gesture redraws itself, as it previews them; show the rest. */
+export function hideGuides(scope: paper.PaperScope, hidden: ReadonlySet<string>): void {
+  const group = scope.project.getItem({ name: GUIDES_ITEM_NAME })
+  if (!group) return
+  for (const item of group.children) {
+    const id = (item.data as { guideId?: string }).guideId
+    item.opacity = id && hidden.has(id) ? 0 : 1
   }
 }
 

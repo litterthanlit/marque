@@ -9,6 +9,7 @@ import {
   normalizeDegrees,
   rotate,
   sub,
+  type Bounds,
   type Cubic,
   type Vec,
 } from '../../engine/path/bezier.ts'
@@ -71,7 +72,7 @@ import {
   snapMoving,
   snapValue,
   type EdgeHit,
-  type SnapGuide,
+  type SnapHint,
   type SnapIndex,
   type SnapResult,
   type SnapTarget,
@@ -82,11 +83,17 @@ import { bakedEditableShape } from '../../engine/illustrator/layerPath.ts'
 import { createComposeSession, type ComposeSession } from '../../engine/illustrator/composeSession.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
 import { HISTORY_MERGE_MS, type AnchorRef, type HistoryMergeKind, type LayerEdit, type LayerEditCommit } from '../../store/logoStore.ts'
-import { getInkItem, hideLayerOutlines, setInkPathData, setSurvivalVisible } from '../IllustratorRenderer.ts'
+import { getInkItem, hideGuides, hideLayerOutlines, setInkPathData, setSurvivalVisible } from '../IllustratorRenderer.ts'
+import type { Guide } from '../../engine/vector/types.ts'
+import { constructionShape, guideAnchor, lineReading, lineShape, moveGuideShape, sameGuideShape, type GuideShape } from '../../engine/vector/guides.ts'
+import { detachGuide } from '../../engine/vector/follow.ts'
+import { pathDataToContours } from '../../engine/vector/pathSerialization.ts'
+import { guideHandles, startOnGuides, type GuideHandle } from './guideEdit.ts'
+import { GUIDE_LINE, guideDashAt, guidePathItem, styleGuideItem, visibleLayerRect } from '../guideItems.ts'
 import { carriedCuts } from './carry.ts'
 import { CURSORS, resizeCursor } from './cursors.ts'
 import { hud } from './hud.ts'
-import { EMPTY_ZONE, findZone, freeCurve, zoneKey, type HitContext, type Zone } from './hitZones.ts'
+import { EMPTY_ZONE, GUIDE_PX, findZone, freeCurve, zoneKey, type HitContext, type Zone } from './hitZones.ts'
 import {
   boxHandleList,
   scaledHandleLayout,
@@ -100,12 +107,15 @@ import {
   drawAnchors,
   drawCarveHandles,
   drawCurves,
+  addWithHalo,
   drawGhostPoint,
-  drawSnapGuides,
+  drawGuideHandles,
+  drawSnapHints,
   outlineItem,
   outlinePathData,
   resetOverlay,
   setOverlayScale,
+  type StrokeStyle,
 } from './overlay.ts'
 import { unitsPerCssPixel } from '../viewFit.ts'
 
@@ -128,6 +138,16 @@ export interface DirectEditHost {
   setSelection(ids: string[], anchor?: AnchorRef | null): void
   commitLayerEdits(commit: LayerEditCommit): void
   editAnchor(layerId: string, index: number, op: AnchorOp, contourIndex: number): void
+  /** Are guides on the canvas: the construction look, with guides shown? Hidden guides take no presses. */
+  guidesShown(): boolean
+  /** Select guides, or none with null; `additive` toggles them among the selected guides. */
+  selectGuides(ids: string[] | null, additive?: boolean): void
+  /** The whole list of guides after a gesture: one undo step. */
+  commitGuides(label: string, guides: Guide[], select?: string[]): void
+  /** Move the selected guides that are shown and not locked by `d`: a burst of keys is one undo step. */
+  nudgeGuides(d: Vec): void
+  /** How far the floating bars cover the canvas from its top and its bottom, in CSS pixels. */
+  coveredInsets?(): { top: number; bottom: number }
 }
 
 interface Session {
@@ -136,6 +156,8 @@ interface Session {
   cancel(): void
   /** Layers the session draws itself (the controller skips their normal outline). */
   editedIds: Set<string>
+  /** Guides the session draws itself: the drawn ones hide meanwhile. */
+  guideIds?: Set<string>
   drawOverlay(layer: paper.Layer): void
 }
 
@@ -304,6 +326,7 @@ function unbent(spec: CarveSpec): CarveSpec {
 }
 
 const r0 = (v: number) => Math.round(v)
+const r2 = (v: number) => Math.round(v * 100) / 100 || 0
 
 /** The number that matters while dragging a handle, shown next to the pointer. */
 function handleReadout(spec: CarveSpec, handle: CarveHandle): string {
@@ -408,6 +431,20 @@ interface KeyBurst {
 
 const usable = (layer: IllustratorLayer | undefined): boolean => Boolean(layer && layer.visible && !layer.locked)
 
+/** The points of a guide that snap as it moves: where it was grabbed, a circle's centre, a path's points. */
+function guideKeyPoints(shape: GuideShape, grab: Vec): Vec[] {
+  switch (shape.kind) {
+    case 'line':
+      return [grab]
+    case 'circle':
+      return [shape.c, grab]
+    case 'path':
+      return shape.contour.segments.map((segment) => segment.point)
+    default:
+      return shape satisfies never
+  }
+}
+
 const DOUBLE_CLICK_MS = 300
 const DOUBLE_CLICK_PX = 6
 /** How long the size or angle that Alt with the arrow keys reached stays by the box. */
@@ -434,19 +471,25 @@ export class DirectEditController {
   private keyChipTimer = 0
   /** The layers the key chip's number is about: once they change by anything else, such as an undo, it goes. */
   private keyChipLayers: readonly IllustratorLayer[] | null = null
+  /** The last burst of guide nudges: which guides, when, and whether it detached them. */
+  private guideBurst: { ids: string; at: number; detached: boolean } | null = null
   /** Where the pointer rests over the canvas, so hover can be found again once a key or a drag moves what is under it. */
   private resting: { p: Vec; touch: boolean } | null = null
   private pendingPoint: PendingPoint | null = null
   /** A handle's number is showing by the resting pointer. */
   private readoutShown = false
-  /** Pink guides of the snap in effect, drawn on top of everything. */
-  private snapGuides: SnapGuide[] = []
+  /** Pink hints of the snap in effect, drawn on top of everything. */
+  private snapHints: SnapHint[] = []
   /** While a tool places something: its snap index (for one document), where it started, the modifiers held. */
   private toolIndex: { doc: IllustratorDocument; index: SnapIndex } | null = null
   private toolStart: SnapResult | null = null
   private toolMods: Modifiers = { shift: false, alt: false, noSnap: false }
   /** Which handles take presses: fewer while a tool is active, so its presses reach it. */
   private live: LiveHandles = 'all'
+  /** Under the Guide tool, guides take presses first. */
+  private guidesFirst = false
+  /** What the live frame of a gesture shows in place of some layers: their paths, and their recipes. */
+  private preview: { paths: Map<string, string | null>; carves: Map<string, CarveSpec>; frames: Map<string, number> } | null = null
   private readonly unregisterKeys: () => void
   private destroyed = false
 
@@ -464,6 +507,7 @@ export class DirectEditController {
       const gone = [...this.session.editedIds].some((id) => !this.items.has(id))
       if (gone) this.cancel()
     }
+    this.dropStaleGuideSession()
     if (this.keyChipLayers && this.keyChipLayers !== this.host.getDoc().layers) this.dropKeyChip()
     // A key or a drag may have moved a shape out from under the resting pointer, or under it.
     // A tool shows its own cursor and hover, so only the editor's own mode looks again.
@@ -477,15 +521,32 @@ export class DirectEditController {
     return this.session !== null
   }
 
-  /** Redraw the overlay: after a selection change, or when the canvas changed size and handles keep their on-screen size. */
+  /** Redraw the overlay: after a selection or guide change, or when the canvas changed size and handles keep their on-screen size. */
   refresh(): void {
+    this.dropStaleGuideSession()
     this.drawOverlay()
+  }
+
+  /** A gesture on guides that something else deleted, or took off the canvas, meanwhile ends without a commit. */
+  private dropStaleGuideSession(): void {
+    const ids = this.session?.guideIds
+    if (!ids?.size) return
+    const present = new Set((this.host.getDoc().guides ?? []).map((guide) => guide.id))
+    if (!this.host.guidesShown() || [...ids].some((id) => !present.has(id))) this.cancel()
   }
 
   /** Show (and let presses reach) the selection's handles and points: all, only a recipe's own, or none. */
   setHandlesLive(live: LiveHandles): void {
     if (this.live === live) return
     this.live = live
+    this.hover = EMPTY_ZONE
+    this.drawOverlay()
+  }
+
+  /** Let guides take presses before anything else (the Guide tool), or only after everything (Select). */
+  setGuidesFirst(first: boolean): void {
+    if (this.guidesFirst === first) return
+    this.guidesFirst = first
     this.hover = EMPTY_ZONE
     this.drawOverlay()
   }
@@ -583,7 +644,9 @@ export class DirectEditController {
 
   private endGesture() {
     setEditorInteracting(false)
-    this.snapGuides = []
+    this.preview = null
+    hideGuides(this.scope, new Set())
+    this.snapHints = []
     hud.clear()
     setSurvivalVisible(this.scope, true)
     this.drawOverlay()
@@ -652,7 +715,49 @@ export class DirectEditController {
       touch,
       edges: true,
       freePathOf: (layer) => this.freePathOf(layer),
+      guides: this.reachableGuides(doc),
+      guideHandles: this.selectedGuideHandles(doc),
+      guidesFirst: this.guidesFirst,
     }
+  }
+
+  /** The guides a press can reach: on the canvas, visible and unlocked. */
+  private reachableGuides(doc: IllustratorDocument): Guide[] {
+    if (!this.host.guidesShown()) return []
+    return (doc.guides ?? []).filter((guide) => guide.visible && !guide.locked)
+  }
+
+  /** The guides selected, in the document's order. */
+  private selectedGuides(doc: IllustratorDocument): Guide[] {
+    const ids = new Set(doc.selectedGuideIds ?? [])
+    return ids.size ? (doc.guides ?? []).filter((guide) => ids.has(guide.id)) : []
+  }
+
+  /** The handles of the one selected guide, when guides are on the canvas. */
+  private selectedGuideHandles(doc: IllustratorDocument): GuideHandle[] {
+    const selected = this.selectedGuides(doc)
+    if (selected.length !== 1 || !this.host.guidesShown() || !selected[0].visible) return []
+    return guideHandles(selected[0], this.openLayerRect(), this.unitsPerPx())
+  }
+
+  /**
+   * The part of the canvas in view that no floating bar covers, in layer
+   * space, a little inside its edges: where a handle can be seen and grabbed.
+   */
+  private openLayerRect(): Bounds {
+    const { left, top, right, bottom } = this.scope.view.bounds
+    const c = this.center()
+    const u = this.unitsPerPx()
+    const covered = this.host.coveredInsets?.() ?? { top: 0, bottom: 0 }
+    const pad = 16 * u
+    const rect = {
+      minX: left - c.x + pad,
+      minY: top - c.y + covered.top * u + pad,
+      maxX: right - c.x - pad,
+      maxY: bottom - c.y - covered.bottom * u - pad,
+    }
+    // A canvas almost all covered keeps its whole view rather than none.
+    return rect.minX < rect.maxX && rect.minY < rect.maxY ? rect : { minX: left - c.x, minY: top - c.y, maxX: right - c.x, maxY: bottom - c.y }
   }
 
   private updateHover(p: Vec, touch: boolean, readout = true) {
@@ -707,6 +812,10 @@ export class DirectEditController {
       case 'edge':
         // On the selected free shape a click adds a point; elsewhere edges only bend.
         return zone.free && this.isSelectedAlone(zone.layerId) ? CURSORS.bendOrAdd : CURSORS.bend
+      case 'guide':
+        return CURSORS.move
+      case 'guide-handle':
+        return zone.handle.id === 'rotate' ? CURSORS.rotate : resizeCursor(zone.handle.id === 'n' || zone.handle.id === 's' ? 90 : 0)
       default:
         return CURSORS.default
     }
@@ -766,9 +875,9 @@ export class DirectEditController {
     return { targets, nearestEdge }
   }
 
-  /** Show a snap: its guides on the canvas, its label by the pointer. */
+  /** Show a snap: its hints on the canvas, its label by the pointer. */
   private showSnap(result: SnapResult | null, fallbackLabel: string | null = null) {
-    this.snapGuides = result?.guides ?? []
+    this.snapHints = result?.hints ?? []
     hud.set({ label: result?.label ?? fallbackLabel })
   }
 
@@ -806,23 +915,23 @@ export class DirectEditController {
       const same = snapValue(radius, documentSizes(doc, new Set()).punchRadii, tolerance)
       if (same !== null) {
         snapped = same
-        return { d: { x: 0, y: 0 }, label: 'same size', guides: [] }
+        return { d: { x: 0, y: 0 }, label: 'same size', hints: [] }
       }
       const touch = snapCircleTangent(index, center, radius, tolerance, 'radius')
       if (touch) {
         snapped = touch.radius
-        return { d: { x: 0, y: 0 }, label: 'tangent', guides: [{ kind: 'mark', p: touch.touch }] }
+        return { d: { x: 0, y: 0 }, label: 'tangent', hints: [{ kind: 'mark', p: touch.touch }] }
       }
       return NO_SNAP
     })
     return snapped
   }
 
-  /** The tool's gesture ended, or the pointer left: drop its guides and label. */
+  /** The tool's gesture ended, or the pointer left: drop its hints and label. */
   endToolSnap(): void {
     this.toolStart = null
-    if (!this.snapGuides.length && !hud.get().label) return
-    this.snapGuides = []
+    if (!this.snapHints.length && !hud.get().label) return
+    this.snapHints = []
     hud.clear()
     this.drawOverlay()
   }
@@ -839,7 +948,7 @@ export class DirectEditController {
     const result = run(this.toolIndex.index, doc)
     if (role === 'start') this.toolStart = result
     const start = role === 'end' ? this.toolStart : null
-    this.snapGuides = [...(start?.guides ?? []), ...result.guides]
+    this.snapHints = [...(start?.hints ?? []), ...result.hints]
     hud.set({ label: result.label ?? start?.label ?? null })
     this.drawOverlay()
     return result
@@ -890,6 +999,9 @@ export class DirectEditController {
         return
       case 'frame':
         // A click inside the box, between its shapes, keeps the selection.
+        return
+      case 'guide':
+        this.host.selectGuides([zone.guideId], press.mods.shift)
         return
       case 'empty':
         if (!press.mods.shift) this.host.setSelection([])
@@ -1014,6 +1126,10 @@ export class DirectEditController {
         return this.pointSession(press, zone.layerId, zone.contourIndex, zone.index, 'anchor')
       case 'bezier':
         return this.pointSession(press, zone.layerId, zone.contourIndex, zone.index, zone.which)
+      case 'guide':
+        return this.guideMoveSession(press, zone.guideId, zone.point)
+      case 'guide-handle':
+        return this.guideHandleSession(press, zone.handle)
       default:
         return null
     }
@@ -1074,8 +1190,12 @@ export class DirectEditController {
       editedIds: new Set(starts.keys()),
       preview: (d) => {
         const replacements = new Map<string, string | null>()
-        for (const id of starts.keys()) replacements.set(id, pathFor(id, d))
-        this.showInk(compose, replacements)
+        const carves = new Map<string, CarveSpec>()
+        for (const [id, start] of starts) {
+          replacements.set(id, pathFor(id, d))
+          if (start.carve) carves.set(id, translateCarve(start.carve, d))
+        }
+        this.showInk(compose, replacements, carves)
         this.drawOverlay()
       },
       commit: (d) => {
@@ -1095,8 +1215,18 @@ export class DirectEditController {
     }
   }
 
-  /** Show one live frame of the ink. A boolean hiccup mid-drag keeps the last good frame on screen. */
-  private showInk(compose: ComposeSession, replacements: Map<string, string | null>) {
+  /**
+   * Show one live frame of the ink. A boolean hiccup mid-drag keeps the last
+   * good frame on screen. `carves` are the recipes of the replaced layers
+   * that have one: the guides that follow them are drawn from these.
+   */
+  private showInk(
+    compose: ComposeSession,
+    replacements: Map<string, string | null>,
+    carves = new Map<string, CarveSpec>(),
+    frames = new Map<string, number>(),
+  ) {
+    this.preview = { paths: replacements, carves, frames }
     let ink: string
     try {
       ink = compose.compose(replacements)
@@ -1171,7 +1301,7 @@ export class DirectEditController {
           if (!snap.label && !axes && plan.roundPunch) {
             const moved = add(plan.roundPunch.center, d)
             const touch = snapCircleTangent(index, moved, plan.roundPunch.radius, tolerance, 'move')
-            if (touch) snap = { d: sub(touch.center, moved), label: 'tangent', guides: [{ kind: 'mark', p: touch.touch }] }
+            if (touch) snap = { d: sub(touch.center, moved), label: 'tangent', hints: [{ kind: 'mark', p: touch.touch }] }
           }
           d = add(d, snap.d)
         }
@@ -1215,7 +1345,7 @@ export class DirectEditController {
           if (!snap.label) current = wholeCarveDrag(start, current, handle.id, mods)
         }
         this.showSnap(snap)
-        this.showInk(compose, new Map([[layerId, carveOutline(current).pathData]]))
+        this.showInk(compose, new Map([[layerId, carveOutline(current).pathData]]), new Map([[layerId, current]]))
         hud.set({ chip: handleReadout(current, handle) })
         this.drawOverlay()
       },
@@ -1260,8 +1390,14 @@ export class DirectEditController {
         current = nextBox
         hot = hotId
         const replacements = new Map<string, string | null>()
-        for (const { id, next: moved } of everyEdit()) replacements.set(id, movedPathData(moved))
-        this.showInk(compose, replacements)
+        const carves = new Map<string, CarveSpec>()
+        const frames = new Map<string, number>()
+        for (const { id, from, next: moved } of everyEdit()) {
+          replacements.set(id, movedPathData(moved))
+          if (moved.carve) carves.set(id, moved.carve)
+          else frames.set(id, normalizeDegrees(from.frame + move.turn))
+        }
+        this.showInk(compose, replacements, carves, frames)
         this.drawOverlay()
       },
       commit: (label) => {
@@ -1446,7 +1582,7 @@ export class DirectEditController {
         if (touchEdge) {
           return {
             spec: { ...raw, radius: touchEdge.radius },
-            snap: { d: { x: 0, y: 0 }, label: 'tangent', guides: [{ kind: 'mark', p: touchEdge.touch }] },
+            snap: { d: { x: 0, y: 0 }, label: 'tangent', hints: [{ kind: 'mark', p: touchEdge.touch }] },
           }
         }
       }
@@ -1485,31 +1621,52 @@ export class DirectEditController {
   }
 
   /**
-   * The handle a tool's press or hover would reach, if any. Box handles stay
-   * out of a tool's way, and so does the turning ring outside a recipe's
-   * corners: nothing is drawn there, so a press there starts the tool.
+   * What a tool's press or hover would reach instead of the tool, if
+   * anything. Box handles stay out of a tool's way, and so does the turning
+   * ring outside a recipe's corners: nothing is drawn there, so a press there
+   * starts the tool. Under the Guide tool, guides and the selected guide's
+   * handles come first.
    */
-  private toolHandle(p: Vec, touch: boolean): Extract<Zone, { kind: 'handle' }> | null {
-    if (this.live === 'none') return null
+  private toolZone(p: Vec, touch: boolean): Zone | null {
+    if (this.live === 'none' && !this.guidesFirst) return null
     const zone = findZone({ ...this.context(touch), edges: false }, p)
-    return zone.kind === 'handle' && !zone.ring ? zone : null
+    if (zone.kind === 'handle' && !zone.ring) return zone
+    if (this.guidesFirst && (zone.kind === 'guide' || zone.kind === 'guide-handle')) return zone
+    return null
   }
 
-  /** While a tool is active: is the pointer over a handle of the selected cut? */
-  handleAt(p: Vec, touch: boolean): boolean {
-    return this.toolHandle(p, touch) !== null
+  /** Is this guide one of the selected? */
+  private isGuideSelected(id: string): boolean {
+    return (this.host.getDoc().selectedGuideIds ?? []).includes(id)
   }
 
-  /** Hover while a tool is active: only handles react. Returns the cursor to show, if any. */
+  /**
+   * What a tool's press reaches while a tool is active: the editor (a handle,
+   * or a selected guide, which a drag moves), or under the Guide tool a guide
+   * not selected. A click on that selects it, but a drag draws a new line from
+   * it, starting where it was pressed on it (or where two lines cross there),
+   * so new guides can start on guides. Null leaves the press to the tool.
+   */
+  toolPressTarget(p: Vec, touch: boolean): { kind: 'editor' } | { kind: 'guide'; guideId: string; start: Vec } | null {
+    const zone = this.toolZone(p, touch)
+    if (!zone) return null
+    if (zone.kind !== 'guide' || this.isGuideSelected(zone.guideId)) return { kind: 'editor' }
+    const reach = GUIDE_PX * this.unitsPerPx() * (touch ? 2 : 1)
+    const start = startOnGuides(this.reachableGuides(this.host.getDoc()), sub(p, this.center()), reach) ?? zone.point
+    return { kind: 'guide', guideId: zone.guideId, start }
+  }
+
+  /** Hover while a tool is active: only handles (and guides, under the Guide tool) react. Returns the cursor to show, if any. */
   toolHover(p: Vec, touch: boolean): string | null {
     this.resting = null
-    if (this.live === 'none') return null
-    const zone = this.toolHandle(p, touch)
+    const zone = this.toolZone(p, touch)
     const hot = zone ?? EMPTY_ZONE
     if (zoneKey(hot) !== zoneKey(this.hover)) {
       this.hover = hot
       this.drawOverlay()
     }
+    // A guide not selected lights up, but a drag from it draws: the tool's cursor stays.
+    if (zone?.kind === 'guide' && !this.isGuideSelected(zone.guideId)) return null
     return zone ? this.cursorFor(zone) : null
   }
 
@@ -1537,7 +1694,7 @@ export class DirectEditController {
         current = bendCarve(start, grab, target)
         const settled = grab.side.type === 'corner' ? 'round' : 'straight'
         this.showSnap(snap, isSideBent(current, grab.side) ? null : settled)
-        this.showInk(compose, new Map([[layerId, carveOutline(current).pathData]]))
+        this.showInk(compose, new Map([[layerId, carveOutline(current).pathData]]), new Map([[layerId, current]]))
         hud.set({ chip: bendReadout(current, grab.side) })
         this.drawOverlay()
       },
@@ -1693,6 +1850,222 @@ export class DirectEditController {
     }
   }
 
+  /* ─── Guides ─── */
+
+  /**
+   * Drag a guide: it moves, and the other selected guides with it when it is
+   * one of them. Its grabbed point (a circle's centre too, a path's points)
+   * snaps as a shape's points do. A guide that followed a shape no longer
+   * does once it is moved by hand: the HUD says so. One commit per drag.
+   */
+  private guideMoveSession(press: Press, pressedId: string, grab: Vec): Session | null {
+    const doc = this.host.getDoc()
+    const all = doc.guides ?? []
+    const reachable = new Set(this.reachableGuides(doc).map((guide) => guide.id))
+    const selected = doc.selectedGuideIds ?? []
+    const ids = new Set(selected.includes(pressedId) ? selected.filter((id) => reachable.has(id)) : [pressedId])
+    const starts = all.filter((guide) => ids.has(guide.id))
+    if (!starts.length) return null
+    const detaches = starts.some((guide) => guide.link)
+    const keyPoints = starts.length === 1 ? guideKeyPoints(starts[0].shape, grab) : [grab]
+    let index: SnapIndex | null = null
+    let d: Vec = { x: 0, y: 0 }
+    // Stored to hundredths, as shapes are: what the drag shows is what lands.
+    const moved = () => starts.map((guide) => ({ ...detachGuide(guide), shape: moveGuideShape(guide.shape, d) }))
+    return {
+      editedIds: new Set(),
+      guideIds: ids,
+      update: (p, mods) => {
+        d = sub(p, press.point)
+        const axes = mods.shift ? (Math.abs(d.x) >= Math.abs(d.y) ? { x: true, y: false } : { x: false, y: true }) : undefined
+        if (axes) d = { x: axes.x ? d.x : 0, y: axes.y ? d.y : 0 }
+        let snap: SnapResult = NO_SNAP
+        if (this.snapsOn(mods)) {
+          index ??= this.makeSnapIndex(doc, new Set())
+          snap = snapMoving(index, keyPoints.map((k) => add(k, d)), {
+            tolerance: this.snapTolerance(press.touch),
+            axes,
+            edges: keyPoints.length === 1,
+          })
+          d = add(d, snap.d)
+          // With nothing to snap to, whole units, so the number shown is the number the guide moves.
+          if (!snap.label) d = { x: Math.round(d.x), y: Math.round(d.y) }
+        }
+        this.showSnap(snap)
+        if (detaches) hud.set({ label: snap.label ? `${snap.label} · detached` : 'detached' })
+        hud.set({ chip: `${r2(d.x)}, ${r2(d.y)}` })
+        this.drawOverlay()
+      },
+      commit: () => {
+        if (Math.hypot(d.x, d.y) < 0.5) return
+        const next = new Map(moved().map((guide) => [guide.id, guide.shape]))
+        this.commitOntoCurrent(next.size > 1 ? 'Move guides' : 'Move guide', next)
+      },
+      cancel: () => {},
+      drawOverlay: (overlay) => this.drawGuideOutlines(overlay, moved()),
+    }
+  }
+
+  /**
+   * Drag a handle of the selected guide: a line's knob turns it about its
+   * pivot (Shift in 15° steps; with snapping on, settling on them and landing
+   * on whole degrees), a circle's squares set its radius (the same size as a
+   * punch, touching an edge, or else a whole unit). One commit per drag.
+   */
+  private guideHandleSession(press: Press, handle: GuideHandle): Session | null {
+    const doc = this.host.getDoc()
+    const all = doc.guides ?? []
+    const guide = all.find((candidate) => candidate.id === handle.guideId)
+    if (!guide || guide.locked) return null
+    const turning = handle.id === 'rotate'
+    let shape: GuideShape = guide.shape
+    let index: SnapIndex | null = null
+    const center = this.center()
+    return {
+      editedIds: new Set(),
+      guideIds: new Set([guide.id]),
+      update: (p, mods) => {
+        const pointer = sub(p, center)
+        const reach = distance(pointer, handle.pivot)
+        const tolerance = this.snapTolerance(press.touch)
+        let label: string | null = null
+        if (turning) {
+          let angle = (Math.atan2(pointer.y - handle.pivot.y, pointer.x - handle.pivot.x) * 180) / Math.PI
+          if (mods.shift) angle = Math.round(angle / 15) * 15
+          else if (this.snapsOn(mods)) angle = settleAngle(angle, reach, tolerance) ?? Math.round(angle)
+          // Stored to hundredths, as a shape's turn is.
+          shape = lineShape({ x: r2(handle.pivot.x), y: r2(handle.pivot.y) }, r2(angle))
+          hud.set({ chip: shape.kind === 'line' ? `${lineReading(shape.angle)}°` : null })
+        } else {
+          let r = reach
+          if (this.snapsOn(mods)) {
+            index ??= this.makeSnapIndex(doc, new Set())
+            const same = snapValue(r, documentSizes(doc, new Set()).punchRadii, tolerance)
+            const touch = same === null ? snapCircleTangent(index, handle.pivot, r, tolerance, 'radius') : null
+            if (same !== null) {
+              r = same
+              label = 'same size'
+            } else if (touch) {
+              r = touch.radius
+              label = 'tangent'
+            } else r = Math.max(1, Math.round(r))
+            this.snapHints = touch && same === null ? [{ kind: 'mark', p: touch.touch }] : []
+          }
+          r = r2(r)
+          shape = { kind: 'circle', c: handle.pivot, r }
+          hud.set({ chip: `r ${r2(r)}` })
+        }
+        if (guide.link) label = label ? `${label} · detached` : 'detached'
+        hud.set({ label })
+        this.drawOverlay()
+      },
+      commit: () => {
+        if (sameGuideShape(shape, guide.shape)) return
+        this.commitOntoCurrent(turning ? 'Turn guide' : 'Resize guide', new Map([[guide.id, shape]]))
+      },
+      cancel: () => {},
+      drawOverlay: (overlay) => this.drawGuideOutlines(overlay, [{ shape, style: guide.style }]),
+    }
+  }
+
+  /**
+   * Commit the shapes a gesture gave some guides onto the document's guides
+   * as they are now, not as they were at the press: a guide deleted meanwhile
+   * stays gone, and other changes made meanwhile stay. Moved by hand, a guide
+   * no longer follows a shape.
+   */
+  private commitOntoCurrent(label: string, shapes: Map<string, GuideShape>): void {
+    const current = this.host.getDoc().guides ?? []
+    const kept = current.filter((guide) => shapes.has(guide.id)).map((guide) => guide.id)
+    if (!kept.length) return
+    const next = current.map((guide) => {
+      const shape = shapes.get(guide.id)
+      return shape ? { ...detachGuide(guide), shape } : guide
+    })
+    this.host.commitGuides(label, next, kept)
+  }
+
+  /**
+   * Guides in the selection colour, over a white halo: the selected ones, or
+   * the ones a drag moves, or fainter, the one under the pointer. Each keeps
+   * its own style, dashed or dotted, so a change of style shows at once.
+   */
+  private drawGuideOutlines(overlay: paper.Layer, guides: ReadonlyArray<Pick<Guide, 'shape' | 'style'>>, look: StrokeStyle = { width: 1.25 }) {
+    const center = this.center()
+    const rect = visibleLayerRect(this.scope)
+    this.scope.activate()
+    overlay.activate()
+    for (const { shape, style } of guides) {
+      const item = guidePathItem(this.scope, shape, center, rect)
+      const width = Math.max(look.width ?? 1.25, GUIDE_LINE[style].width)
+      if (item) addWithHalo(this.scope, overlay, item, { ...look, width, ...guideDashAt(style, width) })
+    }
+  }
+
+  /**
+   * While a gesture reshapes some layers, the construction guides that
+   * follow them are drawn where the follow pass will put them, from the live
+   * frame; the drawn ones hide meanwhile. Returns the guides drawn so.
+   */
+  private drawFollowingGuides(overlay: paper.Layer): Set<string> {
+    const drawn = new Set<string>()
+    const preview = this.preview
+    if (!preview || !this.host.guidesShown()) return drawn
+    const center = this.center()
+    const rect = visibleLayerRect(this.scope)
+    const u = this.unitsPerPx()
+    for (const guide of this.host.getDoc().guides ?? []) {
+      const link = guide.link
+      if (!link || !guide.visible || !preview.paths.has(link.of)) continue
+      const carve = preview.carves.get(link.of)
+      const pathData = preview.paths.get(link.of)
+      // A free shape is measured in its frame: turned with it in a box turn, else as it was.
+      const rotation = preview.frames.get(link.of) ?? this.layer(link.of)?.frameRotation ?? 0
+      const source = carve ? { carve, contours: [] } : pathData ? { contours: pathDataToContours(pathData), frame: { rotation } } : null
+      const shape = source && constructionShape(source, link.role)
+      if (!shape) continue
+      this.scope.activate()
+      const item = guidePathItem(this.scope, shape, center, rect)
+      if (!item) continue
+      styleGuideItem(this.scope, item, guide.style, u)
+      item.locked = true
+      overlay.addChild(item)
+      drawn.add(guide.id)
+    }
+    return drawn
+  }
+
+  /**
+   * The topmost shape under the pointer or just beside its outline, for the
+   * Guide tool to show its construction lines: null over the empty canvas.
+   */
+  shapeAt(p: Vec, touch: boolean): string | null {
+    const layers = this.host.getDoc().layers
+    const reach = 6 * this.unitsPerPx() * (touch ? 2 : 1)
+    const point = new this.scope.Point(p.x, p.y)
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const layer = layers[i]
+      const item = this.items.get(layer.id)
+      if (!layer.visible || !item) continue
+      // Measured only near its bounds: on a mark of hundreds of layers, a hover stays cheap.
+      const { left, top, right, bottom } = item.bounds
+      if (p.x < left - reach || p.x > right + reach || p.y < top - reach || p.y > bottom + reach) continue
+      if (item.contains(point)) return layer.id
+      const near = item.getNearestLocation(point)
+      if (near && near.distance <= reach) return layer.id
+    }
+    return null
+  }
+
+  /** A shape's drawn bounds in layer space, or null when it draws nothing. */
+  shapeBounds(id: string): Bounds | null {
+    const item = this.items.get(id)
+    if (!item) return null
+    const { left, top, right, bottom } = item.bounds
+    const c = this.center()
+    return { minX: left - c.x, minY: top - c.y, maxX: right - c.x, maxY: bottom - c.y }
+  }
+
   /* ─── Overlay ─── */
 
   private drawOverlay(): void {
@@ -1715,6 +2088,24 @@ export class DirectEditController {
       if (edited.has(id)) continue
       const item = this.items.get(id)
       if (item) outlineItem(this.scope, layer, item)
+    }
+
+    // Guides: the one under the pointer, the selected ones, and those following a reshaped layer.
+    const movingGuides = editing?.guideIds ?? new Set<string>()
+    const shownGuides = this.host.guidesShown() ? (doc.guides ?? []).filter((guide) => guide.visible) : []
+    const hoverGuide = this.hover.kind === 'guide' ? this.hover.guideId : null
+    const selectedGuides = new Set(doc.selectedGuideIds ?? [])
+    const hovered = shownGuides.filter((guide) => guide.id === hoverGuide && !selectedGuides.has(guide.id) && !movingGuides.has(guide.id))
+    this.drawGuideOutlines(layer, hovered, { width: 1, opacity: 0.6 })
+    const chosen = shownGuides.filter((guide) => selectedGuides.has(guide.id) && !movingGuides.has(guide.id))
+    this.drawGuideOutlines(layer, chosen)
+    const following = editing ? this.drawFollowingGuides(layer) : new Set<string>()
+    hideGuides(this.scope, new Set([...movingGuides, ...following]))
+    // A guide's handles show only where a press can reach them: under Select, or under the Guide tool.
+    if (!editing && (this.live === 'all' || this.guidesFirst)) {
+      const handles = this.selectedGuideHandles(doc)
+      const hot = this.hover.kind === 'guide-handle' ? this.hover.handle.id : null
+      if (handles.length) drawGuideHandles(this.scope, layer, handles, this.center(), hot)
     }
 
     if (editing) {
@@ -1742,10 +2133,10 @@ export class DirectEditController {
       }
       if (this.pendingPoint) drawGhostPoint(this.scope, layer, this.pendingPoint.point, this.center())
     }
-    if (this.snapGuides.length) {
+    if (this.snapHints.length) {
       this.scope.activate()
       layer.activate()
-      drawSnapGuides(this.scope, layer, this.snapGuides, this.center())
+      drawSnapHints(this.scope, layer, this.snapHints, this.center())
     }
     this.scope.view.update()
   }
@@ -1788,6 +2179,10 @@ export class DirectEditController {
         this.host.setSelection([])
         return true
       }
+      if (doc.selectedGuideIds?.length) {
+        this.host.selectGuides(null)
+        return true
+      }
       return false
     }
 
@@ -1809,7 +2204,13 @@ export class DirectEditController {
     }
     const step = arrows[event.key]
     if (step && !event.metaKey && !event.ctrlKey) {
-      if (!canvasOwnsArrowKeys() || !doc.selectedLayerIds.length || this.session || this.press) return false
+      if (!canvasOwnsArrowKeys() || this.session || this.press) return false
+      if (!doc.selectedLayerIds.length && doc.selectedGuideIds?.length && !event.altKey) {
+        const amount = event.shiftKey ? 10 : 1
+        this.nudgeGuidesBy({ x: step.x * amount, y: step.y * amount })
+        return true
+      }
+      if (!doc.selectedLayerIds.length) return false
       if (event.altKey) {
         // Left and right turn by 1° (15° with Shift); up and down grow or shrink the longer side by 1 unit (10).
         if (step.x) this.turnBy(step.x * (event.shiftKey ? 15 : 1))
@@ -1908,14 +2309,20 @@ export class DirectEditController {
     hud.announce(`Size ${size}`)
   }
 
-  /** The number a key reached, by the top right corner of the selection's box as it is now drawn, for a moment. */
-  private showKeyChip(chip: string) {
-    const around = selectionBox(this.host.getDoc(), (layer) => this.freePathOf(layer))
-    if (!around) return
-    const corners = (['nw', 'ne', 'se', 'sw'] as const).map((id) => add(boxHandlePoint(around.box, id)!, this.center()))
-    this.placeHud({ x: Math.max(...corners.map((c) => c.x)), y: Math.min(...corners.map((c) => c.y)) })
+  /**
+   * The number a key reached, by the top right corner of the selection's box
+   * as it is now drawn, or by `at` (layer space), for a moment.
+   */
+  private showKeyChip(chip: string, at?: Vec, label: string | null = null) {
+    if (at) this.placeHud(add(at, this.center()))
+    else {
+      const around = selectionBox(this.host.getDoc(), (layer) => this.freePathOf(layer))
+      if (!around) return
+      const corners = (['nw', 'ne', 'se', 'sw'] as const).map((id) => add(boxHandlePoint(around.box, id)!, this.center()))
+      this.placeHud({ x: Math.max(...corners.map((c) => c.x)), y: Math.min(...corners.map((c) => c.y)) })
+    }
     this.readoutShown = false
-    hud.set({ label: null, chip })
+    hud.set({ label, chip })
     this.keyChipLayers = this.host.getDoc().layers
     window.clearTimeout(this.keyChipTimer)
     // Only the chip waits: the edit is already written.
@@ -1931,6 +2338,31 @@ export class DirectEditController {
     // A pointer resting on a handle reads out that handle's number again.
     const resting = this.resting
     if (resting && !this.press && this.live === 'all') this.showRestingReadout(this.hover, resting.p, resting.touch)
+  }
+
+  /**
+   * Arrow keys move the selected guides that are not locked, written at
+   * once, a burst one undo step as a layer nudge is. A guide that followed a
+   * shape no longer does once nudged: the HUD says so.
+   */
+  private nudgeGuidesBy(d: Vec) {
+    const doc = this.host.getDoc()
+    const selected = new Set(doc.selectedGuideIds ?? [])
+    const moving = this.reachableGuides(doc).filter((guide) => selected.has(guide.id))
+    if (!moving.length) return
+    // The burst says so as long as it goes on, though only its first key detached them.
+    const ids = moving.map((guide) => guide.id).join(' ')
+    const last = this.guideBurst
+    const going = last?.ids === ids && Date.now() - last.at < HISTORY_MERGE_MS
+    const detaches = moving.some((guide) => guide.link) || (going && last.detached)
+    this.host.nudgeGuides(d)
+    this.guideBurst = { ids, at: Date.now(), detached: detaches }
+    const first = (this.host.getDoc().guides ?? []).find((guide) => guide.id === moving[0].id)
+    if (!first) return
+    const visible = visibleLayerRect(this.scope)
+    const middle = { x: (visible.minX + visible.maxX) / 2, y: (visible.minY + visible.maxY) / 2 }
+    this.showKeyChip(`${r2(d.x)}, ${r2(d.y)}`, guideAnchor(first.shape, middle), detaches ? 'detached' : null)
+    hud.announce(detaches ? 'Guide moved: it no longer follows its shape' : 'Guide moved')
   }
 
   /** Arrow keys move the selection, and the cuts it carries, at once: every key is written, and a burst is one undo step. */

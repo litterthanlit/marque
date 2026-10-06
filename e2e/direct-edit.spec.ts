@@ -72,7 +72,7 @@ async function startOver(page: Page) {
 const addSlab = (page: Page, name: 'Square' | 'Rounded' | 'Circle' | 'Tall') =>
   page.getByRole('button', { name: `Add ${name.toLowerCase()} slab` }).click()
 
-const pickTool = (page: Page, name: 'Pen' | 'Punch' | 'Channel' | 'Slice') =>
+const pickTool = (page: Page, name: 'Pen' | 'Punch' | 'Channel' | 'Slice' | 'Guide') =>
   page.getByRole('group', { name: 'Tools' }).getByRole('button', { name, exact: true }).click()
 
 /* ─── The spark tray under the canvas ─── */
@@ -981,7 +981,7 @@ test('an empty canvas says what to do first, until there is something on it', as
   await expect(hint).toBeHidden()
 })
 
-test('V, P, X, C and S pick the tools, and one pressed mid-drawing does not throw the drawing away', async ({ page }) => {
+test('V, P, X, C, S and G pick the tools, and one pressed mid-drawing does not throw the drawing away', async ({ page }) => {
   await openVectorMaker(page)
   const activeTool = () => page.evaluate(() => window.__marque.store.getState().ui.activeTool)
   for (const [key, tool] of [
@@ -989,6 +989,7 @@ test('V, P, X, C and S pick the tools, and one pressed mid-drawing does not thro
     ['x', 'punch'],
     ['c', 'channel'],
     ['s', 'slice'],
+    ['g', 'guide'],
     ['v', null],
   ] as const) {
     await page.keyboard.press(key)
@@ -2075,4 +2076,589 @@ test('a link stage 1 wrote opens, and draws the mark stage 1 drew', async ({ pag
   // Opening is no edit: the link stays as it came.
   await page.waitForTimeout(600)
   expect(await page.evaluate(() => window.location.hash)).toBe(STAGE_1_LINK.hash)
+})
+
+/* ─── Guides ─── */
+
+const guides = (page: Page) => page.evaluate(() => window.__marque.guides())
+
+/**
+ * Whether a guide shows across a client point: the most opaque pixel in a
+ * short run across it, and whether that pixel is a neutral grey (red, green
+ * and blue equal), as guides draw.
+ */
+function guideAt(page: Page, p: Point, across: 'x' | 'y') {
+  return page.evaluate(
+    ({ p, across }) => {
+      const canvas = document.querySelector('main canvas') as HTMLCanvasElement
+      const rect = canvas.getBoundingClientRect()
+      const ctx = canvas.getContext('2d')!
+      let best = { alpha: 0, neutral: true }
+      for (let o = -2; o <= 2; o += 0.5) {
+        const cx = p.x + (across === 'x' ? o : 0)
+        const cy = p.y + (across === 'y' ? o : 0)
+        const x = Math.floor(((cx - rect.left) * canvas.width) / rect.width)
+        const y = Math.floor(((cy - rect.top) * canvas.height) / rect.height)
+        const [r, g, b, a] = ctx.getImageData(x, y, 1, 1).data
+        if (a / 255 > best.alpha) best = { alpha: a / 255, neutral: r === g && g === b }
+      }
+      return best
+    },
+    { p, across },
+  )
+}
+
+test("ref 4's frame and 60° guides drawn with the Guide tool show only in the construction look, and only while shown", async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const f = await frame(page)
+  await pickTool(page, 'Guide')
+  const depth = await undoDepth(page)
+
+  // The frame: two flat lines and two upright ones, Shift holding them to 15° steps.
+  await drag(page, f.at(-150, -120), f.at(-20, -116), ['Shift'])
+  await drag(page, f.at(-150, 160), f.at(-20, 163), ['Shift'])
+  await drag(page, f.at(-200, 0), f.at(-196, 120), ['Shift'])
+  await drag(page, f.at(200, 0), f.at(203, 120), ['Shift'])
+  // Two parallel lines falling to the right at 60°, as the bands of ref 4 run; the HUD reads the angle as a turned slab does.
+  await page.mouse.move(f.at(-60, -40).x, f.at(-60, -40).y)
+  await page.keyboard.down('Shift')
+  await page.mouse.down()
+  await page.mouse.move(f.at(-60 + 58, -40 + 104).x, f.at(-60 + 58, -40 + 104).y, { steps: 8 })
+  await expect(hudLabel(page, '60°')).toBeVisible()
+  await page.mouse.up()
+  await page.keyboard.up('Shift')
+  await drag(page, f.at(40, -40), f.at(40 + 62, -40 + 100), ['Shift'])
+
+  const drawn = await guides(page)
+  expect(drawn.map((guide) => guide.shape)).toEqual([
+    { kind: 'line', p: { x: -150, y: -120 }, angle: 0 },
+    { kind: 'line', p: { x: -150, y: 160 }, angle: 0 },
+    { kind: 'line', p: { x: -200, y: 0 }, angle: 90 },
+    { kind: 'line', p: { x: 200, y: 0 }, angle: 90 },
+    { kind: 'line', p: { x: -60, y: -40 }, angle: 60 },
+    { kind: 'line', p: { x: 40, y: -40 }, angle: 60 },
+  ])
+  expect(await undoDepth(page)).toBe(depth + 6)
+  // The tool stays on, and the mark has no ink.
+  expect(await page.evaluate(() => window.__marque.store.getState().ui.activeTool)).toBe('guide')
+  expect(await page.evaluate(() => window.__marque.mark().compoundPathData)).toBe('')
+
+  // Back to selecting, nothing selected, the pointer away: what remains on the canvas is the guides.
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+  await pointerAway(page, f)
+  const flat = f.at(-260, -120)
+  const upright = f.at(200, 220)
+  await expect.poll(() => guideAt(page, flat, 'y')).toMatchObject({ neutral: true })
+  expect((await guideAt(page, flat, 'y')).alpha).toBeGreaterThan(0.2)
+  expect((await guideAt(page, upright, 'x')).alpha).toBeGreaterThan(0.2)
+
+  // The final look draws the ink alone.
+  await page.keyboard.press('f')
+  await expect.poll(async () => (await guideAt(page, flat, 'y')).alpha).toBeLessThan(0.05)
+  await page.keyboard.press('f')
+  await expect.poll(async () => (await guideAt(page, flat, 'y')).alpha).toBeGreaterThan(0.2)
+
+  // Cmd+; hides them and shows them again: a view setting, so no undo step.
+  await page.keyboard.press('ControlOrMeta+;')
+  await expect.poll(async () => (await guideAt(page, flat, 'y')).alpha).toBeLessThan(0.05)
+  expect((await guideAt(page, upright, 'x')).alpha).toBeLessThan(0.05)
+  await expect(page.getByRole('button', { name: 'Show guides' })).toHaveAttribute('aria-pressed', 'false')
+  await page.keyboard.press('ControlOrMeta+;')
+  await expect.poll(async () => (await guideAt(page, flat, 'y')).alpha).toBeGreaterThan(0.2)
+  await expect(page.getByRole('button', { name: 'Show guides' })).toHaveAttribute('aria-pressed', 'true')
+  expect(await undoDepth(page)).toBe(depth + 6)
+  expect(await guides(page)).toEqual(drawn)
+
+  // A selected guide leaves the selection as guides leave the canvas: nothing acts on a guide unseen.
+  await click(page, flat)
+  await expect(selectionBar(page)).toBeVisible()
+  await page.keyboard.press('ControlOrMeta+;')
+  await expect(selectionBar(page)).toBeHidden()
+  await page.keyboard.press('Delete')
+  expect(await guides(page)).toEqual(drawn)
+
+  // The drawer's switch is the same one: while hidden its rows pick nothing, and turning it on shows them on the canvas.
+  const drawer = await openLayers(page)
+  const show = drawer.getByRole('switch', { name: 'Show' })
+  await expect(drawer.getByRole('heading', { name: 'Guides · 6' })).toBeVisible()
+  await expect(show).toHaveAttribute('aria-checked', 'false')
+  const row = drawer.getByRole('listitem').filter({ hasText: /^OnLine/ }).first().getByRole('button', { name: /^Line/ })
+  await expect(row).toBeDisabled()
+  await show.click()
+  await expect(page.getByRole('button', { name: 'Show guides' })).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(async () => (await guideAt(page, flat, 'y')).alpha).toBeGreaterThan(0.2)
+  await expect(row).toBeEnabled()
+  await show.click()
+  await expect(page.getByRole('button', { name: 'Show guides' })).toHaveAttribute('aria-pressed', 'false')
+  await expect.poll(async () => (await guideAt(page, flat, 'y')).alpha).toBeLessThan(0.05)
+  expect(await guides(page)).toEqual(drawn)
+  expect(await undoDepth(page)).toBe(depth + 6)
+})
+
+test('mark() and Copy SVG are the same with guides as without them', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  await openVectorMaker(page)
+  await startOver(page)
+  await addSlab(page, 'Rounded')
+  const f = await frame(page)
+  await pickTool(page, 'Punch')
+  await drag(page, f.at(0, -90), f.at(40, -90))
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+  await pointerAway(page, f)
+
+  const copySvg = async () => {
+    await page.getByRole('button', { name: 'Export', exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: 'Export' })
+    await dialog.getByRole('button', { name: 'Copy SVG' }).click()
+    await expect(dialog.getByRole('button', { name: 'SVG copied to clipboard' })).toBeVisible()
+    const svg = await page.evaluate(() => navigator.clipboard.readText())
+    await page.keyboard.press('Escape')
+    await expect(dialog).toBeHidden()
+    return svg
+  }
+  const mark = () => page.evaluate(() => window.__marque.mark())
+  const before = { svg: await copySvg(), mark: await mark() }
+
+  // Every construction line of the slab, and a circle and a line of the Guide tool's.
+  await click(page, f.at(-120, 100))
+  await selectionBar(page).getByRole('button', { name: 'Guides ▸' }).click()
+  await page.getByRole('group', { name: 'Guides' }).getByRole('button', { name: 'Construction' }).click()
+  await pickTool(page, 'Guide')
+  await drag(page, f.at(-100, 230), f.at(-60, 230), ['Alt'])
+  await drag(page, f.at(-250, -230), f.at(250, -100))
+  await page.keyboard.press('Escape')
+  await pointerAway(page, f)
+  expect((await guides(page)).length).toBeGreaterThan(8)
+
+  expect(await mark()).toEqual(before.mark)
+  expect(await copySvg()).toBe(before.svg)
+})
+
+test("a circle slab's construction guides follow a resize of the slab, and undo puts them back", async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  await addSlab(page, 'Circle')
+  await selectionBar(page).getByRole('button', { name: 'Guides ▸' }).click()
+  await page.getByRole('group', { name: 'Guides' }).getByRole('button', { name: 'Construction' }).click()
+  const added = await guides(page)
+  expect(added.map((guide) => guide.link?.role)).toEqual(['centre-x', 'centre-y', 'top', 'right', 'bottom', 'left', 'circumcircle'])
+  const rim = () => guides(page).then((list) => list.find((guide) => guide.link?.role === 'circumcircle')!.shape)
+  expect(await rim()).toEqual({ kind: 'circle', c: { x: 0, y: 0 }, r: 200 })
+  await expect(selectionBar(page)).toContainText('7 guides')
+
+  // Select the slab again and pull a corner out with Shift: the slab grows evenly, still a circle, and its guides with it.
+  const f = await frame(page)
+  await click(page, f.at(0, 60))
+  const depth = await undoDepth(page)
+  const corner = await handle(page, 'se')
+  await drag(page, corner, { x: corner.x + 40 * f.unit, y: corner.y + 40 * f.unit }, ['Shift'])
+  const slab = (await carves(page))[0] as SlabSpec
+  const radius = slab.width / 2
+  expect(slab.radius).toBeCloseTo(radius, 6)
+  expect(radius).toBeGreaterThan(210)
+  expect(await rim()).toEqual({ kind: 'circle', c: slab.center, r: radius })
+  const right = (await guides(page)).find((guide) => guide.link?.role === 'right')!.shape
+  expect(right).toEqual({ kind: 'line', p: { x: slab.center.x + radius, y: slab.center.y }, angle: 90 })
+  expect(await undoDepth(page)).toBe(depth + 1)
+
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(rim).toEqual({ kind: 'circle', c: { x: 0, y: 0 }, r: 200 })
+  expect(await guides(page)).toEqual(added)
+})
+
+test('arrow keys nudge a selected guide, a burst one undo step, and a construction guide detaches as the HUD says', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  await addSlab(page, 'Circle')
+  await selectionBar(page).getByRole('button', { name: 'Guides ▸' }).click()
+  await page.getByRole('group', { name: 'Guides' }).getByRole('button', { name: 'Construction' }).click()
+  const added = await guides(page)
+  const top = added.find((guide) => guide.link?.role === 'top')!
+  expect(top.shape).toEqual({ kind: 'line', p: { x: 0, y: -200 }, angle: 0 })
+
+  // Pick the top line alone, away from the circle, and nudge it: 3 down, then 10 right with Shift.
+  const f = await frame(page)
+  await click(page, f.at(150, -200))
+  await expect(selectionBar(page)).toContainText('Top')
+  const depth = await undoDepth(page)
+  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowDown')
+  await expect(hudLabel(page, 'detached')).toBeVisible()
+  await page.keyboard.press('Shift+ArrowRight')
+  const moved = (await guides(page)).find((guide) => guide.id === top.id)!
+  expect(moved.shape).toEqual({ kind: 'line', p: { x: 10, y: -197 }, angle: 0 })
+  expect(moved.link).toBeUndefined()
+  expect(await undoDepth(page)).toBe(depth + 1)
+
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(() => guides(page)).toEqual(added)
+})
+
+test('the pen in Guide mode keeps an open path as a guide, and in Shape mode still closes a shape', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const f = await frame(page)
+  await pickTool(page, 'Pen')
+  await page.getByRole('group', { name: 'Pen draws' }).getByRole('button', { name: 'Guide' }).click()
+  for (const [x, y] of [
+    [-150, -100],
+    [0, 60],
+    [150, -100],
+  ]) {
+    await click(page, f.at(x, y))
+  }
+  await page.keyboard.press('Enter')
+  const [guide] = await guides(page)
+  expect(guide.shape.kind).toBe('path')
+  if (guide.shape.kind === 'path') {
+    expect(guide.shape.contour.closed).toBe(false)
+    expect(guide.shape.contour.segments.map((segment) => segment.point)).toEqual([
+      { x: -150, y: -100 },
+      { x: 0, y: 60 },
+      { x: 150, y: -100 },
+    ])
+  }
+  expect(await layers(page)).toHaveLength(0)
+  expect(await page.evaluate(() => window.__marque.store.getState().ui.activeTool)).toBeNull()
+  await expect(selectionBar(page)).toContainText('Guide · path')
+
+  // Back in Shape mode, the pen closes a filled shape as before.
+  await page.keyboard.press('Escape')
+  await pickTool(page, 'Pen')
+  await page.getByRole('group', { name: 'Pen draws' }).getByRole('button', { name: 'Shape' }).click()
+  for (const [x, y] of [
+    [-150, 100],
+    [150, 100],
+    [0, 200],
+  ]) {
+    await click(page, f.at(x, y))
+  }
+  await page.keyboard.press('Enter')
+  expect(await layers(page)).toHaveLength(1)
+  expect(await guides(page)).toHaveLength(1)
+})
+
+test('a guide along a slab edge does not take the edge bend under Select, and the Guide tool reaches it first', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  await addSlab(page, 'Square')
+  const f = await frame(page)
+  // Snapped onto the slab's corner, then flat with Shift: the guide runs along the top edge.
+  await pickTool(page, 'Guide')
+  await drag(page, f.at(-187, -188), f.at(-60, -186), ['Shift'])
+  const [guide] = await guides(page)
+  expect(guide.shape).toEqual({ kind: 'line', p: { x: -190, y: -190 }, angle: 0 })
+
+  await page.keyboard.press('v')
+  await page.keyboard.press('Escape')
+  const depth = await undoDepth(page)
+  const grabbed = f.at(-190 + 380 * 0.3, -190)
+  await drag(page, { x: grabbed.x, y: grabbed.y - 3 }, { x: grabbed.x, y: grabbed.y - 43 })
+  expect(((await carves(page))[0] as SlabSpec).sides?.top).toBeTruthy()
+  expect(await guides(page)).toEqual([guide])
+  expect(await undoDepth(page)).toBe(depth + 1)
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(async () => ((await carves(page))[0] as SlabSpec).sides ?? null).toBeNull()
+
+  // Under the Guide tool the same press takes the guide: a click selects it, and then a drag moves it down.
+  await pickTool(page, 'Guide')
+  await click(page, { x: grabbed.x, y: grabbed.y - 2 })
+  expect(await page.evaluate(() => window.__marque.store.getState().illustrator.selectedGuideIds)).toEqual([guide.id])
+  expect(((await carves(page))[0] as SlabSpec).sides ?? null).toBeNull()
+  await drag(page, { x: grabbed.x, y: grabbed.y - 2 }, { x: grabbed.x, y: grabbed.y + 50 * f.unit }, ['ControlOrMeta'])
+  const [moved] = await guides(page)
+  expect(moved.shape.kind).toBe('line')
+  if (moved.shape.kind === 'line') expect(Math.abs(moved.shape.p.y - (-140 + 2 / f.unit))).toBeLessThan(1)
+  expect(((await carves(page))[0] as SlabSpec).sides ?? null).toBeNull()
+})
+
+test('under the Guide tool a new line starts on a frame corner, where a drag from a guide not selected draws', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const f = await frame(page)
+  await pickTool(page, 'Guide')
+  // A frame line, and an upright through its left end.
+  await drag(page, f.at(-200, 150), f.at(-100, 152), ['Shift'])
+  await drag(page, f.at(-150, 200), f.at(-148, 100), ['Shift'])
+  const frameLines = await guides(page)
+  // What the tool draws is not selected, so no knob sits in the way of the next line.
+  expect(await page.evaluate(() => window.__marque.store.getState().illustrator.selectedGuideIds ?? [])).toEqual([])
+
+  // From just beside the corner, up and to the right (120°, as the editor reads a line): the line starts where the two cross.
+  const corner = f.at(-149, 151)
+  await drag(page, corner, { x: corner.x + 50 * f.unit, y: corner.y - 87 * f.unit }, ['Shift'])
+  const drawn = await guides(page)
+  expect(drawn.slice(0, 2)).toEqual(frameLines)
+  expect(drawn[2].shape).toEqual({ kind: 'line', p: { x: -150, y: 150 }, angle: 120 })
+
+  // A click on a guide selects it; a drag from it, now selected, moves it.
+  await click(page, f.at(-60, 150))
+  expect(await page.evaluate(() => window.__marque.store.getState().illustrator.selectedGuideIds)).toEqual([frameLines[0].id])
+  await drag(page, f.at(-60, 150), f.at(-60, 190), ['ControlOrMeta'])
+  const after = await guides(page)
+  expect(after).toHaveLength(3)
+  expect(after[0].shape.kind === 'line' && after[0].shape.p.y).toBeCloseTo(190, 0)
+})
+
+test.describe('on a touch screen', () => {
+  test.use({ hasTouch: true })
+
+  test("under the Guide tool, a tap on a shape pins its ghosts, a second tap on one adds it, even off the shape, and the options row adds them all", async ({ page }) => {
+    await openVectorMaker(page, 'construction')
+    await startOver(page)
+    await addSlab(page, 'Square')
+    const f = await frame(page)
+    await pickTool(page, 'Guide')
+    const addAll = page.getByRole('button', { name: /^Add all/ })
+    const tap = (p: Point) => page.touchscreen.tap(p.x, p.y)
+    const style = page.getByRole('group', { name: 'Guide style' })
+    const styleAt = await style.boundingBox()
+
+    // The first tap, inside the square: nothing is added, but its ghosts stay once the finger lifts.
+    await tap(f.at(60, 40))
+    expect(await guides(page)).toEqual([])
+    await expect(addAll).toBeVisible()
+    // On a phone the button's place was kept for it: the Style control beside it has not moved.
+    if (page.viewportSize()!.width < 768) expect(await style.boundingBox()).toEqual(styleAt)
+    const count = Number((await addAll.textContent())!.replace(/\D/g, ''))
+    expect(count).toBeGreaterThan(6)
+
+    // A tap on the circumcircle, off the square: that one is added, and the rest stay pinned.
+    const r = Math.hypot(190, 190)
+    await tap(f.at(r * Math.cos((25 * Math.PI) / 180), r * Math.sin((25 * Math.PI) / 180)))
+    const [circumcircle] = await guides(page)
+    expect(circumcircle.link?.role).toBe('circumcircle')
+    await expect(addAll).toHaveText(`Add all ${count - 1}`)
+
+    // The options row adds the rest, all following the square.
+    await addAll.click()
+    const slabId = (await layers(page))[0].id
+    const all = await guides(page)
+    expect(all).toHaveLength(count)
+    expect(all.every((guide) => guide.link?.of === slabId)).toBe(true)
+    await expect(addAll).toBeHidden()
+  })
+
+  test('under the Guide tool, a tap off every shape and ghost lets pinned ghosts go, and adds nothing', async ({ page }) => {
+    await openVectorMaker(page, 'construction')
+    await startOver(page)
+    await addSlab(page, 'Square')
+    const f = await frame(page)
+    await pickTool(page, 'Guide')
+    const addAll = page.getByRole('button', { name: /^Add all/ })
+    await page.touchscreen.tap(f.at(60, 40).x, f.at(60, 40).y)
+    await expect(addAll).toBeVisible()
+    await page.touchscreen.tap(f.at(-280, 280).x, f.at(-280, 280).y)
+    await expect(addAll).toBeHidden()
+    expect(await guides(page)).toEqual([])
+  })
+})
+
+test('a guide deleted in the middle of its drag stays deleted when the drag ends', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const f = await frame(page)
+  await pickTool(page, 'Guide')
+  await drag(page, f.at(-200, 100), f.at(-100, 102), ['Shift'])
+  await page.keyboard.press('v')
+  await click(page, f.at(-50, 100))
+  const depth = await undoDepth(page)
+  // Past a double-click's reach in time, so the next press starts a drag.
+  await page.waitForTimeout(400)
+
+  await page.mouse.move(f.at(-50, 100).x, f.at(-50, 100).y)
+  await page.mouse.down()
+  await page.mouse.move(f.at(-50, 130).x, f.at(-50, 130).y, { steps: 5 })
+  // The drag is live: its offset shows by the pointer.
+  await expect(hudLabel(page, '0, 30')).toBeVisible()
+  await page.keyboard.press('Delete')
+  await page.mouse.move(f.at(-50, 160).x, f.at(-50, 160).y, { steps: 5 })
+  await page.mouse.up()
+
+  expect(await guides(page)).toEqual([])
+  expect(await undoDepth(page)).toBe(depth + 1)
+})
+
+test('a guide drag ends without a move when guides leave the canvas in its middle, and nothing unseen stays selected', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const f = await frame(page)
+  await pickTool(page, 'Guide')
+  await drag(page, f.at(-200, 100), f.at(-100, 102), ['Shift'])
+  await page.keyboard.press('v')
+  const before = await guides(page)
+  const depth = await undoDepth(page)
+  const selected = () => page.evaluate(() => window.__marque.store.getState().illustrator.selectedGuideIds ?? [])
+
+  for (const key of ['f', 'ControlOrMeta+;']) {
+    // Past a double-click's reach in time, so the press only picks the guide.
+    await page.waitForTimeout(400)
+    await click(page, f.at(-50, 100))
+    expect(await selected(), key).toEqual([before[0].id])
+    // Past a double-click's reach in time, so the next press starts a drag.
+    await page.waitForTimeout(400)
+    await page.mouse.move(f.at(-50, 100).x, f.at(-50, 100).y)
+    await page.mouse.down()
+    await page.mouse.move(f.at(-50, 130).x, f.at(-50, 130).y, { steps: 5 })
+    await expect(hudLabel(page, '0, 30')).toBeVisible()
+    await page.keyboard.press(key)
+    await page.mouse.move(f.at(-50, 140).x, f.at(-50, 140).y, { steps: 3 })
+    await page.mouse.up()
+
+    // The guide stays where it was, unselected, and the bar offers nothing for it.
+    expect(await guides(page)).toEqual(before)
+    expect(await undoDepth(page)).toBe(depth)
+    expect(await selected()).toEqual([])
+    await expect(page.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0)
+    await page.keyboard.press(key)
+  }
+})
+
+test('another guide restyled in the middle of a drag keeps its style, and the dragged guide lands', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const f = await frame(page)
+  await pickTool(page, 'Guide')
+  await drag(page, f.at(-200, 100), f.at(-100, 102), ['Shift'])
+  await drag(page, f.at(-200, -100), f.at(-100, -98), ['Shift'])
+  const [dragged, other] = await guides(page)
+  await page.keyboard.press('v')
+  await click(page, f.at(-50, 100))
+  await page.waitForTimeout(400)
+
+  await page.mouse.move(f.at(-50, 100).x, f.at(-50, 100).y)
+  await page.mouse.down()
+  await page.mouse.move(f.at(-50, 130).x, f.at(-50, 130).y, { steps: 5 })
+  await expect(hudLabel(page, '0, 30')).toBeVisible()
+  await page.evaluate((id) => window.__marque.store.getState().setGuidesStyle([id], 'dotted'), other.id)
+  await page.mouse.move(f.at(-50, 140).x, f.at(-50, 140).y, { steps: 5 })
+  await page.mouse.up()
+
+  const after = await guides(page)
+  expect(after.find((guide) => guide.id === other.id)).toEqual({ ...other, style: 'dotted' })
+  const moved = after.find((guide) => guide.id === dragged.id)!
+  expect(moved.shape.kind === 'line' && moved.shape.p.y).toBeCloseTo(140, 0)
+  expect(await page.evaluate(() => window.__marque.store.getState().vectorUndoStack.slice(-2).map((step) => step.label))).toEqual(['Guide style', 'Move guide'])
+})
+
+test('a canvas with only guides keeps them in the link, can start over, and shows no empty hint', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const f = await frame(page)
+  await pickTool(page, 'Guide')
+  await drag(page, f.at(-200, 100), f.at(-100, 102), ['Shift'])
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('note').filter({ hasText: 'Add a slab' })).toBeHidden()
+  const drawn = await guides(page)
+  await expect.poll(() => page.evaluate(() => window.location.hash.length)).toBeGreaterThan(0)
+
+  await page.reload()
+  await expect(page.locator('main canvas')).toBeVisible()
+  await expect.poll(() => guides(page)).toEqual(drawn)
+
+  const drawer = await openLayers(page)
+  await expect(drawer.getByRole('button', { name: 'Start over' })).toBeEnabled()
+  await drawer.getByRole('button', { name: 'Start over' }).click()
+  expect(await guides(page)).toEqual([])
+})
+
+test('the Guide tool draws circles from a switch as well as with Alt, to whole units, and shows what it draws in the final look', async ({ page }) => {
+  // Opens on the final look: picking the tool puts guides on the canvas.
+  await openVectorMaker(page)
+  await startOver(page)
+  const f = await frame(page)
+  await pickTool(page, 'Guide')
+  expect(await page.evaluate(() => window.__marque.store.getState().ui.look)).toBe('construction')
+
+  await page.getByRole('group', { name: 'Guide draws' }).getByRole('button', { name: 'Circle' }).click()
+  await drag(page, f.at(100, 100), f.at(150.4, 100))
+  // Alt draws the other: a line.
+  await drag(page, f.at(-200, -100), f.at(-100, -98), ['Alt', 'Shift'])
+  const [circle, line] = await guides(page)
+  expect(circle.shape.kind).toBe('circle')
+  if (circle.shape.kind === 'circle') {
+    expect(circle.shape.c).toEqual({ x: 100, y: 100 })
+    expect(Number.isInteger(circle.shape.r)).toBe(true)
+    expect(Math.abs(circle.shape.r - 50)).toBeLessThanOrEqual(1)
+  }
+  expect(line.shape).toEqual({ kind: 'line', p: { x: -200, y: -100 }, angle: 0 })
+})
+
+test("under the Guide tool, a shape's ghosts can be followed off it and picked there, and Shift-click on it adds them all", async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  await addSlab(page, 'Square')
+  const f = await frame(page)
+  await pickTool(page, 'Guide')
+
+  // Into the square, out through its corner and round its circumcircle, off the square.
+  const r = Math.hypot(190, 190)
+  const path: Point[] = [f.at(60, 40), f.at(150, 150), f.at(185, 185)]
+  for (let deg = 45; deg >= 25; deg -= 2) path.push(f.at(r * Math.cos((deg * Math.PI) / 180), r * Math.sin((deg * Math.PI) / 180)))
+  for (const p of path) await page.mouse.move(p.x, p.y, { steps: 3 })
+  const last = path.at(-1)!
+  await click(page, last)
+  const [circumcircle] = await guides(page)
+  expect(circumcircle.link?.role).toBe('circumcircle')
+
+  // Shift-click inside the square, away from every ghost: the rest are added, all following the square.
+  const slabId = (await layers(page))[0].id
+  await page.mouse.move(f.at(60, 40).x, f.at(60, 40).y)
+  await page.keyboard.down('Shift')
+  await click(page, f.at(60, 40))
+  await page.keyboard.up('Shift')
+  const all = await guides(page)
+  expect(all.length).toBeGreaterThan(6)
+  expect(all.every((guide) => guide.link?.of === slabId)).toBe(true)
+  expect(new Set(all.map((guide) => guide.link?.role)).size).toBe(all.length)
+})
+
+test("under the Guide tool, a line ghost being followed stays past its shape's circumcircle", async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  await addSlab(page, 'Square')
+  const f = await frame(page)
+  await pickTool(page, 'Guide')
+
+  // Along the square's flat centre line, out across its circumcircle (r about 269), which wins the tie where they cross.
+  for (let x = 100; x <= 290; x += 5) await page.mouse.move(f.at(x, 0.3).x, f.at(x, 0.3).y, { steps: 2 })
+  await expect(page.locator('main').getByText(/^Centre ↔ · click adds/)).toBeVisible()
+  await click(page, f.at(290, 0.3))
+  const [added] = await guides(page)
+  expect(added.link).toEqual({ kind: 'construction', of: (await layers(page))[0].id, role: 'centre-y' })
+})
+
+test("under the Guide tool, the ghost being followed stays across another shape, and the HUD names it", async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  await addSlab(page, 'Square')
+  const f = await frame(page)
+  // A round punch beside the square's middle, the square's flat centre line running through it.
+  await pickTool(page, 'Punch')
+  await drag(page, f.at(100, 30), f.at(150, 30))
+  await page.keyboard.press('Escape')
+  const punch = (await carves(page)).at(-1) as PunchSpec
+  expect(punch.kind).toBe('punch')
+  await pickTool(page, 'Guide')
+
+  // On the square's flat centre line, the HUD names it and says what a click does.
+  await page.mouse.move(f.at(-150, 0).x, f.at(-150, 0).y, { steps: 3 })
+  await expect(page.locator('main').getByText(/^Centre ↔ · click adds · Shift-click adds all \d+$/)).toBeVisible()
+
+  // Along it, over the punch: the square's line is still the one under the pointer.
+  const over = { x: punch.center.x - 20, y: 0 }
+  for (let x = -140; x <= over.x; x += 10) await page.mouse.move(f.at(x, 0).x, f.at(x, 0).y, { steps: 2 })
+  await expect(page.locator('main').getByText(/^Centre ↔ · click adds/)).toBeVisible()
+  await click(page, f.at(over.x, over.y))
+  const [added] = await guides(page)
+  expect(added.link).toEqual({ kind: 'construction', of: (await layers(page))[0].id, role: 'centre-y' })
+
+  // Off the line, the punch under the pointer shows its own: its upright centre line.
+  const upright = f.at(punch.center.x, punch.center.y + 20)
+  await page.mouse.move(upright.x, upright.y, { steps: 4 })
+  await expect(page.locator('main').getByText(/^Centre ↕ · click adds/)).toBeVisible()
+  await click(page, upright)
+  expect((await guides(page)).at(-1)?.link).toEqual({ kind: 'construction', of: (await layers(page)).at(-1)!.id, role: 'centre-x' })
 })

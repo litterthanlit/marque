@@ -137,6 +137,7 @@ export type VectorSelectionTarget =
   | { type: 'object'; objectId: string }
   | { type: 'anchor'; objectId: string; contourIndex: number; segmentIndex: number }
   | { type: 'handle'; objectId: string; contourIndex: number; segmentIndex: number; handle: 'in' | 'out' }
+  | { type: 'guide'; guideId: string }
 
 export interface VectorSelection {
   targets: VectorSelectionTarget[]

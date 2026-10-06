@@ -1,4 +1,5 @@
 import type { CarveSpec } from '../carve/spec.ts'
+import type { Guide } from '../vector/types.ts'
 
 export type IllustratorMode = 'object' | 'points'
 
@@ -67,6 +68,10 @@ export interface IllustratorDocument {
   mode: IllustratorMode
   /** The document's groups, when it has any. */
   groups?: IllustratorGroup[]
+  /** The document's guides, the very same array. Missing reads as none. */
+  guides?: Guide[]
+  /** The selected guides. A selection holds guides or layers, never both. */
+  selectedGuideIds?: string[]
 }
 
 export interface MarkData {

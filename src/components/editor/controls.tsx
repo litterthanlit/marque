@@ -36,7 +36,8 @@ export function EditorButton({ pressed, danger, className, children, ...props }:
 
 interface SegmentedProps<T extends string | number> {
   label: string
-  options: ReadonlyArray<{ value: T; label: string }>
+  /** Each option, with a tooltip when it has a shortcut or a note. */
+  options: ReadonlyArray<{ value: T; label: string; title?: string }>
   value: T
   onChange: (value: T) => void
   className?: string
@@ -50,6 +51,7 @@ export function Segmented<T extends string | number>({ label, options, value, on
           key={option.value}
           type="button"
           aria-pressed={value === option.value}
+          title={option.title}
           onClick={() => onChange(option.value)}
           className={cn(
             'h-7 flex-1 rounded-md px-2.5 text-xs transition-colors',
@@ -72,7 +74,7 @@ interface SwitchButtonProps {
   className?: string
 }
 
-/** Pink like the snap guides and the weak-spot marks it turns on: the switch reads as part of the same system. */
+/** Pink like the snap hints and the weak-spot marks it turns on: the switch reads as part of the same system. */
 export function SwitchButton({ label, checked, onChange, title, className }: SwitchButtonProps) {
   return (
     <button

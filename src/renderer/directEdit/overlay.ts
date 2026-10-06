@@ -1,10 +1,10 @@
 import type { Cubic, Vec } from '../../engine/path/bezier.ts'
 import type { EditableShape } from '../../engine/path/editPath.ts'
 import type { CarveHandle } from '../../engine/carve/edit.ts'
-import type { SnapGuide } from '../../engine/snap/snapping.ts'
+import type { SnapHint } from '../../engine/snap/snapping.ts'
 
 export const SELECTION_COLOR = '#3b82f6'
-export const GUIDE_COLOR = '#ec4899'
+export const HINT_COLOR = '#ec4899'
 
 // Layer units per CSS pixel: overlay marks keep a constant on-screen size
 // whatever the view zoom.
@@ -30,8 +30,12 @@ export function resetOverlay(scope: paper.PaperScope): paper.Layer {
   return layer
 }
 
-interface StrokeStyle {
+export interface StrokeStyle {
   dashed?: boolean
+  /** A dash pattern of its own, in CSS pixels, in place of `dashed`'s. */
+  dash?: number[]
+  /** Round ends, for a dotted line. */
+  round?: boolean
   width?: number
   color?: string
   opacity?: number
@@ -41,7 +45,8 @@ function styleStroke(scope: paper.PaperScope, item: paper.Item, style: StrokeSty
   item.fillColor = null
   item.strokeColor = new scope.Color(style.color ?? SELECTION_COLOR)
   item.strokeWidth = (style.width ?? 1.5) * u
-  item.dashArray = style.dashed ? [4 * u, 4 * u] : []
+  item.dashArray = style.dash ? style.dash.map((length) => length * u) : style.dashed ? [4 * u, 4 * u] : []
+  if (style.round) item.strokeCap = 'round'
   item.opacity = style.opacity ?? 1
   item.locked = true
 }
@@ -50,7 +55,7 @@ function styleStroke(scope: paper.PaperScope, item: paper.Item, style: StrokeSty
  * A white halo under the stroke keeps outlines readable where an edge runs
  * along the black-on-white boundary of the ink.
  */
-function addWithHalo(scope: paper.PaperScope, layer: paper.Layer, item: paper.Item, style: StrokeStyle) {
+export function addWithHalo(scope: paper.PaperScope, layer: paper.Layer, item: paper.Item, style: StrokeStyle) {
   const halo = item.clone({ insert: false })
   layer.addChild(halo)
   styleStroke(scope, halo, { width: (style.width ?? 1.5) + 2, color: '#ffffff', opacity: 0.85 })
@@ -109,13 +114,13 @@ export function drawGhostPoint(scope: paper.PaperScope, layer: paper.Layer, poin
   layer.addChild(square)
 }
 
-/** Snap guides: pink alignment lines, and a cross where the geometry landed. */
-export function drawSnapGuides(scope: paper.PaperScope, layer: paper.Layer, guides: SnapGuide[], center: Vec) {
-  const pink = new scope.Color(GUIDE_COLOR)
+/** Snap hints: pink alignment lines, and a cross where the geometry landed. */
+export function drawSnapHints(scope: paper.PaperScope, layer: paper.Layer, hints: SnapHint[], center: Vec) {
+  const pink = new scope.Color(HINT_COLOR)
   const at = (v: Vec) => new scope.Point(v.x + center.x, v.y + center.y)
-  for (const guide of guides) {
-    if (guide.kind === 'line') {
-      const line = new scope.Path.Line({ from: at(guide.a), to: at(guide.b), insert: false })
+  for (const hint of hints) {
+    if (hint.kind === 'line') {
+      const line = new scope.Path.Line({ from: at(hint.a), to: at(hint.b), insert: false })
       line.strokeColor = pink
       line.strokeWidth = u
       line.dashArray = [3 * u, 3 * u]
@@ -123,7 +128,7 @@ export function drawSnapGuides(scope: paper.PaperScope, layer: paper.Layer, guid
       layer.addChild(line)
       continue
     }
-    const p = at(guide.p)
+    const p = at(hint.p)
     const r = 4 * u
     for (const [dx, dy] of [
       [1, 1],
@@ -286,6 +291,49 @@ export function drawCarveHandles(
       shape.fillColor = white
     }
     shape.strokeColor = handle.kind === 'radius' ? white : blue
+    shape.strokeWidth = 1.5 * u
+    shape.locked = true
+    layer.addChild(shape)
+  }
+}
+
+/**
+ * The selected guide's handles: a line's turning knob on a stem from its
+ * pivot, or a circle's four radius squares, styled as a recipe's are.
+ */
+export function drawGuideHandles(
+  scope: paper.PaperScope,
+  layer: paper.Layer,
+  handles: ReadonlyArray<{ id: string; at: Vec; pivot: Vec }>,
+  center: Vec,
+  hoverId: string | null,
+) {
+  const at = (v: Vec) => new scope.Point(v.x + center.x, v.y + center.y)
+  const blue = new scope.Color(SELECTION_COLOR)
+  const white = new scope.Color('#ffffff')
+  for (const handle of handles) {
+    const hot = handle.id === hoverId
+    let shape: paper.Path
+    if (handle.id === 'rotate') {
+      const stem = new scope.Path.Line(at(handle.pivot), at(handle.at))
+      stem.strokeColor = blue
+      stem.strokeWidth = u
+      stem.locked = true
+      layer.addChild(stem)
+      const pivot = new scope.Path.Circle(at(handle.pivot), 2.5 * u)
+      pivot.fillColor = blue
+      pivot.locked = true
+      layer.addChild(pivot)
+      shape = new scope.Path.Circle(at(handle.at), (hot ? 5 : 4) * u)
+    } else {
+      const size = (hot ? 9.5 : 8) * u
+      const p = at(handle.at)
+      shape = new scope.Path.Rectangle({ point: [p.x - size / 2, p.y - size / 2], size: [size, size] })
+      shape.shadowColor = new scope.Color(0, 0, 0, 0.28)
+      shape.shadowBlur = 3 * scope.view.pixelRatio
+    }
+    shape.fillColor = white
+    shape.strokeColor = blue
     shape.strokeWidth = 1.5 * u
     shape.locked = true
     layer.addChild(shape)

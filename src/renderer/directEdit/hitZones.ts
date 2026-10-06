@@ -14,6 +14,8 @@ import { locateCarveGrab, type CarveGrab } from '../../engine/carve/edit.ts'
 import type { HandleSet } from './handleSet.ts'
 import { carveThickness } from '../../engine/carve/spec.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
+import type { Guide } from '../../engine/vector/types.ts'
+import { nearestGuide, nearestGuideHandle, type GuideHandle } from './guideEdit.ts'
 
 /** What is under the pointer, in priority order of the cases below. */
 export type Zone =
@@ -32,6 +34,10 @@ export type Zone =
   | { kind: 'body'; layerId: string }
   /** Inside a box's frame, off every shape: a drag moves the whole selection. */
   | { kind: 'frame'; set: HandleSet }
+  /** A handle of the selected guide: a line's knob, a circle's radius square. */
+  | { kind: 'guide-handle'; handle: GuideHandle }
+  /** A guide, at `point` (layer space): the point of it nearest the pointer. */
+  | { kind: 'guide'; guideId: string; point: Vec }
   | { kind: 'empty' }
 
 export const EMPTY_ZONE: Zone = { kind: 'empty' }
@@ -57,6 +63,12 @@ export interface HitContext {
   edges: boolean
   /** Any free layer's contours with its transform baked in (cached by the caller). */
   freePathOf(layer: IllustratorLayer): EditableShape | null
+  /** The guides a press can reach: shown, visible and unlocked. Missing is none. */
+  guides?: readonly Guide[]
+  /** The handles of the selected guide. */
+  guideHandles?: readonly GuideHandle[]
+  /** Under the Guide tool, guides are the first zone; under Select, the last. */
+  guidesFirst?: boolean
 }
 
 function px(ctx: HitContext, value: number): number {
@@ -373,13 +385,32 @@ function findBody(ctx: HitContext, p: Vec, onInk: boolean): Zone | null {
   return null
 }
 
+/** How near a guide a press must be, in CSS pixels (doubled on touch). */
+export const GUIDE_PX = 4
+
+/** The selected guide's handle under the pointer. */
+function findGuideHandle(ctx: HitContext, p: Vec): Zone | null {
+  if (!ctx.guideHandles?.length) return null
+  const handle = nearestGuideHandle(ctx.guideHandles, toLayer(ctx, p), px(ctx, 7))
+  return handle ? { kind: 'guide-handle', handle } : null
+}
+
+/** The guide under the pointer: the nearest within reach. */
+function findGuide(ctx: HitContext, p: Vec): Zone | null {
+  if (!ctx.guides?.length) return null
+  const hit = nearestGuide(ctx.guides, toLayer(ctx, p), px(ctx, GUIDE_PX))
+  return hit ? { kind: 'guide', guideId: hit.guide.id, point: hit.point } : null
+}
+
 /** A resize handle in the middle of a side: it sits right where that side's edge is pressed to bend it. */
 function isSideHandle(zone: Zone): boolean {
   return zone.kind === 'handle' && isSideId(zone.handle)
 }
 
 /**
- * Decide what the pointer is over. `p` is in project space. A side handle
+ * Decide what the pointer is over. `p` is in project space. The selected
+ * guide's handles come first. Under the Guide tool guides come next; under
+ * Select they come last, after every handle, point, edge and body. A side handle
  * reaches over its own shape's edge (on touch, by more than its gap), so
  * the two contest by distance like points and handles do: an edge of the
  * selection nearer than the handle's centre bends, and the handle wins a
@@ -388,6 +419,13 @@ function isSideHandle(zone: Zone): boolean {
  * moves the selection.
  */
 export function findZone(ctx: HitContext, p: Vec): Zone {
+  // A selected guide's handles are only there while no layer is selected, so they come first either way.
+  const guideHandle = findGuideHandle(ctx, p)
+  if (guideHandle) return guideHandle
+  if (ctx.guidesFirst) {
+    const guide = findGuide(ctx, p)
+    if (guide) return guide
+  }
   const onInk = contains(ctx.ink ?? undefined, p)
   const control = findControl(ctx, p)
   if (control) {
@@ -410,7 +448,8 @@ export function findZone(ctx: HitContext, p: Vec): Zone {
   if (set?.kind === 'box' && set.box && boxContains(set.box, toLayer(ctx, p), framePad(ctx))) {
     return { kind: 'frame', set }
   }
-  return EMPTY_ZONE
+  // Under Select a guide is the last thing a press can reach: one lying along an edge never takes the edge's drag.
+  return (!ctx.guidesFirst && findGuide(ctx, p)) || EMPTY_ZONE
 }
 
 export function zoneKey(zone: Zone): string {
@@ -427,6 +466,10 @@ export function zoneKey(zone: Zone): string {
       return `body:${zone.layerId}`
     case 'frame':
       return `frame:${zone.set.ids.join(',')}`
+    case 'guide-handle':
+      return `guide-handle:${zone.handle.guideId}:${zone.handle.id}`
+    case 'guide':
+      return `guide:${zone.guideId}`
     default:
       return 'empty'
   }

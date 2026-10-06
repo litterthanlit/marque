@@ -1,9 +1,17 @@
 import { useEffect, useId, useRef } from 'react'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { cn } from '../../lib/utils.ts'
-import { EditorButton, FOCUS_RING } from './controls.tsx'
+import { EditorButton, FOCUS_RING, SwitchButton } from './controls.tsx'
+import { isBlankDocument } from '../../engine/vector/document.ts'
+import { guideRows } from '../../engine/vector/guides.ts'
+import { layerNumber } from './layerNumber.ts'
 
 const ROW_BUTTON = cn('h-7 shrink-0 rounded-md text-[10px] transition-colors hover:bg-interactive-hover', FOCUS_RING)
+
+/** A list gives up its rows to the other only down to three of them, or all it has when fewer. */
+function leastRows(count: number): React.CSSProperties {
+  return { '--least': `calc(${Math.min(count, 3) * 2.3125}rem + 2px)` } as React.CSSProperties
+}
 
 /** Lies over the canvas area and never resizes the canvas: a drawer on the right, or a sheet from the bottom when narrow. */
 export function LayersDrawer() {
@@ -15,6 +23,7 @@ export function LayersDrawer() {
   const toggleIllustratorLayerVisibility = useLogoStore((s) => s.toggleIllustratorLayerVisibility)
   const setIllustratorLayerOperation = useLogoStore((s) => s.setIllustratorLayerOperation)
   const startOver = useLogoStore((s) => s.startOver)
+  const blank = useLogoStore((s) => isBlankDocument(s.vectorDocument))
   const panelRef = useRef<HTMLElement>(null)
   const closeRef = useRef<HTMLButtonElement>(null)
   const titleId = useId()
@@ -72,7 +81,8 @@ export function LayersDrawer() {
         </button>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
+      {/* On a phone the sheet is short: its body scrolls as one, rather than each list in a sliver. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-2 p-3 max-lg:overflow-y-auto">
         <p className="text-[11px] leading-snug text-sidebar-muted">
           Applied in order from 01. A cut removes only what is below it; point at a hole on the canvas to find its cut.
         </p>
@@ -81,7 +91,12 @@ export function LayersDrawer() {
             No layers yet.
           </p>
         ) : (
-          <ul className="min-h-0 overflow-y-auto rounded-lg border border-border bg-interactive-active/40">
+          // Each list takes the space it needs. When the drawer is full the layers give up space first, down to
+          // three rows, so the guides keep theirs; only then do the guides give some up too. Both scroll.
+          <ul
+            className="shrink-0 rounded-lg border border-border bg-interactive-active/40 lg:min-h-(--least) lg:shrink-[1000] lg:overflow-y-auto"
+            style={leastRows(layers.length)}
+          >
             {[...layers].reverse().map((layer, reverseIndex) => {
               const index = top - reverseIndex
               const selected = illustrator.selectedLayerIds.includes(layer.id)
@@ -157,18 +172,123 @@ export function LayersDrawer() {
             })}
           </ul>
         )}
+        <GuidesSection />
       </div>
 
       <div className="border-t border-border p-3">
         <EditorButton
           onClick={startOver}
-          disabled={layers.length === 0}
-          title="Clear the mark. Undo brings it back."
+          disabled={blank}
+          title="Clear the mark and its guides. Undo brings them back."
           className="w-full"
         >
           Start over
         </EditorButton>
       </div>
     </aside>
+  )
+}
+
+/**
+ * The guides, under the layers: only when there are any. They are not
+ * layers: they never count in the total and never make or print ink. A
+ * guide that follows a shape says which, by the shape's number above. The
+ * header's switch is the one Cmd+; and the toolbar turn; each row's On / Off
+ * is the guide's own. While guides are hidden a row cannot pick its guide.
+ */
+function GuidesSection() {
+  const guides = useLogoStore((s) => s.vectorDocument.guides)
+  const illustrator = useLogoStore((s) => s.illustrator)
+  const selectGuides = useLogoStore((s) => s.selectGuides)
+  const toggleGuideVisibility = useLogoStore((s) => s.toggleGuideVisibility)
+  const setGuidesLocked = useLogoStore((s) => s.setGuidesLocked)
+  const deleteGuides = useLogoStore((s) => s.deleteGuides)
+  const showGuides = useLogoStore((s) => s.ui.showGuides)
+  const construction = useLogoStore((s) => s.ui.look === 'construction')
+  const toggleShowGuides = useLogoStore((s) => s.toggleShowGuides)
+  const titleId = useId()
+  if (guides.length === 0) return null
+  const onCanvas = construction && showGuides
+  const selected = new Set(illustrator.selectedGuideIds ?? [])
+  const rows = guideRows(guides, (id) => layerNumber(illustrator.layers, id))
+  return (
+    <section
+      aria-labelledby={titleId}
+      className="flex shrink-0 flex-col gap-1.5 lg:min-h-[calc(var(--least)+2.5rem)] lg:shrink"
+      style={leastRows(guides.length)}
+    >
+      <div className="flex items-center gap-1 pt-1">
+        <h3 id={titleId} className="flex-1 text-[10px] uppercase tracking-widest text-sidebar-muted">
+          Guides <span className="font-mono-tabular">· {guides.length}</span>
+        </h3>
+        <SwitchButton
+          label="Show"
+          checked={showGuides}
+          onChange={toggleShowGuides}
+          title={construction ? 'Show guides (Cmd+;)' : 'Show guides (Cmd+;). Guides show in the construction look (F)'}
+          className="h-7"
+        />
+      </div>
+      <ul
+        className={cn('rounded-lg border border-border bg-interactive-active/40 lg:min-h-0 lg:overflow-y-auto', !onCanvas && 'opacity-60')}
+      >
+        {guides.map((guide, index) => {
+          const { label, tag, title } = rows[index]
+          const name = `Guide ${index + 1} ${title}`
+          const pickable = onCanvas && guide.visible
+          return (
+            <li
+              key={guide.id}
+              className={cn(
+                'flex items-center gap-1 border-b border-border/60 px-1.5 py-1 last:border-b-0',
+                selected.has(guide.id) && 'bg-interactive',
+              )}
+            >
+              <button
+                type="button"
+                onClick={() => toggleGuideVisibility(guide.id)}
+                className={cn(ROW_BUTTON, 'w-7', guide.visible ? 'text-fg' : 'text-sidebar-muted/60 hover:text-sidebar-muted')}
+                aria-label={guide.visible ? `Hide ${name}` : `Show ${name}`}
+              >
+                {guide.visible ? 'On' : 'Off'}
+              </button>
+              {/* What tells two guides apart comes first, and the number never truncates. */}
+              <button
+                type="button"
+                aria-pressed={selected.has(guide.id)}
+                disabled={!pickable}
+                title={pickable ? title : `${title}. Shown guides can be picked`}
+                onClick={(event) => selectGuides([guide.id], event.shiftKey || event.metaKey)}
+                className={cn(
+                  'flex h-7 min-w-0 flex-1 items-center rounded-md px-2 text-left text-xs text-sidebar-text transition-colors enabled:hover:bg-interactive-hover enabled:hover:text-fg disabled:cursor-default',
+                  FOCUS_RING,
+                )}
+              >
+                <span className="min-w-0 truncate">{label}</span>
+                {tag && <span className="shrink-0 whitespace-pre font-mono-tabular text-sidebar-muted"> · {tag}</span>}
+              </button>
+              <button
+                type="button"
+                aria-pressed={guide.locked}
+                onClick={() => setGuidesLocked([guide.id], !guide.locked)}
+                className={cn(ROW_BUTTON, 'w-10', guide.locked ? 'text-fg' : 'text-sidebar-muted hover:text-fg')}
+                aria-label={guide.locked ? `Unlock ${name}` : `Lock ${name}`}
+              >
+                {guide.locked ? 'Locked' : 'Lock'}
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteGuides([guide.id])}
+                className={cn(ROW_BUTTON, 'w-6 text-sidebar-muted hover:text-red-400')}
+                aria-label={`Delete ${name}`}
+                title="Delete guide"
+              >
+                ×
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+    </section>
   )
 }

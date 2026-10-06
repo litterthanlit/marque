@@ -188,13 +188,13 @@ Compose drops subpaths smaller than 0.01 square units. A failed boolean step bec
 Guides live in `guides`, outside `objects`. Compose, hit testing for material, `carriedCuts`, bounds and placement never see them, so they cannot leak into the ink. A guide edit leaves `objects` alone, so it never recomposes. `useUrlState` writes the link when `guides` changes too.
 
 - **G** is the Guide tool. A drag draws an infinite line through the press point, at the drag angle, with Shift for 15° steps. An Alt-drag draws a circle from its centre.
-- Under the Guide tool, hovering a shape shows its construction lines as ghosts: centre lines, bounds, the circumcircle and incircle of a polygon, and its spokes. A click adds one and Shift-click adds them all. They are linked to the shape and follow it.
+- Under the Guide tool, hovering a shape shows its construction lines as ghosts: centre lines, bounds, the circumcircle and incircle of a polygon, and its spokes. A click adds one and Shift-click adds them all. They are linked to the shape and follow it. Construction lines lie in the shape's own frame, so a role such as top keeps to the same side of the shape through any turn. A guide is named for where its line lies on screen, as Top or Centre ↕, whatever the shape's turn or the way a groove was drawn, and is renamed when its shape turns it onto another side.
 - **Guides ▸ Construction** and **Guides ▸ Tangent frame** in the selection bar do the same for the selection. A tangent frame is the four lines that touch a set of circles, linked to the circles (ref 2).
 - The pen's options row gains **Draws: Shape | Guide**. In Guide mode, Enter keeps an open path as a guide. Shape mode is unchanged.
 - **Make guide** turns a selected path into a guide, and **Make shape** turns a closed path guide back into a shape.
 - A guide is drawn above the ink and below the outline, as a 0.75 px neutral grey line, solid, dashed or dotted. Grey keeps red, green and blue equal, so the e2e checks that read the slab's pale grey still pass. Guides are hidden in the final look and never reach `mark()`, Copy SVG or the export.
 - Under Select, a guide is the last zone a press can hit, after handles, edges and bodies. Under the Guide tool it is the first. A guide that lies along a shape's edge therefore never steals an edge drag.
-- **Cmd+;** shows and hides guides. The setting is view state, outside the history and the link.
+- **Cmd+;** shows and hides guides. The setting is view state, outside the history and the link. The toolbar's switch and the drawer's are the same setting. Guides leave the selection when they leave the canvas, so the bar and Delete only act on guides that can be seen.
 - The word "guide" already names the pink snapping feedback. That feedback is renamed `SnapHint`.
 
 ### Snapping knows every shape
@@ -365,6 +365,7 @@ Each step leaves `npm test`, `npm run build` and `npm run test:e2e` passing. A t
 - The general offset runs at commit only, so its preview shows the old copy moving with the source.
 - There are no rulers. Guides come from the Guide tool, the pen and shapes.
 - A stage 1 build cannot open version 2 links or saved marks.
+- Touch has no way to add to a selection, so **Guides ▸ Tangent frame**, which needs two or more circles selected, needs a keyboard and pointer.
 - There is no numeric entry for position, size or angle. Exact values come from snapping to whole units and degrees, Shift's 15° steps, arrow nudges, and Alt with the arrow keys.
 
 ## Open questions
