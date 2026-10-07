@@ -5,7 +5,7 @@ import { slabSpec, type CarveSpec } from '../../engine/carve/spec.ts'
 import { bakedEditableShape } from '../../engine/illustrator/layerPath.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
 import { rotate } from '../../engine/path/bezier.ts'
-import { scaledHandleLayout, selectionBox, selectionHandles, type LiveHandles } from './handleSet.ts'
+import { groupOutline, scaledHandleLayout, selectionBox, selectionHandles, turnedGroupFrames, type LiveHandles } from './handleSet.ts'
 
 function recipeLayer(id: string, spec: CarveSpec, operation: 'add' | 'subtract' = 'add'): IllustratorLayer {
   return {
@@ -248,5 +248,126 @@ describe('the handles while a tool is active', () => {
     expect(handlesFor(['turned'], undefined, 'recipe')).toBeNull()
     expect(handlesFor(['square', 'turned'], undefined, 'recipe')).toBeNull()
     expect(handlesFor(['slab'], undefined, 'none')).toBeNull()
+  })
+})
+
+describe('the handles of a group', () => {
+  const group = (frameRotation?: number) => ({
+    id: 'g',
+    name: 'Group 1',
+    visible: true,
+    locked: false,
+    isolated: false,
+    operation: 'add' as const,
+    ...(frameRotation !== undefined ? { frameRotation } : {}),
+  })
+  const members = [{ ...slab, parentId: 'g' }, { ...turned, parentId: 'g' }]
+  const groupDoc = (frameRotation?: number): IllustratorDocument => ({
+    ...docOf(members),
+    groups: [group(frameRotation)],
+    selectedRootIds: ['g'],
+    selectedLayerIds: ['slab', 'turned'],
+  })
+
+  it('go round its members in a box, a recipe among them keeping it uniform', () => {
+    const set = selectionHandles(groupDoc(), DEFAULT_HANDLE_LAYOUT, bakedEditableShape)!
+    expect(set).toMatchObject({ kind: 'box', group: 'g', uniform: true })
+    expect(set.box!.rotation).toBe(0)
+  })
+
+  it('turn as far as its frame is, measured in that frame', () => {
+    const set = selectionHandles(groupDoc(30), DEFAULT_HANDLE_LAYOUT, bakedEditableShape)!
+    expect(set.box!.rotation).toBe(30)
+    // The turned rectangle lies square in the group's frame: its box is 100 wide there, the slab's own turned outline wider.
+    const around = selectionBox({ ...groupDoc(30), layers: [{ ...turned, parentId: 'g' }], selectedLayerIds: ['turned'] }, bakedEditableShape)!
+    expect(around.box.width).toBeCloseTo(100, 1)
+    expect(around.box.height).toBeCloseTo(60, 1)
+    expect(around.group).toBe('g')
+  })
+
+  it('stay a box for a group of one recipe, whose own handles wait until it is entered', () => {
+    const doc: IllustratorDocument = { ...docOf([{ ...slab, parentId: 'g' }]), groups: [group()], selectedRootIds: ['g'], selectedLayerIds: ['slab'] }
+    expect(selectionHandles(doc, DEFAULT_HANDLE_LAYOUT, bakedEditableShape)!.kind).toBe('box')
+    expect(selectionHandles({ ...doc, selectedRootIds: ['slab'] }, DEFAULT_HANDLE_LAYOUT, bakedEditableShape)!.kind).toBe('recipe')
+  })
+})
+
+describe("an entered group's outline", () => {
+  it('holds every member whole, a cut that sticks far out of the shapes among them too', () => {
+    // The slab reaches x = 190: the punch reaches out to x = 250, past it.
+    const punch = recipeLayer('punch', { v: 1, kind: 'punch', shape: 'circle', center: { x: 190, y: 0 }, radius: 60, rotation: 0 }, 'subtract')
+    const box = groupOutline([slab, punch, slice], bakedEditableShape, 0)!
+    const [slabBox, punchBox] = [slab, punch].map((layer) => outlineBounds(carveOutline(layer.carve!)))
+    for (const each of [slabBox, punchBox]) {
+      expect(box.center.x - box.width / 2).toBeLessThanOrEqual(each.minX + 1e-6)
+      expect(box.center.x + box.width / 2).toBeGreaterThanOrEqual(each.maxX - 1e-6)
+      expect(box.center.y - box.height / 2).toBeLessThanOrEqual(each.minY + 1e-6)
+      expect(box.center.y + box.height / 2).toBeGreaterThanOrEqual(each.maxY - 1e-6)
+    }
+    // The slice, which reaches far past both ends, is left out, as a box leaves it out.
+    expect(box.center.x + box.width / 2).toBeCloseTo(250, 6)
+  })
+
+  it("is measured in the group's frame, and is nothing with nothing to measure", () => {
+    const box = groupOutline([turned], bakedEditableShape, 30)!
+    expect(box.rotation).toBe(30)
+    expect(box.width).toBeCloseTo(100, 1)
+    expect(box.height).toBeCloseTo(60, 1)
+    expect(groupOutline([slice], bakedEditableShape, 0)).toBeNull()
+  })
+})
+
+describe('a turn of a selection holding groups', () => {
+  const group = (id: string, parentId?: string, frameRotation?: number, extra: { visible?: boolean; locked?: boolean } = {}) => ({
+    id,
+    name: id,
+    visible: true,
+    locked: false,
+    isolated: true,
+    operation: 'add' as const,
+    ...(parentId ? { parentId } : {}),
+    ...(frameRotation !== undefined ? { frameRotation } : {}),
+    ...extra,
+  })
+  const piece = (id: string, parentId?: string, extra: Partial<IllustratorLayer> = {}): IllustratorLayer => ({
+    ...freeLayer(id, 'M0 0 L10 0 L10 10 Z'),
+    ...(parentId ? { parentId } : {}),
+    ...extra,
+  })
+  const groups = [group('outer'), group('a', 'outer', 10), group('b', 'outer'), group('c')]
+  const layers = [piece('a1', 'a'), piece('b1', 'b'), piece('o1', 'outer'), piece('c1', 'c'), piece('slab')]
+  const all = new Set(layers.map((layer) => layer.id))
+
+  it('turns the frame of every selected group, from where each was', () => {
+    expect(turnedGroupFrames({ layers, groups, selectedRootIds: ['a', 'b'] }, 30, all)).toEqual([
+      { id: 'a', rotation: 40 },
+      { id: 'b', rotation: 30 },
+    ])
+  })
+
+  it('turns the groups inside a selected group with it', () => {
+    expect(turnedGroupFrames({ layers, groups, selectedRootIds: ['outer'] }, -30, all).map(({ id, rotation }) => [id, rotation])).toEqual([
+      ['outer', -30],
+      ['a', -20],
+      ['b', -30],
+    ])
+  })
+
+  it('turns no frame for no turn, or for a selection of layers alone', () => {
+    expect(turnedGroupFrames({ layers, groups, selectedRootIds: ['outer'] }, 0, all)).toEqual([])
+    expect(turnedGroupFrames({ layers, groups, selectedRootIds: ['slab'] }, 30, all)).toEqual([])
+  })
+
+  it('keeps the frame of a locked or a hidden group selected with others, whose pieces stay put', () => {
+    // The view shows a locked group's pieces locked and a hidden one's hidden, and the box moves neither.
+    const held = [group('g', undefined, undefined, { locked: true }), group('h', undefined, undefined, { visible: false }), group('x')]
+    const pieces = [piece('g1', 'g', { locked: true }), piece('h1', 'h', { visible: false }), piece('x1', 'x'), piece('c'), piece('d')]
+    const moved = new Set(['x1', 'c', 'd'])
+    expect(turnedGroupFrames({ layers: pieces, groups: held, selectedRootIds: ['g', 'h', 'x', 'c', 'd'] }, 30, moved)).toEqual([{ id: 'x', rotation: 30 }])
+  })
+
+  it('turns a group with a hidden piece by the pieces that moved', () => {
+    const pieces = [piece('a1', 'c'), piece('a2', 'c', { visible: false })]
+    expect(turnedGroupFrames({ layers: pieces, groups: [group('c')], selectedRootIds: ['c'] }, 15, new Set(['a1']))).toEqual([{ id: 'c', rotation: 15 }])
   })
 })

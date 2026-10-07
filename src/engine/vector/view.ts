@@ -1,5 +1,6 @@
 import type { IllustratorDocument, IllustratorGroup, IllustratorLayer, IllustratorSource, PointSelection } from '../illustrator/types.ts'
 import { contoursToPathData } from './pathSerialization.ts'
+import { enteredGroup, parentsOf } from './groups.ts'
 import type { GroupObject, PathObject, VectorDocument, VectorDocumentSource, VectorObject, VectorSelection } from './types.ts'
 
 /**
@@ -49,17 +50,29 @@ export function vectorObjectToLayer(object: PathObject): IllustratorLayer {
   return layer
 }
 
-// A member of a hidden group shows as hidden: kept per layer view.
+// A member of a hidden group shows as hidden, and of a locked group as locked: kept per layer view.
 const hiddenCache = new WeakMap<IllustratorLayer, IllustratorLayer>()
+const lockedCache = new WeakMap<IllustratorLayer, IllustratorLayer>()
 
-function hiddenLayer(layer: IllustratorLayer): IllustratorLayer {
-  if (!layer.visible) return layer
-  let hidden = hiddenCache.get(layer)
-  if (!hidden) {
-    hidden = { ...layer, visible: false }
-    hiddenCache.set(layer, hidden)
+function inheritedLayer(layer: IllustratorLayer, hidden: boolean, locked: boolean): IllustratorLayer {
+  let view = layer
+  if (hidden && view.visible) {
+    let cached = hiddenCache.get(view)
+    if (!cached) {
+      cached = { ...view, visible: false }
+      hiddenCache.set(view, cached)
+    }
+    view = cached
   }
-  return hidden
+  if (locked && !view.locked) {
+    let cached = lockedCache.get(view)
+    if (!cached) {
+      cached = { ...view, locked: true }
+      lockedCache.set(view, cached)
+    }
+    view = cached
+  }
+  return view
 }
 
 const groupCache = new WeakMap<GroupObject, IllustratorGroup>()
@@ -75,6 +88,7 @@ function groupView(group: GroupObject): IllustratorGroup {
       locked: group.locked,
       isolated: group.isolated,
       operation: group.operation,
+      ...(group.frame ? { frameRotation: group.frame.rotation } : {}),
     }
     groupCache.set(group, view)
   }
@@ -86,6 +100,8 @@ interface ObjectsView {
   groups: IllustratorGroup[] | undefined
   /** Every path inside each group, in stack order. */
   leaves: Map<string, string[]>
+  /** Each object's group, or null at the root. */
+  parents: Map<string, string | null>
 }
 
 // The view is kept per objects array, so a selection change hands the canvas
@@ -99,7 +115,7 @@ function viewOf(objects: VectorObject[]): ObjectsView {
   let view: ObjectsView
   if (!hasGroups) {
     const layers = objects.filter((object): object is PathObject => object.type === 'path').map(vectorObjectToLayer)
-    view = { layers, groups: undefined, leaves: new Map() }
+    view = { layers, groups: undefined, leaves: new Map(), parents: new Map() }
   } else {
     const byId = new Map(objects.map((object) => [object.id, object]))
     const ancestors = (object: VectorObject): GroupObject[] => {
@@ -117,11 +133,11 @@ function viewOf(objects: VectorObject[]): ObjectsView {
       if (object.type !== 'path') continue
       const chain = ancestors(object)
       const layer = vectorObjectToLayer(object)
-      layers.push(chain.every((group) => group.visible) ? layer : hiddenLayer(layer))
+      layers.push(inheritedLayer(layer, chain.some((group) => !group.visible), chain.some((group) => group.locked)))
       for (const group of chain) leaves.set(group.id, [...(leaves.get(group.id) ?? []), object.id])
     }
     const groups = objects.filter((object): object is GroupObject => object.type === 'group').map(groupView)
-    view = { layers, groups, leaves }
+    view = { layers, groups, leaves, parents: parentsOf(objects) }
   }
   viewCache.set(objects, view)
   return view
@@ -134,7 +150,8 @@ export function layersOf(objects: VectorObject[]): IllustratorLayer[] {
 
 /**
  * The document and its selection as layers. A selected group stands for
- * every path inside it. With `previous`, an unchanged selection keeps its
+ * every path inside it in `selectedLayerIds`, and for itself in
+ * `selectedRootIds`; the group the selection lies in is `enteredGroupId`. With `previous`, an unchanged selection keeps its
  * arrays, so the canvas does not redraw the overlay for it.
  */
 export function vectorDocumentToIllustratorDocument(
@@ -149,6 +166,9 @@ export function vectorDocumentToIllustratorDocument(
     ),
   ]
   const selectedLayerIds = previous && sameIds(previous.selectedLayerIds, ids) ? previous.selectedLayerIds : ids
+  const roots = [...new Set(selection.targets.flatMap((target) => (target.type === 'guide' ? [] : [target.objectId])))]
+  const selectedRootIds = previous?.selectedRootIds && sameIds(previous.selectedRootIds, roots) ? previous.selectedRootIds : roots
+  const entered = view.groups ? enteredGroup(view.parents, roots) : null
   const guideIds = selection.targets.flatMap((target) => (target.type === 'guide' ? [target.guideId] : []))
   const selectedGuideIds =
     previous?.selectedGuideIds && sameIds(previous.selectedGuideIds, guideIds) ? previous.selectedGuideIds : guideIds
@@ -162,6 +182,8 @@ export function vectorDocumentToIllustratorDocument(
     pointSelection,
     mode: previous?.mode ?? (point ? 'points' : 'object'),
     ...(view.groups ? { groups: view.groups } : {}),
+    selectedRootIds,
+    ...(entered !== null ? { enteredGroupId: entered } : {}),
     guides: document.guides,
     selectedGuideIds,
   }

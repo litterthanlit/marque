@@ -132,6 +132,48 @@ export function stackUnits(doc: IllustratorDocument): StackUnit[] {
   return root
 }
 
+/**
+ * Does a cut reach a layer below it? A cut inside an isolated group reaches
+ * only what is inside that group; a cut at the root, or in a group that is
+ * not isolated, reaches everything below it, an isolated group's members
+ * too, since it cuts what the group composes to. Null when no group is
+ * isolated: then every cut reaches everything below it.
+ */
+export function cutReach(doc: Pick<IllustratorDocument, 'layers' | 'groups'>): ((cut: IllustratorLayer, layer: IllustratorLayer) => boolean) | null {
+  const groups = doc.groups
+  if (!groups?.some((group) => group.isolated)) return null
+  const byId = new Map(groups.map((group) => [group.id, group]))
+  const scopes = new Map<string | undefined, Set<string>>()
+  /** The isolated groups around a layer: what a cut inside one of them is kept in. */
+  const isolatedAround = (parentId: string | undefined): Set<string> => {
+    const known = scopes.get(parentId)
+    if (known) return known
+    const around = new Set<string>()
+    let group = parentId === undefined ? undefined : byId.get(parentId)
+    while (group && !around.has(group.id)) {
+      if (group.isolated) around.add(group.id)
+      group = group.parentId === undefined ? undefined : byId.get(group.parentId)
+    }
+    scopes.set(parentId, around)
+    return around
+  }
+  /** The innermost isolated group around a layer, or null at the root. */
+  const innermost = (parentId: string | undefined): string | null => {
+    let group = parentId === undefined ? undefined : byId.get(parentId)
+    const seen = new Set<string>()
+    while (group && !seen.has(group.id)) {
+      if (group.isolated) return group.id
+      seen.add(group.id)
+      group = group.parentId === undefined ? undefined : byId.get(group.parentId)
+    }
+    return null
+  }
+  return (cut, layer) => {
+    const scope = innermost(cut.parentId)
+    return scope === null || isolatedAround(layer.parentId).has(scope)
+  }
+}
+
 /** Each isolated group composed alone, keyed by the very layers and groups it holds: the last few, newest first. */
 const recentGroups: Array<{ key: unknown[]; pathData: string; warnings: string[] }> = []
 const RECENT_GROUPS = 32

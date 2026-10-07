@@ -4,6 +4,7 @@ import {
   boxRotateHandle,
   DEFAULT_HANDLE_LAYOUT,
   intersectBounds,
+  pathBoundsInFrame,
   shapeBoundsInFrame,
   TOUCH_CENTRE_CLEAR,
   unionBounds,
@@ -14,14 +15,15 @@ import {
 import { carveHandles } from '../../engine/carve/edit.ts'
 import { carveOutline, outlineBounds } from '../../engine/carve/outline.ts'
 import type { CarveSpec } from '../../engine/carve/spec.ts'
-import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
-import { emptyBounds, type Bounds, type Vec } from '../../engine/path/bezier.ts'
+import type { IllustratorDocument, IllustratorGroup, IllustratorLayer } from '../../engine/illustrator/types.ts'
+import { emptyBounds, normalizeDegrees, type Bounds, type Vec } from '../../engine/path/bezier.ts'
 import type { EditableShape } from '../../engine/path/editPath.ts'
 
 /**
  * The handles the selection gets. A single recipe keeps its own handles. A
  * single free shape gets a box around its frame, turned as far as the frame
- * is. Two or more layers get one upright box around them all.
+ * is, and so does a group. Two or more layers get one upright box around
+ * them all.
  */
 export interface HandleSet {
   /** 'recipe' handles reshape one recipe; 'box' handles move every member with one map. */
@@ -33,6 +35,8 @@ export interface HandleSet {
   box: OrientedBox | null
   /** A recipe is among the members: only corners show, and they scale uniformly. */
   uniform: boolean
+  /** The group the box goes round, when one group is selected: the box is measured in its frame. */
+  group?: string
 }
 
 /**
@@ -109,7 +113,8 @@ const usable = (layer: IllustratorLayer | undefined): layer is IllustratorLayer 
 /**
  * The box around some layers, with the layers it moves. A slice is moved but
  * not measured: its path reaches far past both ends. A free shape alone is
- * measured in its own frame; anything else upright. A layer alone is
+ * measured in its own frame, the members of a group in the group's
+ * (`frame`); anything else upright. A layer alone is
  * measured in full. Among several layers, a cut counts only where it meets
  * the material it can remove (the shapes among them, or else every shape in
  * `material`), so a cut circle that sticks far out of a spark does not
@@ -119,26 +124,21 @@ export function boxAround(
   layers: IllustratorLayer[],
   freePathOf: (layer: IllustratorLayer) => EditableShape | null,
   material: () => Bounds = emptyBounds,
+  frame?: number,
 ): { box: OrientedBox; ids: string[]; uniform: boolean } | null {
   const alone = layers.length === 1
-  const rotation = alone && !layers[0].carve ? (layers[0].frameRotation ?? 0) : 0
+  const rotation = frame ?? (alone && !layers[0].carve ? (layers[0].frameRotation ?? 0) : 0)
   let shapes = emptyBounds()
   const cuts: Bounds[] = []
   const ids: string[] = []
   let uniform = false
   for (const layer of layers) {
-    let bounds: Bounds
-    if (layer.carve) {
-      ids.push(layer.id)
-      uniform = true
-      if (layer.carve.kind === 'slice') continue
-      bounds = outlineBounds(carveOutline(layer.carve))
-    } else {
-      const path = freePathOf(layer)
-      if (!path) continue
-      ids.push(layer.id)
-      bounds = shapeBoundsInFrame(path, rotation)
-    }
+    const bounds = layerBounds(layer, freePathOf, rotation)
+    // A slice is moved but not measured; a free shape with no path is neither.
+    if (!bounds && !layer.carve) continue
+    ids.push(layer.id)
+    if (layer.carve) uniform = true
+    if (!bounds) continue
     if (layer.operation === 'subtract' && !alone) cuts.push(bounds)
     else shapes = unionBounds(shapes, bounds)
   }
@@ -151,6 +151,40 @@ export function boxAround(
   }
   const box = boxFromBounds(measured, rotation)
   return box && ids.length ? { box, ids, uniform } : null
+}
+
+/**
+ * A layer's bounds in a frame turned `rotation` degrees: a recipe's outline,
+ * a free shape's path. Null for a slice, whose path reaches far past both
+ * ends, and for a shape with no path.
+ */
+function layerBounds(layer: IllustratorLayer, freePathOf: (layer: IllustratorLayer) => EditableShape | null, rotation: number): Bounds | null {
+  if (layer.carve) {
+    if (layer.carve.kind === 'slice') return null
+    const outline = carveOutline(layer.carve)
+    return rotation ? pathBoundsInFrame({ segs: outline.segs, closed: true }, rotation) : outlineBounds(outline)
+  }
+  const path = freePathOf(layer)
+  return path && shapeBoundsInFrame(path, rotation)
+}
+
+/**
+ * The outline of an entered group, in its frame: every member measured in
+ * full, its cuts too, so each piece, a selected cut among them, lies inside
+ * it, as a group's bounds hold all it holds. Null when nothing is left to
+ * measure.
+ */
+export function groupOutline(
+  layers: IllustratorLayer[],
+  freePathOf: (layer: IllustratorLayer) => EditableShape | null,
+  frame: number,
+): OrientedBox | null {
+  let bounds = emptyBounds()
+  for (const layer of layers) {
+    const each = layerBounds(layer, freePathOf, frame)
+    if (each) bounds = unionBounds(bounds, each)
+  }
+  return boxFromBounds(bounds, frame)
 }
 
 /**
@@ -206,11 +240,12 @@ export function recipeFrame(spec: CarveSpec): OrientedBox {
 export function selectionBox(
   doc: IllustratorDocument,
   freePathOf: (layer: IllustratorLayer) => EditableShape | null,
-): { box: OrientedBox; ids: string[]; uniform: boolean } | null {
+): { box: OrientedBox; ids: string[]; uniform: boolean; group?: string } | null {
   const byId = new Map(doc.layers.map((layer) => [layer.id, layer]))
   const members = doc.selectedLayerIds.map((id) => byId.get(id)).filter(usable)
   if (!members.length) return null
-  if (members.length === 1 && members[0].carve) {
+  const group = selectedGroup(doc)
+  if (members.length === 1 && members[0].carve && !group) {
     return { box: recipeFrame(members[0].carve), ids: [members[0].id], uniform: true }
   }
   // Every shape in the document, measured only for a selection of cuts alone.
@@ -226,7 +261,52 @@ export function selectionBox(
     }
     return bounds
   }
-  return boxAround(members, freePathOf, material)
+  if (!group) return boxAround(members, freePathOf, material)
+  const around = boxAround(members, freePathOf, material, group.frameRotation ?? 0)
+  return around && { ...around, group: group.id }
+}
+
+/** The group selected, when the selection is one group and nothing else. */
+export function selectedGroup(doc: Pick<IllustratorDocument, 'groups' | 'selectedRootIds'>): IllustratorGroup | null {
+  const roots = doc.selectedRootIds
+  if (roots?.length !== 1 || !doc.groups) return null
+  return doc.groups.find((group) => group.id === roots[0]) ?? null
+}
+
+/**
+ * The frames of the groups a turn of the selection turns: every selected
+ * group and every group inside one whose pieces the turn moved, each
+ * turned by `turn` degrees from where it was, so each keeps a box as
+ * turned as its members. `moved` holds the pieces the turn moved. A group
+ * whose pieces all stay put, hidden or locked, keeps its frame; the pieces
+ * of a selected group that can move all do, those that follow others
+ * included, so one moved piece is enough to tell. None for no turn.
+ */
+export function turnedGroupFrames(
+  doc: Pick<IllustratorDocument, 'layers' | 'groups' | 'selectedRootIds'>,
+  turn: number,
+  moved: ReadonlySet<string>,
+): Array<{ id: string; rotation: number }> {
+  if (Math.abs(turn) <= 1e-9 || !doc.groups?.length || !doc.selectedRootIds?.length) return []
+  const roots = new Set(doc.selectedRootIds)
+  const groups = new Map(doc.groups.map((group) => [group.id, group]))
+  // Each group's chain, itself first, out to the root: it stops where a chain would loop.
+  const chain = (id: string | undefined): string[] => {
+    const ids: string[] = []
+    for (let at = id ? groups.get(id) : undefined; at && ids.length <= groups.size; at = groups.get(at.parentId ?? '')) ids.push(at.id)
+    return ids
+  }
+  // The pieces each group holds that a turn could move: the view shows a hidden or locked group's members so.
+  const pieces = new Map<string, IllustratorLayer[]>()
+  for (const layer of doc.layers) {
+    if (!usable(layer)) continue
+    for (const id of chain(layer.parentId)) pieces.set(id, [...(pieces.get(id) ?? []), layer])
+  }
+  const turned = (group: IllustratorGroup): boolean => {
+    const held = pieces.get(group.id)
+    return chain(group.id).some((id) => roots.has(id)) && Boolean(held?.some((layer) => moved.has(layer.id)))
+  }
+  return doc.groups.filter(turned).map((group) => ({ id: group.id, rotation: normalizeDegrees((group.frameRotation ?? 0) + turn) }))
 }
 
 /** The handles for the document's selection, in layer space, or null when it gets none. */
@@ -241,11 +321,12 @@ export function selectionHandles(
   // Hidden, locked and empty layers stay selected but take no part.
   const members = doc.selectedLayerIds.map((id) => byId.get(id)).filter(usable)
   if (!members.length) return null
-  const lone = members.length === 1 ? members[0] : null
+  // A group keeps its box, a recipe alone in it too: its own handles show once it is entered.
+  const lone = members.length === 1 && !selectedGroup(doc) ? members[0] : null
   if (lone?.carve) return { kind: 'recipe', ids: [lone.id], list: carveHandles(lone.carve, layout), box: null, uniform: false }
   if (live === 'recipe') return null
   const around = selectionBox(doc, freePathOf)
   if (!around) return null
-  const { box, ids, uniform } = around
-  return { kind: 'box', ids, list: boxHandleList(box, layout, uniform), box, uniform }
+  const { box, ids, uniform, group } = around
+  return { kind: 'box', ids, list: boxHandleList(box, layout, uniform), box, uniform, ...(group ? { group } : {}) }
 }

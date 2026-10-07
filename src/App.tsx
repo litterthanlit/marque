@@ -1,9 +1,10 @@
 import { useEffect } from 'react'
 import { AppShell } from './components/layout/AppShell.tsx'
 import { useUrlState } from './hooks/useUrlState.ts'
-import { useLogoStore } from './store/logoStore.ts'
+import { groupRefusalOf, ungroupRefusalOf, useLogoStore } from './store/logoStore.ts'
 import { dispatchEditorKey, isBareKey, isEditorInteracting } from './renderer/directEdit/keyboard.ts'
 import { hud } from './renderer/directEdit/hud.ts'
+import { refusals } from './renderer/directEdit/refusal.ts'
 import { isShuffleKey, sidesKeyStep, steppedPolygonSides, toolForKey } from './components/editor/tools.ts'
 
 /** How long the HUD shows the next polygon's sides after [ or ]. */
@@ -41,6 +42,18 @@ function App() {
         if (e.key === ';' && !e.altKey) {
           e.preventDefault()
           useLogoStore.getState().toggleShowGuides()
+          return
+        }
+        // Cmd+G groups and Cmd+Shift+G ungroups. The browser's find-next never runs, and both wait for a drag to finish.
+        // A refusal is said by the selection, with what is in the way outlined.
+        if (key === 'g' && !e.altKey) {
+          e.preventDefault()
+          if (isEditorInteracting()) return
+          const state = useLogoStore.getState()
+          const refusal = e.shiftKey ? ungroupRefusalOf(state) : groupRefusalOf(state)
+          if (refusal) refusals.say(refusal)
+          else if (e.shiftKey) state.ungroupSelection()
+          else state.groupSelection()
           return
         }
         // Undo waits for the drag to finish: the gesture is not a step yet.

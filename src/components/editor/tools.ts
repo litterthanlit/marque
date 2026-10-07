@@ -13,7 +13,7 @@ export interface ToolEntry {
 
 /** The pill's tools. Their keys and their titles both come from here. */
 export const EDITOR_TOOLS: ToolEntry[] = [
-  { id: null, label: 'Select', shortcut: 'V', hint: 'Drag a shape to move it, its handles to resize it, or an edge to bend it.' },
+  { id: null, label: 'Select', shortcut: 'V', hint: 'Drag a shape to move it, its handles to resize it, or an edge to bend it. A click takes a whole group; double-click one of its pieces to work on it alone, and Esc to come back.' },
   { id: 'pen', label: 'Pen', shortcut: 'P', hint: 'Click to place points, drag an edge to bend it. A shape closes by clicking the first point, pressing Enter or double-clicking; a guide (Draws: Guide) stays open on Enter or a double-click.' },
   { id: 'punch', label: 'Punch', shortcut: 'X', hint: 'Stamp a hole. Click, or drag to size it.' },
   { id: 'channel', label: 'Channel', shortcut: 'C', hint: 'Drag to gouge a groove between two points. Hold Shift to lock the angle to 15° steps.' },

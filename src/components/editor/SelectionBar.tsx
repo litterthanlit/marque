@@ -1,21 +1,22 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { tangentCircles, useLogoStore } from '../../store/logoStore.ts'
+import { groupRefusalOf, tangentCircles, ungroupRefusalOf, useLogoStore, type Refused } from '../../store/logoStore.ts'
 import { BAND_FITS, bandSettings, describeCarve, MAX_SIDES, MIN_SIDES, polygonApothem, type BandFit, type BandSpec, type CarveSpec } from '../../engine/carve/spec.ts'
 import { bandParts } from '../../engine/carve/band.ts'
 import { bandRefitted, bandsOf, bandWith, noFitReason, type BandUpdate } from '../../engine/vector/bands.ts'
 import { BandFitControl, BandSettingControl } from './BandControls.tsx'
 import { editableShapeOf } from '../../engine/illustrator/layerPath.ts'
-import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
+import type { IllustratorDocument, IllustratorGroup, IllustratorLayer } from '../../engine/illustrator/types.ts'
 import { closedContourOf, describeGuide } from '../../engine/vector/guides.ts'
 import type { Guide, PathObject, VectorObject } from '../../engine/vector/types.ts'
-import { hiddenRadiusDots, selectionBox } from '../../renderer/directEdit/handleSet.ts'
+import { hiddenRadiusDots, selectedGroup, selectionBox } from '../../renderer/directEdit/handleSet.ts'
 import { hud } from '../../renderer/directEdit/hud.ts'
 import { bandPreview } from '../../renderer/directEdit/bandPreview.ts'
 import { offsetPreview } from '../../renderer/directEdit/offsetPreview.ts'
+import { refusals } from '../../renderer/directEdit/refusal.ts'
 import { MAX_OFFSET, offsetGeometry, offsetIsQuick, offsetName, type OffsetGeometry } from '../../engine/vector/offsets.ts'
 import { cn } from '../../lib/utils.ts'
 import { SliderControl } from '../controls/SliderControl.tsx'
-import { Divider, EditorButton, FLOATING_SURFACE, Segmented, Stepper, SwitchButton } from './controls.tsx'
+import { Divider, EditorButton, FLOATING_SURFACE, FOCUS_RING, Segmented, Stepper, SwitchButton } from './controls.tsx'
 import { bandEnds, layerNumber } from './layerNumber.ts'
 import { steppedPolygonSides } from './tools.ts'
 import { Popover } from './Popover.tsx'
@@ -35,6 +36,7 @@ const BOOLEAN_OPS = [
 
 const RECIPE_HINT =
   'Drag the handles on the canvas to resize, round or turn it. Drag an edge to bend it; double-click a bent edge to straighten it.'
+const GROUP_HINT = 'Double-click one of its pieces on the canvas to work on it alone (double-tap on touch). Esc, or the group\'s name in the bar, comes back.'
 const FREE_SHAPE_HINT =
   'Drag the handles on the canvas to resize or turn it. Drag an edge to bend it, or click it to add a point. Double-click a point to make it sharp or smooth.'
 
@@ -70,10 +72,12 @@ function describeSelection(
 ): { name: string; numbers: string | null } {
   const usable = selected.filter((layer) => layer.visible && !layer.locked)
   const members = usable.length ? usable : selected
-  const alone = members.length === 1 ? members[0] : null
+  // A group reads by its name and how many pieces it holds: "Spark · radial · 3 pieces · 360 × 297".
+  const group = selectedGroup(doc)
+  const alone = members.length === 1 && !group ? members[0] : null
   // An offset copy is named for what it follows: "Inset −55 of 03".
   const link = alone?.link?.kind === 'offset' ? alone.link : null
-  const copyName = link ? `${offsetName(link.distance)} of ${layerNumber(doc.layers, link.of) ?? '—'}` : null
+  const copyName = link ? `${offsetName(link.distance)} of ${layerNumber(doc, link.of) ?? '—'}` : null
   if (alone && copyName && !alone.pathData) return { name: copyName, numbers: 'nothing left' }
   // A band by its fit and the circles it follows, "Band · strip 60° · 02, 05", and "no fit" while they allow it none.
   if (alone?.carve?.kind === 'band' && !copyName) {
@@ -87,16 +91,17 @@ function describeSelection(
       .filter((part) => !(stepped && / sides$/.test(part)))
     return { name: copyName ?? kind, numbers: numbers.join(' · ') || null }
   }
-  const name = copyName ?? (alone ? alone.name : `${members.length} layers`)
+  const name = group ? group.name : (copyName ?? (alone ? alone.name : `${members.length} layers`))
+  const pieces = group ? `${selected.length} ${selected.length === 1 ? 'piece' : 'pieces'}` : null
   const byId = new Map(objects.map((object) => [object.id, object]))
   const around = selectionBox(doc, (layer) => {
     const object = byId.get(layer.id)
     return object?.type === 'path' ? editableShapeOf(object.contours) : null
   })
-  if (!around) return { name, numbers: null }
+  if (!around) return { name, numbers: pieces }
   const { width, height, rotation } = around.box
   const turned = Math.round(rotation) ? ` · ${Math.round(rotation)}°` : ''
-  return { name, numbers: `${Math.round(width)} × ${Math.round(height)}${turned}` }
+  return { name, numbers: `${pieces ? `${pieces} · ` : ''}${Math.round(width)} × ${Math.round(height)}${turned}` }
 }
 
 export function SelectionBar() {
@@ -115,6 +120,7 @@ function LayerBar() {
   const booleanIllustratorLayers = useLogoStore((s) => s.booleanIllustratorLayers)
   const editAnchor = useLogoStore((s) => s.editAnchor)
   const makeGuidesFromSelection = useLogoStore((s) => s.makeGuidesFromSelection)
+  const setSelection = useLogoStore((s) => s.setSelection)
 
   const selectedLayers = useMemo(
     () =>
@@ -129,7 +135,13 @@ function LayerBar() {
   )
   if (selectedLayers.length === 0) return null
 
-  const selectedLayer = selectedLayers.length === 1 ? selectedLayers[0] : null
+  // A group of one is the group: its member's own controls wait until it is entered.
+  const group = selectedGroup(illustrator)
+  // Inside a group, the bar names it first, "Group 1 › Slab": a press goes back to it, as Escape does.
+  const entered = illustrator.enteredGroupId ? illustrator.groups?.find((each) => each.id === illustrator.enteredGroupId) : undefined
+  const roots = illustrator.selectedRootIds ?? illustrator.selectedLayerIds
+  const holdsGroup = roots.some((id) => illustrator.groups?.some((each) => each.id === id))
+  const selectedLayer = selectedLayers.length === 1 && !group ? selectedLayers[0] : null
   const selectedPoint =
     selectedLayer && !selectedLayer.carve && illustrator.pointSelection?.layerId === selectedLayer.id
       ? illustrator.pointSelection
@@ -157,9 +169,24 @@ function LayerBar() {
           Only what is selected is read out as it changes: a burst of keys reads out its own numbers.
           The name is drawn afresh for each new selection, so moving from one slab to another is heard too.
         */}
+        {entered && (
+          <button
+            type="button"
+            onClick={() => setSelection([entered.id])}
+            title="Select the group, leaving it (Esc)"
+            aria-label={`Back to ${entered.name}`}
+            className={cn(
+              '-mr-2 inline-flex h-8 max-w-[40%] shrink items-center gap-1 rounded-lg px-1.5 text-xs text-sidebar-muted transition-colors hover:bg-interactive-hover hover:text-fg',
+              FOCUS_RING,
+            )}
+          >
+            <span className="truncate">{entered.name}</span>
+            <span aria-hidden="true">›</span>
+          </button>
+        )}
         <p
           className="max-w-full truncate px-1.5 text-xs text-sidebar-text"
-          title={selectedLayer ? (selectedLayer.carve ? RECIPE_HINT : FREE_SHAPE_HINT) : undefined}
+          title={selectedLayer ? (selectedLayer.carve ? RECIPE_HINT : FREE_SHAPE_HINT) : group ? GROUP_HINT : undefined}
         >
           <span aria-live="polite">
             <span key={illustrator.selectedLayerIds.join(' ')}>{description?.name}</span>
@@ -167,6 +194,7 @@ function LayerBar() {
           {description?.numbers && <span> · {description.numbers}</span>}
         </p>
 
+        {group && <GroupControls group={group} />}
         {selectedLayer?.pin && <PinnedTo target={selectedLayer.pin} />}
         {selectedLayer && <Holds id={selectedLayer.id} />}
         {selectedLayer && <Copies id={selectedLayer.id} />}
@@ -216,7 +244,10 @@ function LayerBar() {
           </>
         )}
 
-        {selectedLayers.length >= 2 && (
+        {roots.length >= 2 && <GroupButton />}
+
+        {/* Not with a group in the selection: they would join its pieces' raw outlines, dropping its isolation and their Add or Cut. */}
+        {selectedLayers.length >= 2 && !holdsGroup && (
           <div className="flex gap-1" role="group" aria-label="Boolean">
             {BOOLEAN_OPS.map(({ op, label }) => (
               <EditorButton key={op} onClick={() => booleanIllustratorLayers(op)}>
@@ -234,6 +265,11 @@ function LayerBar() {
           <EditorButton title="Turn each outline of the selection into a guide. The shapes go." onClick={makeGuidesFromSelection}>
             Make guide
           </EditorButton>
+          {group && (
+            <EditorButton title="Copy the group with everything in it" onClick={() => duplicateIllustratorLayer(group.id)}>
+              Copy
+            </EditorButton>
+          )}
           {selectedLayer && (
             <EditorButton
               title={selectedLayer.link && !selectedLayer.pathData ? 'Nothing is left of it to copy: it comes back when what it follows allows it' : undefined}
@@ -249,6 +285,89 @@ function LayerBar() {
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * A selected group's own controls: Isolate cuts, which keeps its cuts to
+ * itself, so they cut only what is in it; then, while it isolates them,
+ * whether the group adds or cuts as one; and Ungroup. Each is one undo step.
+ */
+function GroupControls({ group }: { group: IllustratorGroup }) {
+  const setGroupIsolated = useLogoStore((s) => s.setGroupIsolated)
+  const setGroupOperation = useLogoStore((s) => s.setGroupOperation)
+  const ungroupSelection = useLogoStore((s) => s.ungroupSelection)
+  const refusal = useLogoStore((s) => ungroupRefusalOf(s)?.words ?? null)
+  return (
+    <div className="flex items-center gap-x-2" role="group" aria-label="Group">
+      <SwitchButton
+        label="Isolate cuts"
+        checked={group.isolated}
+        onChange={(isolated) => setGroupIsolated(group.id, isolated)}
+        title={group.isolated ? 'Its cuts cut only what is in it' : 'Keep its cuts to itself: they cut only what is in it'}
+      />
+      {group.isolated && (
+        <Segmented
+          label="Add or cut"
+          options={OPERATION_OPTIONS}
+          value={group.operation}
+          onChange={(operation) => setGroupOperation(group.id, operation)}
+        />
+      )}
+      <RefusableButton
+        label="Ungroup"
+        title="Ungroup (Cmd+Shift+G): its members stay where they are"
+        refusal={refusal}
+        refused={() => ungroupRefusalOf(useLogoStore.getState())}
+        onClick={ungroupSelection}
+      />
+    </div>
+  )
+}
+
+/**
+ * Group, as Cmd+G does: for touch, which has no keyboard. Dimmed, saying
+ * why, when gathering the selection would change the mark.
+ */
+export function GroupButton() {
+  const groupSelection = useLogoStore((s) => s.groupSelection)
+  const refusal = useLogoStore((s) => groupRefusalOf(s)?.words ?? null)
+  return (
+    <RefusableButton label="Group" title="Group (Cmd+G)" refusal={refusal} refused={() => groupRefusalOf(useLogoStore.getState())} onClick={groupSelection} />
+  )
+}
+
+/**
+ * A command button that may be refused: then it is dimmed and named with
+ * the reason, and a press, which a tooltip never answers on touch, says
+ * the reason on the canvas as the key does, with what is in the way outlined.
+ */
+function RefusableButton({
+  label,
+  title,
+  refusal,
+  refused,
+  onClick,
+}: {
+  label: string
+  title: string
+  refusal: string | null
+  refused: () => Refused | null
+  onClick: () => void
+}) {
+  return (
+    <EditorButton
+      aria-disabled={refusal !== null || undefined}
+      title={refusal ?? title}
+      aria-label={refusal ? `${label}: ${refusal}` : label}
+      onClick={() => {
+        const now = refused()
+        if (now) refusals.say(now)
+        else onClick()
+      }}
+    >
+      {label}
+    </EditorButton>
   )
 }
 
@@ -334,9 +453,9 @@ function CornerRadius({ layer }: { layer: IllustratorLayer }) {
 
 /** A recipe's centre pinned to another shape's: which, by its number, and a way to let go. */
 function PinnedTo({ target }: { target: string }) {
-  const layers = useLogoStore((s) => s.illustrator.layers)
+  const illustrator = useLogoStore((s) => s.illustrator)
   const unpinSelection = useLogoStore((s) => s.unpinSelection)
-  const number = layerNumber(layers, target)
+  const number = layerNumber(illustrator, target)
   return (
     <div className="flex items-center gap-1" role="group" aria-label="Pin">
       <span className="px-1 text-xs text-sidebar-text" title="Its centre stays on that shape's centre when the shape moves or resizes">
@@ -357,9 +476,9 @@ function PinnedTo({ target }: { target: string }) {
 
 /** A shape that recipes are pinned to: which, by their numbers, and a way to let them all go. Nothing when none is. */
 function Holds({ id }: { id: string }) {
-  const layers = useLogoStore((s) => s.illustrator.layers)
+  const illustrator = useLogoStore((s) => s.illustrator)
   const releasePinsTo = useLogoStore((s) => s.releasePinsTo)
-  const numbers = layers.flatMap((layer, index) => (layer.pin === id ? [String(index + 1).padStart(2, '0')] : []))
+  const numbers = illustrator.layers.flatMap((layer) => (layer.pin === id ? [layerNumber(illustrator, layer.id)!] : []))
   if (!numbers.length) return null
   return (
     <div className="flex items-center gap-1" role="group" aria-label="Pins held">
@@ -381,8 +500,8 @@ function Holds({ id }: { id: string }) {
 
 /** A shape that offset copies follow: which, by their numbers. Nothing when none does. */
 function Copies({ id }: { id: string }) {
-  const layers = useLogoStore((s) => s.illustrator.layers)
-  const numbers = layers.flatMap((layer, index) => (layer.link?.kind === 'offset' && layer.link.of === id ? [String(index + 1).padStart(2, '0')] : []))
+  const illustrator = useLogoStore((s) => s.illustrator)
+  const numbers = illustrator.layers.flatMap((layer) => (layer.link?.kind === 'offset' && layer.link.of === id ? [layerNumber(illustrator, layer.id)!] : []))
   if (!numbers.length) return null
   return (
     <span className="px-1 text-xs text-sidebar-text" title="Offset copies that follow this shape as it changes">
@@ -393,8 +512,8 @@ function Copies({ id }: { id: string }) {
 
 /** A circle that bands follow: which, by their numbers. Nothing when none does. */
 function Bands({ id }: { id: string }) {
-  const layers = useLogoStore((s) => s.illustrator.layers)
-  const numbers = bandsOf(layers, id).map((band) => layerNumber(layers, band)!)
+  const illustrator = useLogoStore((s) => s.illustrator)
+  const numbers = bandsOf(illustrator.layers, id).map((band) => layerNumber(illustrator, band)!)
   if (!numbers.length) return null
   return (
     <span className="px-1 text-xs text-sidebar-text" title="Bands that follow this circle as it moves and resizes">
@@ -862,7 +981,7 @@ function GuideBar() {
   const alone = selected.length === 1 ? selected[0] : null
   const name = alone ? `Guide · ${alone.shape.kind}` : `${selected.length} guides`
   // As the drawer tells it: the measure, and for a guide that follows a shape its line and the shape's number.
-  const described = alone ? describeGuide(alone, (id) => layerNumber(illustrator.layers, id)) : null
+  const described = alone ? describeGuide(alone, (id) => layerNumber(illustrator, id)) : null
   const locked = selected.every((guide) => guide.locked)
   const style = selected.every((guide) => guide.style === selected[0].style) ? selected[0].style : null
   const selectedIds = selected.map((guide) => guide.id)

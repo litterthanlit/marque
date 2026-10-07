@@ -162,6 +162,18 @@ export interface BoxFrameSide {
   axisDeg: number
 }
 
+/** The four corners of the frame padded `pad` around the box, going round from its top left as the box sees it. */
+export function boxFrameCorners(box: OrientedBox, pad: number): [Vec, Vec, Vec, Vec] {
+  const hw = box.width / 2 + pad
+  const hh = box.height / 2 + pad
+  return [
+    boxPoint(box, { x: -hw, y: -hh }),
+    boxPoint(box, { x: hw, y: -hh }),
+    boxPoint(box, { x: hw, y: hh }),
+    boxPoint(box, { x: -hw, y: hh }),
+  ]
+}
+
 /** The four sides of the frame padded `pad` around the box. */
 export function boxFrameSides(box: OrientedBox, pad: number): BoxFrameSide[] {
   const hw = box.width / 2 + pad

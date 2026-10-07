@@ -46,6 +46,21 @@ function createDevHook() {
       return (set?.list ?? []).map((h) => ({ id: h.id, ...frame.toClient(h.at) }))
     },
 
+    /**
+     * What the selection holds: layers and whole groups, as a click selects
+     * them. `illustrator.selectedLayerIds` stands each group in for every
+     * layer inside it.
+     */
+    selectedRoots() {
+      const { illustrator } = useLogoStore.getState()
+      return illustrator.selectedRootIds ?? illustrator.selectedLayerIds
+    },
+
+    /** The group the selection lies in, which a click selects inside of; null for none. */
+    enteredGroup() {
+      return useLogoStore.getState().illustrator.enteredGroupId ?? null
+    },
+
     /** Name of the editor cursor currently shown on the canvas. */
     cursor() {
       const current = canvasFrame()?.canvas.style.cursor ?? ''

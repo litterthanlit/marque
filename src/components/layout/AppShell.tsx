@@ -33,7 +33,7 @@ export function AppShell() {
           <div className="relative min-h-0 flex-1">
             <LogoCanvas>
               {/* The open drawer would cover the end of the pill or the bar: they centre on what is left in view. */}
-              <div className={cn('pointer-events-none absolute inset-0', layersOpen && 'lg:right-72')}>
+              <div className={cn('pointer-events-none absolute inset-0', layersOpen && 'lg:right-80')}>
                 <EmptyHint />
                 <ToolPill />
                 <SelectionBar />

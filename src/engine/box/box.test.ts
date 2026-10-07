@@ -6,6 +6,8 @@ import {
   boxHandles,
   boxPoint,
   boxHandlePoint,
+  boxContains,
+  boxFrameCorners,
   boxFrameSides,
   boxRotateHandle,
   DEFAULT_HANDLE_LAYOUT,
@@ -265,6 +267,23 @@ describe('the sides of the frame', () => {
     expectNear(east.b, by('se').at)
     expectNear(east.mid, by('e').at)
     expect(east.axisDeg).toBe(by('e').axisDeg)
+  })
+})
+
+describe('the corners of the frame', () => {
+  it('go round the box at the corner handles, four of them, so a frame drawn through them is a box', () => {
+    for (const box of [upright, turned]) {
+      const corners = boxFrameCorners(box, 12)
+      const handles = boxHandles(box, { ...DEFAULT_HANDLE_LAYOUT, pad: 12 }, { kind: 'resize', edges: true })
+      const by = (id: string) => handles.find((h) => h.id === id)!.at
+      expect(corners).toHaveLength(4)
+      ;(['nw', 'ne', 'se', 'sw'] as const).forEach((id, i) => expectNear(corners[i], by(id)))
+      // Each corner lies on the padded box, none inside it.
+      for (const corner of corners) {
+        expect(boxContains(box, corner, 12 + 1e-6)).toBe(true)
+        expect(boxContains(box, corner, 11)).toBe(false)
+      }
+    }
   })
 })
 

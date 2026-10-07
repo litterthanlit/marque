@@ -53,6 +53,8 @@ export interface IllustratorGroup {
   /** Members compose alone and enter the stack as one input, with `operation`. */
   isolated: boolean
   operation: 'add' | 'subtract'
+  /** How far the group's box is turned, in degrees. Missing is upright. */
+  frameRotation?: number
 }
 
 export interface PointSelection {
@@ -72,6 +74,14 @@ export interface IllustratorDocument {
   mode: IllustratorMode
   /** The document's groups, when it has any. */
   groups?: IllustratorGroup[]
+  /**
+   * What is selected as the selection holds it: layers and whole groups.
+   * `selectedLayerIds` stands each group in for every layer inside it.
+   * Missing reads as `selectedLayerIds`.
+   */
+  selectedRootIds?: string[]
+  /** The group the selection lies in, which a click selects inside of. Missing is none. */
+  enteredGroupId?: string
   /** The document's guides, the very same array. Missing reads as none. */
   guides?: Guide[]
   /** The selected guides. A selection holds guides or layers, never both. */

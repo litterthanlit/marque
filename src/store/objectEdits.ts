@@ -119,12 +119,12 @@ export function writePin(object: PathObject, centreOf: string | null): PathObjec
   return { ...object, pin: { centreOf } }
 }
 
-/** The rotation of a free path's box, rounded to 0.01°. Upright leaves no frame. */
-export function writeFrame(object: PathObject, rotation: number): PathObject {
+/** The rotation of a free path's or a group's box, rounded to 0.01°. Upright leaves no frame. */
+export function writeFrame<T extends VectorObject>(object: T, rotation: number): T {
   const rounded = Math.round(normalizeDegrees(rotation) * 100) / 100
-  const turned = rounded !== 0 && !object.carve
+  const turned = rounded !== 0 && !(object.type === 'path' && object.carve)
   if (turned ? object.frame?.rotation === rounded : !object.frame) return object
-  const next: PathObject = { ...object }
+  const next: T = { ...object }
   if (turned) next.frame = { rotation: rounded }
   else delete next.frame
   return next

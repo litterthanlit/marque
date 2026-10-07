@@ -24,6 +24,7 @@ import { pinsLostWithTarget } from '../../engine/vector/pins.ts'
 import { linksEndedBy, offsetGeometry, offsetIsQuick } from '../../engine/vector/offsets.ts'
 import { contoursToPathData } from '../../engine/vector/pathSerialization.ts'
 import { offsetPreview, type OffsetPreview } from '../../renderer/directEdit/offsetPreview.ts'
+import { refusals } from '../../renderer/directEdit/refusal.ts'
 import { bandPreview } from '../../renderer/directEdit/bandPreview.ts'
 import type { Contour } from '../../engine/vector/types.ts'
 import type { EditablePath } from '../../engine/path/editPath.ts'
@@ -258,8 +259,11 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       const emptied = bandsEmptiedBy(before.vectorDocument.objects, state.vectorDocument.objects)
       if (unpinned.length || gone.length || edited.length || emptied.length) controller.noteLetGo({ unpinned, gone, edited, emptied })
     })
+    // A refused command, such as Cmd+G, is said by the selection, with what is in the way outlined.
+    const unrefuse = refusals.subscribe((refused) => controller.showRefusal(refused))
     return () => {
       unwatch()
+      unrefuse()
       controller.destroy()
       controllerRef.current = null
     }
@@ -682,7 +686,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
           // The editor sets the cursor itself, per hover zone.
           style={{ imageRendering: 'auto', touchAction: 'none' }}
           tabIndex={0}
-          aria-label="Vector Maker canvas. Drag a shape to move it, its handles to resize or rotate it, or an edge to bend it. Arrow keys nudge the selection; Alt with Left or Right rotates it by 1 degree, Alt with Up or Down scales it so its longer side grows or shrinks by 1 unit, and Shift makes each step larger. Delete removes it."
+          aria-label="Vector Maker canvas. Drag a shape to move it, its handles to resize or rotate it, or an edge to bend it. A click takes a whole group; a double-click takes one of its pieces, and Escape comes back. Arrow keys nudge the selection; Alt with Left or Right rotates it by 1 degree, Alt with Up or Down scales it so its longer side grows or shrinks by 1 unit, and Shift makes each step larger. Delete removes it."
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}

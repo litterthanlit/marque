@@ -1,7 +1,7 @@
 import paper from 'paper'
 import { compressToEncodedURIComponent } from 'lz-string'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { useLogoStore } from './logoStore.ts'
+import { groupRefusalOf, ungroupRefusalOf, useLogoStore } from './logoStore.ts'
 import { rotateCarveAbout, scaleCarveAbout, translateCarve } from '../engine/carve/edit.ts'
 import { describeCarve, polygonApothem, type BandSpec, type PolygonSpec, type PunchSpec, type SlabSpec } from '../engine/carve/spec.ts'
 import { composeIllustratorMark } from '../engine/illustrator/compose.ts'
@@ -13,7 +13,7 @@ import { constructionLines, guideRows } from '../engine/vector/guides.ts'
 import type { PathObject, VectorDocument, VectorObject } from '../engine/vector/types.ts'
 import { decodeLink, encodeLink } from '../engine/vector/link.ts'
 import { sanitizeVectorDocument } from '../engine/vector/document.ts'
-import { createSavedVariation, type SavedVariation } from '../engine/vector/saved.ts'
+import { createSavedVariation, savedDocument, type SavedVariation } from '../engine/vector/saved.ts'
 import { pinsLostWithTarget } from '../engine/vector/pins.ts'
 
 /** A document the test expects to read. */
@@ -863,6 +863,25 @@ describe('layer order with groups', () => {
     expect(across.parentId).toBeNull()
     expect(order()).toEqual(['g', 'c', across.id])
     expect(reopened().objects.map((object) => object.id)).toEqual(order())
+  })
+
+  it('joins nothing when the selection holds a group, which would lose its isolation and its pieces\' Add or Cut', () => {
+    open([
+      group('one', { isolated: true }),
+      path('a', 100, { parentId: 'one' }),
+      path('cut a', 40, { parentId: 'one', operation: 'subtract' }),
+      group('two', { isolated: true }),
+      path('b', 100, { parentId: 'two' }),
+      path('cut b', 40, { parentId: 'two', operation: 'subtract' }),
+      path('x', 200),
+    ])
+    for (const selection of [['one', 'two'], ['one', 'x']]) {
+      useLogoStore.getState().setSelection(selection)
+      const before = objects()
+      for (const op of ['unite', 'subtract', 'intersect'] as const) useLogoStore.getState().booleanIllustratorLayers(op)
+      expect(objects()).toBe(before)
+      expect(undoDepth()).toBe(0)
+    }
   })
 })
 
@@ -2272,5 +2291,255 @@ describe('bands', () => {
     const document = useLogoStore.getState().vectorDocument
     const decoded = decodeLink(encodeLink(document, '#000000'))
     expect(decoded.kind === 'vector' && decoded.document.objects).toEqual(document.objects)
+  })
+})
+
+describe('groups in the store', () => {
+  beforeEach(() => reset())
+
+  const corner = (x: number, y: number) => ({ point: { x, y }, handleIn: null, handleOut: null })
+  const square = (cx: number, cy: number, h: number) => ({
+    closed: true,
+    segments: [corner(cx - h, cy - h), corner(cx + h, cy - h), corner(cx + h, cy + h), corner(cx - h, cy + h)],
+  })
+  const path = (id: string, cx: number, cy: number, h: number, extra: Partial<PathObject> = {}): PathObject => ({
+    id, name: id, parentId: null, visible: true, locked: false, type: 'path', operation: 'add', contours: [square(cx, cy, h)], fillRule: 'evenodd', ...extra,
+  })
+  const group = (id: string, extra: Partial<VectorObject> = {}): VectorObject =>
+    ({ id, name: id, parentId: null, visible: true, locked: false, type: 'group', isolated: false, operation: 'add', ...extra }) as VectorObject
+  const open = (list: VectorObject[]) => useLogoStore.getState().setVectorDocument({ ...useLogoStore.getState().vectorDocument, objects: list })
+  const order = () => objects().map((object) => object.id)
+  const roots = () => useLogoStore.getState().illustrator.selectedRootIds
+  const leaves = () => useLogoStore.getState().illustrator.selectedLayerIds
+  const entered = () => useLogoStore.getState().illustrator.enteredGroupId ?? null
+
+  it('groups the selection with Cmd+G as one undo step, selected, and ungroups it back', () => {
+    open([path('a', -100, 0, 50), path('x', 0, 300, 20), path('b', 100, 0, 50)])
+    useLogoStore.getState().setSelection(['a', 'b'])
+    useLogoStore.getState().groupSelection()
+    const made = objects().find((object) => object.type === 'group')!
+    expect(made).toMatchObject({ name: 'Group 1', isolated: false, operation: 'add' })
+    expect(order()).toEqual(['x', made.id, 'a', 'b'])
+    expect(roots()).toEqual([made.id])
+    expect(leaves()).toEqual(['a', 'b'])
+    expect(undoDepth()).toBe(1)
+
+    useLogoStore.getState().ungroupSelection()
+    expect(order()).toEqual(['x', 'a', 'b'])
+    expect(roots()).toEqual(['a', 'b'])
+    expect(undoDepth()).toBe(2)
+
+    useLogoStore.getState().undoVectorCommand()
+    expect(roots()).toEqual([made.id])
+    useLogoStore.getState().undoVectorCommand()
+    expect(order()).toEqual(['a', 'x', 'b'])
+    expect(roots()).toEqual(['a', 'b'])
+  })
+
+  it('refuses Cmd+G with a cut between that gathering would let change the mark, and says which', () => {
+    open([path('a', -100, 0, 50), path('cut', -100, 0, 20, { operation: 'subtract' }), path('b', 100, 0, 50)])
+    useLogoStore.getState().setSelection(['a', 'b'])
+    expect(groupRefusalOf(useLogoStore.getState())).toEqual({ words: 'Cut 02 lies between them', blocker: 'cut' })
+    const before = objects()
+    useLogoStore.getState().groupSelection()
+    expect(objects()).toBe(before)
+    expect(undoDepth()).toBe(0)
+    useLogoStore.getState().setSelection(['a'])
+    expect(groupRefusalOf(useLogoStore.getState())).toEqual({ words: 'Select two or more to group', blocker: null })
+  })
+
+  it('refuses to ungroup an isolated group whose cuts would reach what lies below, leaving the mark as it was', () => {
+    open([path('below', 0, 0, 100), group('g', { isolated: true }), path('a', 200, 0, 50, { parentId: 'g' }), path('cut', 60, 0, 60, { parentId: 'g', operation: 'subtract' })])
+    const area = markArea()
+    useLogoStore.getState().setSelection(['g'])
+    expect(ungroupRefusalOf(useLogoStore.getState())).toEqual({ words: 'Its cuts would reach Shape 01', blocker: 'below' })
+    const before = objects()
+    useLogoStore.getState().ungroupSelection()
+    expect(objects()).toBe(before)
+    expect(undoDepth()).toBe(0)
+    expect(markArea()).toBeCloseTo(area, 3)
+  })
+
+  it('refuses to ungroup an isolated group that cuts as one, which would turn its pieces to ink', () => {
+    open([path('below', 0, 0, 100), group('g', { isolated: true, operation: 'subtract' }), path('a', 0, 0, 50, { parentId: 'g' })])
+    const area = markArea()
+    useLogoStore.getState().setSelection(['g'])
+    expect(ungroupRefusalOf(useLogoStore.getState())?.words).toBe('Group 02 cuts as one: set it to Add first')
+    useLogoStore.getState().ungroupSelection()
+    expect(undoDepth()).toBe(0)
+    expect(markArea()).toBeCloseTo(area, 3)
+  })
+
+  it('ungroups a hidden group with its pieces hidden, shared or isolated, leaving the mark as it was', () => {
+    for (const isolated of [false, true]) {
+      open([path('below', 0, 0, 100), group('g', { isolated, visible: false }), path('a', 300, 0, 50, { parentId: 'g' })])
+      const area = markArea()
+      useLogoStore.getState().setSelection(['g'])
+      expect(ungroupRefusalOf(useLogoStore.getState())).toBeNull()
+      useLogoStore.getState().ungroupSelection()
+      expect(objects().map((object) => [object.id, object.visible])).toEqual([['below', true], ['a', false]])
+      expect(markArea()).toBeCloseTo(area, 3)
+    }
+  })
+
+  it('refuses to ungroup a locked group, keeping its pieces held, and says to unlock it first', () => {
+    open([group('g', { locked: true }), path('a', -100, 0, 50, { parentId: 'g' }), path('b', 100, 0, 50, { parentId: 'g' })])
+    useLogoStore.getState().setSelection(['g'])
+    expect(ungroupRefusalOf(useLogoStore.getState())).toEqual({ words: 'Group 01 is locked: unlock it first', blocker: null })
+    const before = objects()
+    useLogoStore.getState().ungroupSelection()
+    expect(objects()).toBe(before)
+    expect(undoDepth()).toBe(0)
+  })
+
+  it('steps no polygon in a locked or a hidden group', () => {
+    for (const held of [{ locked: true }, { visible: false }]) {
+      reset()
+      useLogoStore.getState().addSlab('polygon')
+      const polygon = objects()[0]
+      open([group('g', held), { ...polygon, parentId: 'g' }])
+      const depth = undoDepth()
+      useLogoStore.getState().setSelection(['g'])
+      useLogoStore.getState().stepPolygonSides(1)
+      expect(objects()[1]).toEqual({ ...polygon, parentId: 'g' })
+      useLogoStore.getState().setSelection([polygon.id])
+      useLogoStore.getState().stepPolygonSides(1)
+      expect((objects()[1] as PathObject).carve).toEqual((polygon as PathObject).carve)
+      expect(undoDepth()).toBe(depth)
+    }
+  })
+
+  it('isolates a group’s cuts as one undo step', () => {
+    open([path('left', -150, 0, 100), group('g'), path('right', 150, 0, 100, { parentId: 'g' }), path('cut', 0, 0, 120, { parentId: 'g', operation: 'subtract' })])
+    const shared = markArea()
+    useLogoStore.getState().setGroupIsolated('g', true)
+    expect(undoDepth()).toBe(1)
+    expect(markArea()).toBeGreaterThan(shared + 1000)
+    useLogoStore.getState().setGroupIsolated('g', true)
+    expect(undoDepth()).toBe(1)
+    useLogoStore.getState().undoVectorCommand()
+    expect(markArea()).toBeCloseTo(shared, 3)
+  })
+
+  it('keeps a group selected through a move of its layers, and undo brings the group selection back', () => {
+    open([group('g'), path('a', 0, 0, 50, { parentId: 'g' }), path('b', 100, 0, 50, { parentId: 'g' })])
+    useLogoStore.getState().setSelection(['g'])
+    useLogoStore.getState().commitLayerEdits({
+      label: 'Move shapes',
+      edits: [
+        { layerId: 'a', pathData: 'M10,10L20,10L20,20Z' },
+        { layerId: 'b', pathData: 'M30,30L40,30L40,40Z' },
+      ],
+      select: ['a', 'b'],
+    })
+    expect(roots()).toEqual(['g'])
+    useLogoStore.getState().commitLayerEdits({ label: 'Rotate', edits: [{ layerId: 'g', frameRotation: 30 }] })
+    expect(objects()[0]).toMatchObject({ type: 'group', frame: { rotation: 30 } })
+    expect(useLogoStore.getState().illustrator.groups?.[0].frameRotation).toBe(30)
+    useLogoStore.getState().setSelection([])
+    useLogoStore.getState().undoVectorCommand()
+    expect(roots()).toEqual(['g'])
+  })
+
+  it('enters a group when a piece in it is selected, and a group selected alone enters none', () => {
+    open([group('g'), path('a', 0, 0, 50, { parentId: 'g' }), path('b', 100, 0, 50, { parentId: 'g' }), path('c', 300, 0, 20)])
+    useLogoStore.getState().setSelection(['a'])
+    expect(entered()).toBe('g')
+    expect(leaves()).toEqual(['a'])
+    useLogoStore.getState().setSelection(['g'])
+    expect(entered()).toBeNull()
+    useLogoStore.getState().selectIllustratorLayer('b')
+    expect(entered()).toBe('g')
+  })
+
+  it('deletes a group with everything in it, and detaches what followed its members', () => {
+    open([group('g'), path('a', 0, 0, 50, { parentId: 'g' }), path('b', 100, 0, 50, { parentId: 'g' }), path('ring', 0, 0, 10, { link: { kind: 'offset', of: 'a', distance: 5 } })])
+    const ring = objects().at(-1) as PathObject
+    useLogoStore.getState().setSelection(['g'])
+    useLogoStore.getState().deleteIllustratorLayers()
+    expect(order()).toEqual(['ring'])
+    const kept = objects()[0] as PathObject
+    expect(kept.link).toBeUndefined()
+    expect(kept.contours).toEqual(ring.contours)
+    expect(roots()).toEqual([])
+    useLogoStore.getState().undoVectorCommand()
+    expect(order()).toEqual(['g', 'a', 'b', 'ring'])
+    expect(objects().at(-1)).toBe(ring)
+    expect(roots()).toEqual(['g'])
+  })
+
+  it('copies a group whole, its band between its own circles following the copies', () => {
+    useLogoStore.getState().addSlab('circle')
+    const first = objects()[0] as PathObject
+    useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: first.id, carve: translateCarve(first.carve!, { x: -150, y: 0 }) }] })
+    useLogoStore.getState().addSlab('circle')
+    const second = objects()[1] as PathObject
+    useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: second.id, carve: translateCarve(second.carve!, { x: 150 - (second.carve as SlabSpec).center.x, y: -(second.carve as SlabSpec).center.y }) }] })
+    useLogoStore.getState().addBand(first.id, second.id)
+    useLogoStore.getState().setSelection(objects().map((object) => object.id))
+    useLogoStore.getState().groupSelection()
+    const g = objects()[0]
+    expect(g.type).toBe('group')
+    useLogoStore.getState().duplicateIllustratorLayer(g.id)
+    const copies = objects().slice(4)
+    expect(copies[0]).toMatchObject({ type: 'group', name: `${g.name} copy` })
+    expect(roots()).toEqual([copies[0].id])
+    const band = copies.find((object) => object.type === 'path' && object.link?.kind === 'band') as PathObject
+    expect(band.link).toEqual({ kind: 'band', a: copies[1].id, b: copies[2].id })
+    // The copy's band follows its own circles: moving one changes the copy's band, not the original's.
+    const original = objects().find((object) => object.type === 'path' && object.link?.kind === 'band' && object.parentId === g.id) as PathObject
+    const circle = copies[1] as PathObject
+    useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: circle.id, carve: translateCarve(circle.carve!, { x: 0, y: 60 }) }] })
+    expect(objects().find((object) => object.id === original.id)).toBe(original)
+    expect(objects().find((object) => object.id === band.id)).not.toBe(band)
+    useLogoStore.getState().undoVectorCommand()
+    useLogoStore.getState().undoVectorCommand()
+    expect(objects()).toHaveLength(4)
+  })
+})
+
+describe('groups through links and saved marks', () => {
+  beforeEach(() => reset({ width: 1400, height: 1000 }))
+
+  it('keep their members, isolation, operation and turned frame', () => {
+    const spark = rollSparks(8, 1).find((rolled) => rolled.shapes.some((shape) => shape.operation === 'subtract'))!
+    useLogoStore.getState().dropSpark(spark)
+    const [group] = objects()
+    useLogoStore.getState().commitLayerEdits({ label: 'Rotate', edits: [{ layerId: group.id, frameRotation: 15 }] })
+    useLogoStore.getState().setGroupOperation(group.id, 'subtract')
+    const document = useLogoStore.getState().vectorDocument
+    const link = decodeLink(encodeLink(document, '#111111'))
+    if (link.kind !== 'vector') throw new Error(`decoded as ${link.kind}`)
+    expect(link.document.objects).toEqual(document.objects)
+    expect(link.document.objects[0]).toMatchObject({ type: 'group', isolated: true, operation: 'subtract', frame: { rotation: 15 } })
+    const saved = savedDocument(JSON.parse(JSON.stringify(createSavedVariation(document, useLogoStore.getState().params))))
+    expect(saved?.document.objects).toEqual(document.objects)
+    expect(composeVectorMark(saved!.document).compoundPathData).toBe(composeVectorMark(document).compoundPathData)
+  })
+})
+
+describe('sparks as groups', () => {
+  beforeEach(() => reset({ width: 1400, height: 1000 }))
+  const withCuts = rollSparks(8, 1).find((rolled) => rolled.shapes.some((shape) => shape.operation === 'subtract'))!
+
+  it('drops a spark as one isolated group named after it, below the work there, selected as the group', () => {
+    useLogoStore.getState().addSlab('square')
+    useLogoStore.getState().dropSpark(withCuts)
+    const [group, ...rest] = objects()
+    expect(group).toMatchObject({ type: 'group', isolated: true, operation: 'add', parentId: null })
+    expect(group.name).toMatch(/^Spark · /)
+    expect(rest.slice(0, withCuts.shapes.length).every((object) => object.parentId === group.id)).toBe(true)
+    expect((rest.at(-1) as PathObject).carve?.kind).toBe('slab')
+    const state = useLogoStore.getState()
+    expect(state.illustrator.selectedRootIds).toEqual([group.id])
+    expect(state.illustrator.selectedLayerIds).toEqual(rest.slice(0, withCuts.shapes.length).map((object) => object.id))
+  })
+
+  it('keeps two sparks from cutting each other', () => {
+    useLogoStore.getState().dropSpark(withCuts)
+    const alone = markArea()
+    useLogoStore.getState().dropSpark(withCuts)
+    // Two of the same spark side by side: twice the ink, none of it cut by the other's cuts.
+    expect(markArea()).toBeCloseTo(2 * alone, -1)
   })
 })

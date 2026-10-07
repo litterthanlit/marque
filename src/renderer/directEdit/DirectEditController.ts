@@ -45,6 +45,7 @@ import {
   type HandleLayout,
 } from '../../engine/carve/edit.ts'
 import {
+  boxFrameCorners,
   boxHandlePoint,
   evenFactorTo,
   evenScaleFloor,
@@ -88,10 +89,11 @@ import { bentEdgeCount, isGroove, polygonApothem, polygonCornerRadius, roundCarv
 import { offsetRecipe, offsetsExactly } from '../../engine/carve/offset.ts'
 import { followsAnyOf, offsetRoot } from '../../engine/vector/offsets.ts'
 import { bandBetween, linkSources } from '../../engine/vector/bands.ts'
+import { ancestorsOf, isInside, layerNumbers, parentsOf, selectionRoot } from '../../engine/vector/groups.ts'
 import { bakedEditableShape } from '../../engine/illustrator/layerPath.ts'
 import { createComposeSession, type ComposeSession } from '../../engine/illustrator/composeSession.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
-import { HISTORY_MERGE_MS, type AnchorRef, type HistoryMergeKind, type LayerEdit, type LayerEditCommit } from '../../store/logoStore.ts'
+import { HISTORY_MERGE_MS, type AnchorRef, type HistoryMergeKind, type LayerEdit, type LayerEditCommit, type Refused } from '../../store/logoStore.ts'
 import { drawLiveConstructionMarks, getInkItem, hideGuides, hideLayerOutlines, setInkPathData, setSurvivalVisible } from '../IllustratorRenderer.ts'
 import type { Guide } from '../../engine/vector/types.ts'
 import { constructionShape, guideAnchor, lineReading, lineShape, moveGuideShape, sameGuideShape, type GuideShape } from '../../engine/vector/guides.ts'
@@ -102,15 +104,18 @@ import { GUIDE_LINE, guideDashAt, guidePathItem, styleGuideItem, visibleLayerRec
 import { carriedCuts } from './carry.ts'
 import { CURSORS, resizeCursor } from './cursors.ts'
 import { hud } from './hud.ts'
+import { REFUSAL_MS } from './refusal.ts'
 import { EMPTY_ZONE, GUIDE_PX, findZone, freeCurve, zoneKey, type HitContext, type Zone } from './hitZones.ts'
 import {
   boxHandleList,
   canvasPointer,
+  groupOutline,
   hiddenRadiusDots,
   recipeFrame,
   scaledHandleLayout,
   selectionBox,
   selectionHandles,
+  turnedGroupFrames,
   type HandleSet,
   type LiveHandles,
 } from './handleSet.ts'
@@ -317,6 +322,23 @@ function boxMoved({ members, carried, bands }: BoxMembers, move: BoxMove): Array
 
 function boxEdits(moved: BoxMembers, move: BoxMove): LayerEdit[] {
   return boxMoved(moved, move).map(({ id, from, next }) => movedEdit(id, from, next, move.turn))
+}
+
+/** How far outside a piece's frame the dashed box round the group it lies in goes, in CSS pixels. */
+const ENTERED_GROUP_GAP_PX = 12
+
+/** What the HUD says the first time a tap takes a whole group. */
+const GROUP_TAP_HINT = 'Group selected: double-tap a piece to work on it alone'
+/** How long it stays, long enough to read its nine words: the next press takes it away sooner. */
+const GROUP_TAP_HINT_MS = 4000
+
+/**
+ * The frames of the selected groups, and of the groups inside them, after a
+ * turn of the selection that moved `moved`'s members: none for no turn.
+ */
+function groupFrameEdits(doc: IllustratorDocument, moved: BoxMembers, turn: number): LayerEdit[] {
+  const ids = new Set([...moved.members.keys(), ...moved.carried.keys(), ...moved.bands.keys()])
+  return turnedGroupFrames(doc, turn, ids).map(({ id, rotation }) => ({ layerId: id, frameRotation: rotation }))
 }
 
 /** The label of a box move's undo step. */
@@ -583,7 +605,12 @@ export class DirectEditController {
   private session: Session | null = null
   private lastDown: { time: number; point: Vec; key: string } | null = null
   private readonly freePaths = new WeakMap<IllustratorLayer, EditableShape | null>()
+  private parentCache: { layers: IllustratorLayer[]; groups: IllustratorDocument['groups']; parents: Map<string, string | null> } | null = null
   private keyBurst: KeyBurst | null = null
+  /** What a refused command found in the way, outlined for a moment. */
+  private blocker: { id: string; timer: number } | null = null
+  /** A tap has taken a whole group, and the HUD has said how to reach one piece. */
+  private groupTapTold = false
   private keyChipTimer = 0
   /** The layers the key chip's number is about: once they change by anything else, such as an undo, it goes. */
   private keyChipLayers: readonly IllustratorLayer[] | null = null
@@ -684,6 +711,7 @@ export class DirectEditController {
     this.cancel()
     this.unregisterKeys()
     window.clearTimeout(this.keyChipTimer)
+    if (this.blocker) window.clearTimeout(this.blocker.timer)
     this.destroyed = true
     hiddenRadiusDots.set([])
     hud.clear()
@@ -820,8 +848,39 @@ export class DirectEditController {
     return this.host.getDoc().layers.find((candidate) => candidate.id === id)
   }
 
+  /** Each layer's and group's group, in a document with groups. */
+  private parents(doc: IllustratorDocument): Map<string, string | null> {
+    const cached = this.parentCache
+    if (cached?.layers === doc.layers && cached.groups === doc.groups) return cached.parents
+    const parents = parentsOf([...doc.layers, ...(doc.groups ?? [])])
+    this.parentCache = { layers: doc.layers, groups: doc.groups, parents }
+    return parents
+  }
+
+  /**
+   * What a click on a layer selects: the outermost group around it that the
+   * selection has not entered, or the layer itself.
+   */
+  private rootOf(doc: IllustratorDocument, layerId: string): string {
+    if (!doc.groups?.length) return layerId
+    return selectionRoot(this.parents(doc), layerId, doc.enteredGroupId ?? null)
+  }
+
+  /** The layers a selected object stands for: itself, or every layer inside a group. */
+  private leavesUnder(doc: IllustratorDocument, id: string): string[] {
+    if (!doc.groups?.some((group) => group.id === id)) return [id]
+    const parents = this.parents(doc)
+    return doc.layers.filter((layer) => isInside(parents, layer.id, id)).map((layer) => layer.id)
+  }
+
+  /** What the selection holds: layers and whole groups. */
+  private selectedRoots(doc: IllustratorDocument): string[] {
+    return doc.selectedRootIds ?? doc.selectedLayerIds
+  }
+
   private selectedFreePath(doc: IllustratorDocument, selectedIds: string[]) {
-    if (selectedIds.length !== 1) return null
+    // A group of one is the group: its member's points wait until it is entered.
+    if (selectedIds.length !== 1 || this.selectedRoots(doc)[0] !== selectedIds[0]) return null
     const layer = doc.layers.find((candidate) => candidate.id === selectedIds[0])
     if (!layer || layer.carve || !layer.visible) return null
     const shape = this.freePathOf(layer)
@@ -872,6 +931,7 @@ export class DirectEditController {
       unitsPerPx: this.unitsPerPx(),
       touch,
       edges: true,
+      bendable: (layerId) => this.rootOf(doc, layerId) === layerId,
       freePathOf: (layer) => this.freePathOf(layer),
       guides: this.reachableGuides(doc),
       guideHandles: this.selectedGuideHandles(doc),
@@ -979,9 +1039,11 @@ export class DirectEditController {
     }
   }
 
+  /** Is this layer what is selected, on its own: not a member reached through its group? */
   private isSelectedAlone(layerId: string): boolean {
     const doc = this.host.getDoc()
-    return doc.selectedLayerIds.length === 1 && doc.selectedLayerIds[0] === layerId
+    const roots = this.selectedRoots(doc)
+    return roots.length === 1 && roots[0] === layerId && doc.selectedLayerIds.length === 1
   }
 
   private setCursor(cursor: string) {
@@ -1193,10 +1255,7 @@ export class DirectEditController {
       }
     }
     if (lost.length) {
-      const numbers = lost.flatMap((id) => {
-        const index = doc.layers.findIndex((layer) => layer.id === id)
-        return index < 0 ? [] : [String(index + 1).padStart(2, '0')]
-      })
+      const numbers = lost.flatMap((id) => layerNumbers(doc).get(id) ?? [])
       hud.hold(`band ${numbers.join(', ')}: no fit`, NO_FIT_LIVE_MS)
     }
   }
@@ -1260,9 +1319,15 @@ export class DirectEditController {
 
   /** Why a layer a move would take along stays: the source of a copy, or a band's circle, locked or hidden. */
   private heldSource(doc: IllustratorDocument, id: string, role: 'source' | 'circle' = 'source'): Held {
-    const layer = this.layer(id)
-    const number = String(doc.layers.findIndex((each) => each.id === id) + 1).padStart(2, '0')
-    return layer?.locked
+    const locked = Boolean(this.layer(id)?.locked)
+    // A layer takes its group's lock and visibility: the row to change is the outermost group that holds it, or else its own.
+    const groups = new Map((doc.groups ?? []).map((group) => [group.id, group]))
+    const holder =
+      ancestorsOf(this.parents(doc), id)
+        .reverse()
+        .find((groupId) => (locked ? groups.get(groupId)?.locked : groups.get(groupId)?.visible === false)) ?? id
+    const number = layerNumbers(doc).get(holder) ?? '—'
+    return locked
       ? { label: `${role} is locked`, sentence: `${role} is locked: unlock ${number} to move it` }
       : { label: `${role} is hidden`, sentence: `${role} is hidden: show ${number} to move it` }
   }
@@ -1459,7 +1524,7 @@ export class DirectEditController {
         return
       case 'body':
         if (press.mods.shift) this.toggleSelected(doc, zone.layerId)
-        else this.host.setSelection([zone.layerId], null)
+        else this.selectRootOf(doc, zone.layerId)
         return
       case 'anchor':
         this.host.setSelection([zone.layerId], { layerId: zone.layerId, contourIndex: zone.contourIndex, segmentIndex: zone.index })
@@ -1475,7 +1540,7 @@ export class DirectEditController {
           this.schedulePendingPoint(zone)
           return
         }
-        this.host.setSelection([zone.layerId], null)
+        this.selectRootOf(doc, zone.layerId)
         return
       case 'frame':
         // A click inside the box, between its shapes, keeps the selection.
@@ -1491,18 +1556,53 @@ export class DirectEditController {
     }
   }
 
-  private toggleSelected(doc: IllustratorDocument, layerId: string) {
-    const has = doc.selectedLayerIds.includes(layerId)
-    this.host.setSelection(has ? doc.selectedLayerIds.filter((id) => id !== layerId) : [...doc.selectedLayerIds, layerId])
+  /**
+   * A click on a layer: it, or its outermost group not entered. The first
+   * time a tap takes a whole group, the HUD says how to reach one piece:
+   * touch has no tooltips to say it.
+   */
+  private selectRootOf(doc: IllustratorDocument, layerId: string) {
+    const root = this.rootOf(doc, layerId)
+    this.host.setSelection([root], null)
+    if (root === layerId || !canvasPointer.touch() || this.groupTapTold) return
+    this.groupTapTold = true
+    if (!this.placeKeyHud()) return
+    hud.hold(GROUP_TAP_HINT, GROUP_TAP_HINT_MS)
+    hud.announce(GROUP_TAP_HINT)
   }
 
+  /** Shift-click: the layer, or the group a click on it selects, in or out of the selection. */
+  private toggleSelected(doc: IllustratorDocument, layerId: string) {
+    const root = this.rootOf(doc, layerId)
+    const roots = this.selectedRoots(doc)
+    this.host.setSelection(roots.includes(root) ? roots.filter((id) => id !== root) : [...roots, root])
+  }
+
+  /**
+   * A double-click on a member of a group selects the piece itself, entering
+   * its group; on an edge it straightens the edge only once that layer is
+   * selected on its own, so a double-click into a group never straightens a
+   * piece by accident.
+   */
   private doubleAction(zone: Zone) {
     if (zone.kind === 'anchor') {
       this.dropPendingPoint()
       this.host.editAnchor(zone.layerId, zone.index, 'toggle-smooth', zone.contourIndex)
       return
     }
+    if ((zone.kind === 'body' || zone.kind === 'edge') && this.entersPiece(zone.layerId)) return
     if (zone.kind === 'edge') this.straightenEdge(zone)
+  }
+
+  /** Select a group's member on its own, entering its group, unless it already is: true when it did. */
+  private entersPiece(layerId: string): boolean {
+    const layer = this.layer(layerId)
+    if (!layer?.parentId || this.isSelectedAlone(layerId)) return false
+    this.dropPendingPoint()
+    this.host.setSelection([layerId], null)
+    // Done as the hint said: it goes.
+    if (hud.get().label === GROUP_TAP_HINT) hud.letGo()
+    return true
   }
 
   /** Double-click on an edge: straighten it if it's bent; on a straight free edge, add the point now. */
@@ -1615,9 +1715,14 @@ export class DirectEditController {
     }
   }
 
-  /** Layers a body drag moves: the selection if the pressed shape is in it, else just that shape. */
+  /**
+   * Layers a body drag moves: the selection if the pressed shape is in it,
+   * else what a click on it would select: the shape, or its whole group.
+   */
   private movingIds(doc: IllustratorDocument, pressedId: string): string[] {
-    return doc.selectedLayerIds.includes(pressedId) ? this.usableSelection(doc) : [pressedId]
+    if (doc.selectedLayerIds.includes(pressedId)) return this.usableSelection(doc)
+    const root = this.rootOf(doc, pressedId)
+    return root === pressedId ? [pressedId] : this.leavesUnder(doc, root).filter((id) => usable(this.layer(id)))
   }
 
   /** The selected layers that take part in an edit: hidden and locked ones stay selected but stay put. */
@@ -1812,8 +1917,10 @@ export class DirectEditController {
     // An offset copy goes where its source puts it: dragging it moves the source, and the HUD says so.
     const selected = this.movingIds(doc, pressedId)
     const sources = this.movedSources(selected)
+    // A group dragged before it was selected is left selected, as a click on it would leave it.
+    const root = doc.selectedLayerIds.includes(pressedId) ? null : this.rootOf(doc, pressedId)
     // Alt moves the shape alone, leaving its holes where they are.
-    const plan = this.movePlan(sources.ids, !mods.alt, selected)
+    const plan = this.movePlan(sources.ids, !mods.alt, root !== null && root !== pressedId ? [root] : selected)
     if (!plan) return sources.held.length ? this.heldSession(sources.held[0]) : null
     const fallback = sources.redirected
     let index: SnapIndex | null = null
@@ -1979,11 +2086,7 @@ export class DirectEditController {
   }) {
     const doc = this.host.getDoc()
     // Numbered as the drawer numbers them, from 01 at the bottom.
-    const numbered = (ids: readonly string[]) =>
-      ids.flatMap((id) => {
-        const index = doc.layers.findIndex((layer) => layer.id === id)
-        return index < 0 ? [] : [String(index + 1).padStart(2, '0')]
-      })
+    const numbered = (ids: readonly string[]) => ids.flatMap((id) => layerNumbers(doc).get(id) ?? [])
     // A band its circles now allow no fit vanishes from the canvas: said whoever made the edit, as nothing else shows it.
     const lost = numbered(emptied)
     if (lost.length) {
@@ -2114,7 +2217,7 @@ export class DirectEditController {
           restore()
           return
         }
-        this.host.commitLayerEdits({ label, edits: boxEdits(moved, move) })
+        this.host.commitLayerEdits({ label, edits: [...boxEdits(moved, move), ...groupFrameEdits(doc, moved, move.turn)] })
       },
       cancel: restore,
       drawOverlay: (overlay) => {
@@ -2205,7 +2308,8 @@ export class DirectEditController {
         letGo.update(this.preview !== null && this.unpinning(this.preview.carves, plan.editedIds))
       },
       // A turned box around several layers comes back upright on release:
-      // it is measured afresh around them, and they keep no shared frame.
+      // it is measured afresh around them, and they keep no shared frame. A
+      // group's box keeps the turn: the group's frame stores it.
       commit: () => plan.commit(boxLabel(rotating, plan.ids.length > 1)),
       cancel: () => plan.cancel(),
       drawOverlay: (overlay) => plan.drawOverlay(overlay),
@@ -2885,6 +2989,27 @@ export class DirectEditController {
     this.drawOverlay()
   }
 
+  /**
+   * Say why a command did nothing, by the selection's box, and outline
+   * what is in the way, a layer or every piece of a group, for a moment.
+   */
+  showRefusal(refused: Refused): void {
+    if (this.destroyed) return
+    this.placeKeyHud()
+    hud.hold(refused.words, REFUSAL_MS)
+    hud.announce(refused.words)
+    if (this.blocker) window.clearTimeout(this.blocker.timer)
+    this.blocker = null
+    if (refused.blocker) {
+      const timer = window.setTimeout(() => {
+        this.blocker = null
+        this.drawOverlay()
+      }, REFUSAL_MS)
+      this.blocker = { id: refused.blocker, timer }
+    }
+    this.drawOverlay()
+  }
+
   /* ─── Overlay ─── */
 
   /** The one selected slab or polygon, when it is too small on screen for its rounding dot to keep clear of its centre. */
@@ -2908,9 +3033,19 @@ export class DirectEditController {
     const selected = doc.selectedLayerIds.filter((id) => ids.has(id))
     if (!editing) hiddenRadiusDots.set(this.dotlessRecipes(selected))
 
+    // A press there takes what a click would select: the layer, or every piece of its group.
     if (this.hover.kind === 'body' && !selected.includes(this.hover.layerId) && !edited.has(this.hover.layerId)) {
-      const item = this.items.get(this.hover.layerId)
-      if (item) outlineItem(this.scope, layer, item, { dashed: true, width: 1.25 })
+      for (const id of this.leavesUnder(doc, this.rootOf(doc, this.hover.layerId))) {
+        const item = edited.has(id) || selected.includes(id) || !this.layer(id)?.visible ? undefined : this.items.get(id)
+        if (item) outlineItem(this.scope, layer, item, { dashed: true, width: 1.25 })
+      }
+    }
+    if (!editing) this.drawEnteredGroup(doc, layer)
+    if (this.blocker) {
+      for (const id of this.leavesUnder(doc, this.blocker.id)) {
+        const item = this.layer(id)?.visible ? this.items.get(id) : undefined
+        if (item) outlineItem(this.scope, layer, item, { dashed: true, width: 1.5, color: NO_FIT_COLOR })
+      }
     }
     const offset = editing ? null : this.offsetOutline
     for (const id of selected) {
@@ -2974,6 +3109,25 @@ export class DirectEditController {
   }
 
   /**
+   * The group the selection has entered, a faint dashed box round its
+   * pieces, so a piece inside a group never looks like a layer at the root.
+   * Each piece counts in full, a cut too, so the selected one always lies
+   * inside its group's box.
+   */
+  private drawEnteredGroup(doc: IllustratorDocument, overlay: paper.Layer) {
+    const group = doc.enteredGroupId ? doc.groups?.find((each) => each.id === doc.enteredGroupId) : undefined
+    if (!group) return
+    const pieces = new Set(this.leavesUnder(doc, group.id))
+    const layers = doc.layers.filter((layer) => pieces.has(layer.id) && layer.visible)
+    const box = groupOutline(layers, (layer) => this.freePathOf(layer), group.frameRotation ?? 0)
+    if (!box) return
+    // Clear of the piece's own frame by a set step, so it reads as the group's, on touch too, where that frame stands further out.
+    const corners = boxFrameCorners(box, (this.handleLayout().pad + ENTERED_GROUP_GAP_PX) * this.unitsPerPx())
+    const pathData = `M${corners.map((p) => `${p.x},${p.y}`).join('L')}Z`
+    outlinePathData(this.scope, overlay, pathData, this.center(), { dash: [2, 4], width: 1, opacity: 0.7 })
+  }
+
+  /**
    * A selected band marks the circles it follows, dashed; one they allow no
    * fit shows where it would run, a dashed red line between their centres.
    */
@@ -3022,11 +3176,12 @@ export class DirectEditController {
         return true
       }
       if (doc.pointSelection) {
-        this.host.setSelection(doc.selectedLayerIds, null)
+        this.host.setSelection(this.selectedRoots(doc), null)
         return true
       }
+      // Back one level: from a piece to its group, from the group to nothing.
       if (doc.selectedLayerIds.length) {
-        this.host.setSelection([])
+        this.host.setSelection(doc.enteredGroupId ? [doc.enteredGroupId] : [])
         return true
       }
       if (doc.selectedGuideIds?.length) {
@@ -3086,7 +3241,7 @@ export class DirectEditController {
   ): { box: OrientedBox; moved: BoxMembers; going: KeyBurst | null } | null {
     const around = selectionBox(doc, (layer) => this.freePathOf(layer))
     if (!around) return null
-    const lone = around.ids.length === 1 && Boolean(this.layer(around.ids[0])?.carve)
+    const lone = around.ids.length === 1 && Boolean(this.layer(around.ids[0])?.carve) && !around.group
     const going = this.burstGoing(doc, kind)
     const moved = this.boxMembers(doc, around.ids, !lone, going?.carried)
     return moved && { box: around.box, moved, going }
@@ -3098,8 +3253,8 @@ export class DirectEditController {
    */
   private sayWaiting(doc: IllustratorDocument) {
     const selected = new Set(doc.selectedLayerIds)
-    const waiting = doc.layers.flatMap((layer, index) =>
-      selected.has(layer.id) && layer.link && !layer.pathData ? [{ band: layer.link.kind === 'band', number: String(index + 1).padStart(2, '0') }] : [],
+    const waiting = doc.layers.flatMap((layer) =>
+      selected.has(layer.id) && layer.link && !layer.pathData ? [{ band: layer.link.kind === 'band', number: layerNumbers(doc).get(layer.id) ?? '—' }] : [],
     )
     if (!waiting.length) return
     const numbers = waiting.map((one) => one.number).join(', ')
@@ -3147,7 +3302,8 @@ export class DirectEditController {
     const was = going?.turn ? going.turn.rotation : target.box.rotation
     const rotation = normalizeDegrees(Math.round(was + step))
     const move = turnMove(center, normalizeDegrees(rotation - was))
-    this.saysOwn(() => this.host.commitLayerEdits({ label: boxLabel(true, moved.members.size > 1), edits: boxEdits(moved, move), merge: 'key-turn' }))
+    const edits = [...boxEdits(moved, move), ...groupFrameEdits(doc, moved, move.turn)]
+    this.saysOwn(() => this.host.commitLayerEdits({ label: boxLabel(true, moved.members.size > 1), edits, merge: 'key-turn' }))
     this.noteBurst('key-turn', [...moved.carried.keys()], { center, rotation })
     this.showKeyChip(`${r0(rotation)}°`)
     // Each key reads out where the selection now is, never how far the burst has gone.

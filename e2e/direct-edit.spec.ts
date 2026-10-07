@@ -1035,7 +1035,7 @@ test('Saved keeps a mark and brings it back', async ({ page }) => {
   expect(await carves(page)).toEqual(kept)
 })
 
-test('a spark dropped on an empty canvas lands in the middle, all selected, as one undo step', async ({ page }) => {
+test('a spark dropped on an empty canvas lands in the middle, selected as one group, as one undo step', async ({ page }) => {
   await openVectorMaker(page, 'construction')
   await dealSparks(page, 1)
   await pickTool(page, 'Pen')
@@ -1045,11 +1045,15 @@ test('a spark dropped on an empty canvas lands in the middle, all selected, as o
   const dropped = await layers(page)
   expect(dropped.map((layer) => layer.operation)).toEqual(['add', 'add', 'subtract'])
   expect(dropped.every((layer) => layer.carve === null)).toBe(true)
+  // The selection is the spark's group, which stands for every layer in it.
+  const [group] = await groupsIn(page)
+  expect(group).toMatchObject({ type: 'group', isolated: true })
+  expect(await selectedRoots(page)).toEqual([group.id])
   expect(await selectedIds(page)).toEqual(dropped.map((layer) => layer.id))
   expect(await page.evaluate(() => window.__marque.store.getState().ui.activeTool)).toBeNull()
   expect(await undoDepth(page)).toBe(1)
   const bar = selectionBar(page)
-  await expect(bar).toContainText('3 layers')
+  await expect(bar).toContainText(`${group.name} · 3 pieces`)
   // One box goes round them all, with every handle: there are no recipes among them.
   expect(await handleIds(page)).toEqual(['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w', 'rotate'])
 
@@ -1288,15 +1292,17 @@ test('a dropped spark turns as one piece in 15° steps with Shift, as one undo s
       expect(Math.abs(p.y - expected.y)).toBeLessThan(0.01)
     }
   }
-  // Every shape's own box turned with it; the box round them all is upright again.
+  // Every shape's own box turned with it, and so did the spark's group: its box stays turned 30°.
   expect(await frameRotations(page)).toEqual(before.map(() => 30))
+  expect((await groupsIn(page))[0].frame).toEqual({ rotation: 30 })
   const n = await handle(page, 'n')
   const s = await handle(page, 's')
-  expect(Math.abs(n.x - s.x)).toBeLessThan(0.5)
+  expect((Math.atan2(s.y - n.y, s.x - n.x) * 180) / Math.PI).toBeCloseTo(90 + 30, 0)
 
   await page.keyboard.press('ControlOrMeta+z')
   await expect.poll(() => anchors(page)).toEqual(before)
   expect(await frameRotations(page)).toEqual(before.map(() => 0))
+  expect((await groupsIn(page))[0].frame).toBeUndefined()
 })
 
 test("a pen shape's box turns with it and stays turned, and resizes along its own sides", async ({ page }) => {
@@ -4492,4 +4498,610 @@ test('the tool pill keeps its seven tools on one row, as icons on a phone, each 
   for (const name of ['Select', 'Pen', 'Punch', 'Channel', 'Slice', 'Guide', 'Band']) {
     await expect(page.getByRole('group', { name: 'Tools' }).getByRole('button', { name, exact: true })).toBeVisible()
   }
+})
+
+/* ─── Groups ─── */
+
+/** What the selection holds: layers and whole groups, as a click selects them. */
+const selectedRoots = (page: Page) => page.evaluate(() => window.__marque.selectedRoots())
+const enteredGroup = (page: Page) => page.evaluate(() => window.__marque.enteredGroup())
+const groupsIn = (page: Page) =>
+  page.evaluate(() => window.__marque.store.getState().vectorDocument.objects.flatMap((object) => (object.type === 'group' ? [object] : [])))
+
+async function shiftClick(page: Page, p: Point) {
+  await page.keyboard.down('Shift')
+  await click(page, p)
+  await page.keyboard.up('Shift')
+}
+
+/**
+ * Ref 3's upper half, in one shared stack as it is drawn: two slab halves
+ * meeting on the centre line, the left one 173 wide and the right 174, and
+ * a large circle punch for each, the left one's below on the sheet and the
+ * right one's above. In layer units about the half's middle: the sheet's
+ * (424, 509) is the origin.
+ */
+async function ref3UpperHalf(page: Page): Promise<{ left: string; right: string; leftCut: string; rightCut: string }> {
+  await addSlab(page, 'Square')
+  await addSlab(page, 'Square')
+  return page.evaluate(() => {
+    const store = window.__marque.store
+    store.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 20, y: 115 }, radius: 173 })
+    store.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: -19, y: -94 }, radius: 174 })
+    const [left, right, leftCut, rightCut] = store.getState().illustrator.layers.map((layer) => layer.id)
+    const half = (x: number, width: number) => ({ v: 1 as const, kind: 'slab' as const, preset: 'square' as const, center: { x, y: 0 }, width, height: 160, radius: 0, rotation: 0 })
+    store.getState().commitLayerEdits({
+      label: 'Place halves',
+      edits: [
+        { layerId: left, carve: half(-86.5, 173) },
+        { layerId: right, carve: half(87, 174) },
+      ],
+      select: [],
+    })
+    return { left, right, leftCut, rightCut }
+  })
+}
+
+/** The sheet's points (300, 470) and (560, 580), ink on the sheet, and a point in each half of the counter. */
+const REF3_SHEET = [
+  { x: -124, y: -39 },
+  { x: 136, y: 71 },
+]
+const REF3_COUNTER = [
+  { x: -44, y: 31 },
+  { x: 46, y: -39 },
+]
+
+test("ref 3's upper half, built as two isolated groups, keeps the sheet points as ink with the counter clear", async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await page.evaluate(() => window.__marque.store.getState().setCarveSettings({ snapping: false }))
+  const f = await frame(page)
+  const { left, right, leftCut, rightCut } = await ref3UpperHalf(page)
+  const bar = selectionBar(page)
+
+  // In one shared stack the right circle cuts the left half too: the sheet point on the left is gone.
+  await pointerAway(page, f)
+  expect(await isInk(page, f.at(REF3_SHEET[0].x, REF3_SHEET[0].y))).toBe(false)
+
+  // The right half with its circle cannot be grouped yet: gathering would lift the half over the left circle, which cuts it.
+  await click(page, f.at(160, -60))
+  await shiftClick(page, f.at(46, -39))
+  expect(await selectedRoots(page)).toEqual([right, rightCut])
+  const depth = await undoDepth(page)
+  await page.keyboard.press('ControlOrMeta+g')
+  await expect(hudStatus(page)).toHaveText('Cut 03 lies between them')
+  expect(await undoDepth(page)).toBe(depth)
+  await expect(bar.getByRole('button', { name: 'Group: Cut 03 lies between them' })).toBeDisabled()
+
+  // The left half with its own circle: nothing of the other operation lies between them.
+  await click(page, f.at(-160, 70))
+  await shiftClick(page, f.at(-100, 72))
+  expect(await selectedRoots(page)).toEqual([left, leftCut])
+  await page.keyboard.press('ControlOrMeta+g')
+  expect(await undoDepth(page)).toBe(depth + 1)
+  let [one] = await groupsIn(page)
+  expect(await selectedRoots(page)).toEqual([one.id])
+  await expect(selectionSummary(page)).toContainText('Group 1 · 2 pieces')
+  await bar.getByRole('switch', { name: 'Isolate cuts' }).click()
+  expect(await undoDepth(page)).toBe(depth + 2)
+  ;[one] = await groupsIn(page)
+  expect(one.type === 'group' && one.isolated).toBe(true)
+
+  // Now the right half and its circle group: what lies between is a group that keeps its cuts to itself.
+  await click(page, f.at(160, -60))
+  await shiftClick(page, f.at(46, -39))
+  expect(await selectedRoots(page)).toEqual([right, rightCut])
+  await bar.getByRole('button', { name: 'Group', exact: true }).click()
+  expect(await undoDepth(page)).toBe(depth + 3)
+  await bar.getByRole('switch', { name: 'Isolate cuts' }).click()
+  const groups = await groupsIn(page)
+  expect(groups.map((group) => group.type === 'group' && group.isolated)).toEqual([true, true])
+  expect(groups.map((group) => group.name)).toEqual(['Group 1', 'Group 2'])
+
+  // Each circle cuts only its own half: both sheet points are ink, and the counter is clear.
+  await page.keyboard.press('Escape')
+  await pointerAway(page, f)
+  for (const p of REF3_SHEET) await expect.poll(() => isInk(page, f.at(p.x, p.y)), `ink at ${p.x}, ${p.y}`).toBe(true)
+  for (const p of REF3_COUNTER) expect(await isEmpty(page, f.at(p.x, p.y)), `clear at ${p.x}, ${p.y}`).toBe(true)
+  const inMark = await page.evaluate((points) => {
+    const mark = window.__marque.mark()
+    const probe = document.createElement('canvas').getContext('2d')!
+    const path = new Path2D(mark.compoundPathData)
+    return points.map((p) => probe.isPointInPath(path, p.x, p.y, 'evenodd'))
+  }, [...REF3_SHEET, ...REF3_COUNTER])
+  expect(inMark).toEqual([true, true, false, false])
+  expect(await inkMismatches(page)).toEqual([])
+
+  // Both groups selected: the bar offers no Union, Subtract or Intersect, which would join their pieces' raw outlines, cuts and all.
+  await page.evaluate((list) => window.__marque.store.getState().setSelection(list), groups.map((group) => group.id))
+  await expect(selectionSummary(page)).toContainText('4 layers')
+  await expect(bar.getByRole('group', { name: 'Boolean' })).toHaveCount(0)
+  await page.keyboard.press('Escape')
+
+  // Undo takes the isolation off again: the right circle reaches the left half.
+  await page.keyboard.press('ControlOrMeta+z')
+  await pointerAway(page, f)
+  await expect.poll(() => isInk(page, f.at(REF3_SHEET[0].x, REF3_SHEET[0].y))).toBe(false)
+})
+
+test('Cmd+G is refused while a cut lies between, groups once it does not, and Ungroup puts the layers back as they were', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await page.evaluate(() => window.__marque.store.getState().setCarveSettings({ snapping: false }))
+  const f = await frame(page)
+  const ids = await circleSlabs(page, [
+    [-120, 0, 60],
+    [120, 0, 60],
+  ])
+  await page.evaluate(() => window.__marque.store.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: -120, y: 0 }, radius: 20 }))
+  // The punch made last sits on top: put it between the circles.
+  const cut = (await layers(page)).at(-1)!.id
+  await page.evaluate((id) => window.__marque.store.getState().moveIllustratorLayer(id, 'down'), cut)
+  expect((await layers(page)).map((layer) => layer.id)).toEqual([ids[0], cut, ids[1]])
+  const bar = selectionBar(page)
+
+  await click(page, f.at(-120, 45))
+  await shiftClick(page, f.at(120, 45))
+  expect(await selectedRoots(page)).toEqual([ids[0], ids[1]])
+  const depth = await undoDepth(page)
+  await page.keyboard.press('ControlOrMeta+g')
+  await expect(hudStatus(page)).toHaveText('Cut 02 lies between them')
+  expect(await groupsIn(page)).toEqual([])
+  expect(await undoDepth(page)).toBe(depth)
+  await expect(bar.getByRole('button', { name: /^Group: / })).toBeDisabled()
+
+  // Moved off the circle, the cut is no longer in the way.
+  await page.evaluate((id) => {
+    const { illustrator, commitLayerEdits } = window.__marque.store.getState()
+    const carve = illustrator.layers.find((layer) => layer.id === id)!.carve!
+    commitLayerEdits({ label: 'Move', edits: [{ layerId: id, carve: { ...carve, center: { x: 0, y: 200 } } as typeof carve }] })
+  }, cut)
+  await page.evaluate((list) => window.__marque.store.getState().setSelection(list), ids)
+  await expect(bar.getByRole('button', { name: 'Group', exact: true })).toBeEnabled()
+  const before = await layers(page)
+  await page.keyboard.press('ControlOrMeta+g')
+  const [group] = await groupsIn(page)
+  expect(await selectedRoots(page)).toEqual([group.id])
+  // Gathered where the topmost was: the lower circle moved up past the cut.
+  expect((await layers(page)).map((layer) => layer.id)).toEqual([cut, ids[0], ids[1]])
+  await expect(selectionSummary(page)).toContainText('Group 1 · 2 pieces')
+
+  // Ungroup from the bar: the circles stay where the group had them, both selected.
+  await bar.getByRole('button', { name: 'Ungroup' }).click()
+  expect(await groupsIn(page)).toEqual([])
+  expect(await selectedRoots(page)).toEqual([ids[0], ids[1]])
+  expect((await layers(page)).map((layer) => layer.id)).toEqual([cut, ids[0], ids[1]])
+  // Cmd+Shift+G after Cmd+G is the same, and undo goes back step by step.
+  await page.keyboard.press('ControlOrMeta+g')
+  expect(await groupsIn(page)).toHaveLength(1)
+  await page.keyboard.press('ControlOrMeta+Shift+g')
+  expect(await groupsIn(page)).toEqual([])
+  await page.keyboard.press('ControlOrMeta+z')
+  expect(await groupsIn(page)).toHaveLength(1)
+  for (let i = 0; i < 3; i++) await page.keyboard.press('ControlOrMeta+z')
+  expect(await groupsIn(page)).toEqual([])
+  expect(await layers(page)).toEqual(before)
+  expect(await selectedRoots(page)).toEqual([ids[0], ids[1]])
+})
+
+test('a dropped spark is one isolated group: a click selects it, a double-click one piece, and Escape steps back', async ({ page }) => {
+  await openVectorMaker(page)
+  await page.evaluate(() => window.__marque.store.getState().setCarveSettings({ snapping: false }))
+  await dealSparks(page, 1)
+  await sparkButton(page, 4).click()
+  const f = await frame(page)
+  const [group] = await groupsIn(page)
+  expect(group).toMatchObject({ type: 'group', isolated: true })
+  expect(group.name).toMatch(/^Spark · /)
+  const pieces = await layers(page)
+  expect(await selectedRoots(page)).toEqual([group.id])
+  expect(await selectedIds(page)).toEqual(pieces.map((layer) => layer.id))
+  await expect(selectionSummary(page)).toContainText(`${group.name} · ${pieces.length} pieces`)
+
+  // A point well inside the topmost piece there: what a double-click picks.
+  const probe = await page.evaluate((list) => {
+    const ctx = document.createElement('canvas').getContext('2d')!
+    const paths = list.map((layer) => new Path2D(layer.pathData))
+    for (let y = -150; y <= 150; y += 6) {
+      for (let x = -150; x <= 150; x += 6) {
+        const around = [-8, 0, 8].flatMap((dx) => [-8, 0, 8].map((dy) => [x + dx, y + dy]))
+        const top = (px: number, py: number) => paths.findLastIndex((path) => ctx.isPointInPath(path, px, py))
+        const owner = top(x, y)
+        if (owner >= 0 && around.every(([px, py]) => top(px, py) === owner)) return { x, y, id: list[owner].id }
+      }
+    }
+    return null
+  }, pieces)
+  expect(probe).not.toBeNull()
+
+  await page.keyboard.press('Escape')
+  expect(await selectedRoots(page)).toEqual([])
+  await click(page, f.at(probe!.x, probe!.y))
+  expect(await selectedRoots(page)).toEqual([group.id])
+  // Long enough after that press not to pair with it.
+  await page.waitForTimeout(400)
+  await page.mouse.dblclick(f.at(probe!.x, probe!.y).x, f.at(probe!.x, probe!.y).y)
+  expect(await selectedRoots(page)).toEqual([probe!.id])
+  expect(await enteredGroup(page)).toBe(group.id)
+  await expect(selectionSummary(page)).not.toContainText('pieces')
+  // Inside the group, a click on another piece picks that piece.
+  await page.keyboard.press('Escape')
+  expect(await selectedRoots(page)).toEqual([group.id])
+  expect(await enteredGroup(page)).toBeNull()
+  await page.keyboard.press('Escape')
+  expect(await selectedRoots(page)).toEqual([])
+
+  // A drag on a piece of the group, unselected, moves the whole group, which stays selected.
+  const depth = await undoDepth(page)
+  const from = f.at(probe!.x, probe!.y)
+  await drag(page, from, { x: from.x + 30 * f.unit, y: from.y })
+  expect(await undoDepth(page)).toBe(depth + 1)
+  expect(await selectedRoots(page)).toEqual([group.id])
+  const moved = await boxAround(page, (await layers(page)).map((layer) => layer.pathData))
+  const was = await boxAround(page, pieces.map((layer) => layer.pathData))
+  expect(moved.x - was.x).toBeCloseTo(30, 0)
+  // An arrow key nudges the group, which stays selected; undo brings back the group selection with each step.
+  const dragged = await layers(page)
+  await page.keyboard.press('ArrowRight')
+  expect(await selectedRoots(page)).toEqual([group.id])
+  expect(await layers(page)).not.toEqual(dragged)
+  await page.keyboard.press('Escape')
+  expect(await selectedRoots(page)).toEqual([])
+  await page.keyboard.press('ControlOrMeta+z')
+  expect(await layers(page)).toEqual(dragged)
+  expect(await selectedRoots(page)).toEqual([group.id])
+  await page.keyboard.press('ControlOrMeta+Shift+z')
+  expect(await selectedRoots(page)).toEqual([group.id])
+  await page.keyboard.press('ControlOrMeta+z')
+  await page.keyboard.press('ControlOrMeta+z')
+  expect(await layers(page)).toEqual(pieces)
+})
+
+test('the layers drawer shows groups as a tree: a spark folded, a group of yours open, ↑ and ↓ moving a whole group', async ({ page }) => {
+  await openVectorMaker(page)
+  await dealSparks(page, 1)
+  await sparkButton(page, 4).click()
+  const pieces = await layers(page)
+  const [spark] = await groupsIn(page)
+  const drawer = await openLayers(page)
+  const rows = drawer.getByRole('listitem')
+
+  // Folded: one row for the spark, its count and that it keeps its cuts to itself.
+  await expect(rows).toHaveCount(1)
+  const sparkRow = drawer.getByRole('button', { name: `01 ${spark.name}, ${pieces.length} pieces, isolates cuts`, exact: true })
+  await expect(sparkRow).toHaveAttribute('aria-pressed', 'true')
+  // It goes into the stack as one, and says whether it adds or cuts there, as a layer row does.
+  const adds = drawer.getByRole('button', { name: `01 ${spark.name} adds material as one. Make it a cut` })
+  await expect(adds).toHaveText('Add')
+  await adds.click()
+  expect((await groupsIn(page))[0]).toMatchObject({ operation: 'subtract' })
+  await expect(drawer.getByRole('button', { name: `01 ${spark.name}, ${pieces.length} pieces, isolates cuts, cuts as one`, exact: true })).toBeVisible()
+  await drawer.getByRole('button', { name: `01 ${spark.name} cuts material as one. Make it add` }).click()
+  expect((await groupsIn(page))[0]).toMatchObject({ operation: 'add' })
+  const unfold = drawer.getByRole('button', { name: `Unfold 01 ${spark.name}` })
+  await expect(unfold).toHaveAttribute('aria-expanded', 'false')
+  await unfold.click()
+  await expect(rows).toHaveCount(1 + pieces.length)
+  await expect(drawer.getByRole('button', { name: `Fold 01 ${spark.name}` })).toHaveAttribute('aria-expanded', 'true')
+  // Members count within the group, top first.
+  await expect(rows.nth(1)).toHaveAttribute('aria-level', '2')
+  const names = await page.evaluate(() => window.__marque.store.getState().illustrator.layers.map((layer) => layer.name))
+  await expect(rows.nth(1).getByRole('button', { name: `01.${pieces.length} ${names.at(-1)}`, exact: true })).toBeVisible()
+  const bottom = drawer.getByRole('button', { name: `01.1 ${names[0]}`, exact: true })
+  await expect(bottom).toBeVisible()
+
+  // A piece's row selects the piece, inside its group.
+  await bottom.click()
+  expect(await selectedRoots(page)).toEqual([pieces[0].id])
+  expect(await enteredGroup(page)).toBe(spark.id)
+  await closeLayers(page)
+
+  // A slab on top, then ↑ on the spark moves its whole run past it.
+  await addSlab(page, 'Square')
+  const slab = (await layers(page)).at(-1)!
+  await openLayers(page)
+  await drawer.getByRole('button', { name: `Fold 01 ${spark.name}` }).click()
+  await expect(rows).toHaveCount(2)
+  // A spark's row shows its kind after a spark glyph, "Radial" for "Spark · radial": the name is whole in its label.
+  const kind = new RegExp(spark.name.replace(/^Spark · /, ''), 'i')
+  await expect(rows).toHaveText([/Slab/, kind])
+  await drawer.getByRole('button', { name: `Move 01 ${spark.name} up` }).click()
+  await expect(rows).toHaveText([kind, /Slab/])
+  expect((await layers(page)).map((layer) => layer.id)).toEqual([slab.id, ...pieces.map((layer) => layer.id)])
+  await expect(drawer.getByRole('button', { name: `Move 02 ${spark.name} up` })).toBeDisabled()
+  await drawer.getByRole('button', { name: `Move 02 ${spark.name} down` }).click()
+  expect((await layers(page)).map((layer) => layer.id)).toEqual([...pieces.map((layer) => layer.id), slab.id])
+
+  // Grouped together, the new group shows open, its members numbered within it.
+  await page.evaluate((ids) => window.__marque.store.getState().setSelection(ids), [spark.id, slab.id])
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  await page.keyboard.press('ControlOrMeta+g')
+  await expect(drawer.getByRole('button', { name: 'Fold 01 Group 1' })).toHaveAttribute('aria-expanded', 'true')
+  await expect(rows).toHaveCount(3)
+  await expect(drawer.getByRole('button', { name: '01.2 Slab', exact: true })).toBeVisible()
+  await expect(drawer.getByRole('button', { name: `01.1 ${spark.name}, ${pieces.length} pieces, isolates cuts`, exact: true })).toBeVisible()
+  await drawer.getByRole('button', { name: 'Fold 01 Group 1' }).click()
+  await expect(rows).toHaveCount(1)
+})
+
+/** How a group row's count shows on its one line: whole, gone to the line below that is never seen, or cut through. */
+async function countSeen(name: Locator): Promise<'whole' | 'gone' | 'cut'> {
+  const count = name.locator('[data-count]')
+  const [line, shown] = [(await count.locator('..').boundingBox())!, (await count.boundingBox())!]
+  if (shown.y >= line.y + line.height - 0.5) return 'gone'
+  const inside = shown.x >= line.x - 0.5 && shown.x + shown.width <= line.x + line.width + 0.5 && shown.y >= line.y - 0.5 && shown.y + shown.height <= line.y + line.height + 0.5
+  return inside ? 'whole' : 'cut'
+}
+
+test("the drawer's group rows keep their isolation glyph, their count whole or not at all, and a band inside a group its fit", async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  // Ref 3's upper half, as two isolated groups; then two circles grouped, with a band between them; then sparks, below.
+  const { left, right, leftCut, rightCut } = await ref3UpperHalf(page)
+  await page.evaluate(
+    (pairs) => {
+      const state = () => window.__marque.store.getState()
+      for (const pair of pairs) {
+        state().setSelection(pair)
+        state().groupSelection()
+        state().setGroupIsolated(state().illustrator.selectedRootIds![0], true)
+      }
+      state().setSelection([])
+    },
+    [
+      [left, leftCut],
+      [right, rightCut],
+    ],
+  )
+  await addSlab(page, 'Circle')
+  await addSlab(page, 'Circle')
+  await page.evaluate(() => {
+    const state = () => window.__marque.store.getState()
+    const circles = state().illustrator.layers.slice(-2).map((layer) => layer.id)
+    const circle = (x: number) => ({ v: 1 as const, kind: 'slab' as const, preset: 'circle' as const, center: { x, y: 200 }, width: 80, height: 80, radius: 40, rotation: 0 })
+    state().commitLayerEdits({ label: 'Place circles', edits: circles.map((layerId, i) => ({ layerId, carve: circle(i ? 120 : -120) })), select: circles })
+    state().groupSelection()
+    state().addBand(circles[0], circles[1])
+    state().setSelection([])
+  })
+  await dealSparks(page, 1)
+  for (const n of [1, 2, 3, 4]) await sparkButton(page, n).click()
+  const groups = await groupsIn(page)
+  expect(groups).toHaveLength(7)
+  const drawer = await openLayers(page)
+  const rows = drawer.getByRole('listitem')
+
+  const groupRows = rows.filter({ has: page.locator('button[aria-expanded]') })
+  await expect(groupRows).toHaveCount(7)
+  for (const row of await groupRows.all()) {
+    const name = row.getByRole('button', { name: /^\d\d .*, \d+ pieces?/ })
+    const label = (await name.getAttribute('aria-label'))!
+    // The name is whole: a spark's kind too, "Modular" and never "Modul…".
+    expect(await name.locator('.truncate').evaluate((span) => span.scrollWidth - span.clientWidth), label).toBeLessThanOrEqual(0)
+    // The count is whole beside it, or not seen at all: never cut through.
+    expect(await countSeen(name), `${label}: its count`).not.toBe('cut')
+    // An isolated group says so with a glyph that never gives way, in its Add or Cut column; a shared one leaves the column empty.
+    const operation = row.getByRole('button', { name: /material as one/ })
+    if (label.includes('isolates cuts')) {
+      const glyph = (await operation.locator('svg').boundingBox())!
+      const column = (await operation.boundingBox())!
+      expect(glyph.width, `${label}: its glyph`).toBeGreaterThan(5)
+      expect(glyph.x).toBeGreaterThanOrEqual(column.x - 0.5)
+      expect(glyph.x + glyph.width).toBeLessThanOrEqual(column.x + column.width + 0.5)
+    } else await expect(operation).toHaveCount(0)
+  }
+  // With room for it, the count shows: the two halves' groups read "· 2".
+  for (const n of ['1', '2']) expect(await countSeen(drawer.getByRole('button', { name: new RegExp(`^\\d\\d Group ${n}, 2 pieces`) }))).toBe('whole')
+
+  // The band inside the circles' group shows its fit, and its circles by their places in the group, clear of ↑.
+  const band = drawer.getByRole('button', { name: /^0\d\.3 Band · bar · 0\d\.1, 0\d\.2$/ })
+  await expect(band).toBeVisible()
+  await expect(band).toContainText('Bar')
+  await expect(band).toContainText('.1, .2')
+  const fit = band.getByText('Bar', { exact: true })
+  expect(await fit.evaluate((span) => span.scrollWidth - span.clientWidth)).toBeLessThanOrEqual(0)
+  // No row's name runs into its ↑.
+  for (const row of await rows.all()) {
+    const up = (await row.getByRole('button', { name: /^Move .* up$/ }).boundingBox())!
+    const ends = await row.evaluate((li) => {
+      const name = [...li.querySelectorAll('button')].find((button) => button.hasAttribute('aria-pressed') && !button.getAttribute('aria-label')!.startsWith('Add ') && !button.getAttribute('aria-label')!.startsWith('Take ') && !/^(Lock|Unlock) /.test(button.getAttribute('aria-label')!))!
+      return [...name.querySelectorAll(':scope > span')].map((span) => {
+        const box = span.getBoundingClientRect()
+        // What is clipped by its own box is not seen past it.
+        return box.width > 0 ? box.right : -Infinity
+      })
+    })
+    expect(Math.max(...ends), await row.innerText()).toBeLessThanOrEqual(up.x + 0.5)
+  }
+  await closeLayers(page)
+})
+
+test('a press just off the edge of a piece in a group moves the whole group and bends nothing, selected or not', async ({ page }) => {
+  await openVectorMaker(page)
+  await page.evaluate(() => window.__marque.store.getState().setCarveSettings({ snapping: false }))
+  await dealSparks(page, 1)
+  await sparkButton(page, 4).click()
+  const f = await frame(page)
+  const [group] = await groupsIn(page)
+  const pieces = await layers(page)
+  // Just left of the ink's leftmost edge on a row through the spark: beside the outline of one of its pieces.
+  const edge = await page.evaluate(() => {
+    const ctx = document.createElement('canvas').getContext('2d')!
+    const path = new Path2D(window.__marque.mark().compoundPathData)
+    for (let y = -60; y <= 60; y += 10) {
+      for (let x = -300; x <= 300; x += 0.25) if (ctx.isPointInPath(path, x, y, 'evenodd')) return { x: x - 1.25, y }
+    }
+    return null
+  })
+  expect(edge).not.toBeNull()
+  const widths = async () => Promise.all((await layers(page)).map(async (layer) => (await boxAround(page, [layer.pathData])).width))
+  const before = await widths()
+
+  for (const selected of [false, true]) {
+    if (!selected) await page.keyboard.press('Escape')
+    expect(await selectedRoots(page)).toEqual(selected ? [group.id] : [])
+    const at = await page.evaluate(() => window.__marque.store.getState().illustrator.layers.map((layer) => layer.pathData))
+    const shift = selected ? 25 : 0
+    const from = f.at(edge!.x + shift, edge!.y)
+    // The pointer there offers to move, never to bend.
+    await page.mouse.move(from.x, from.y)
+    await expect.poll(() => page.evaluate(() => window.__marque.cursor())).toBe('move')
+    const depth = await undoDepth(page)
+    await drag(page, from, { x: from.x + 25 * f.unit, y: from.y })
+    expect(await undoDepth(page)).toBe(depth + 1)
+    expect(await selectedRoots(page)).toEqual([group.id])
+    expect(await enteredGroup(page)).toBeNull()
+    const moved = await boxAround(page, (await layers(page)).map((layer) => layer.pathData))
+    const was = await boxAround(page, at)
+    expect(moved.x - was.x).toBeCloseTo(25, 0)
+    // Every piece moved whole: none was bent.
+    const now = await widths()
+    now.forEach((width, i) => expect(width, `piece ${i + 1}`).toBeCloseTo(before[i], 1))
+  }
+  expect((await layers(page)).map((layer) => layer.id)).toEqual(pieces.map((layer) => layer.id))
+})
+
+test.describe('groups on touch', () => {
+  test.use({ hasTouch: true })
+
+  test('the first tap that takes a whole group says how to reach a piece, inside the canvas and long enough to read', async ({ page }) => {
+    await openVectorMaker(page)
+    await startOver(page)
+    await page.evaluate(() => window.__marque.store.getState().setCarveSettings({ snapping: false }))
+    // A pair grouped in the middle of the canvas: the hint goes by the group's box, where neither side has room on a phone.
+    const ids = await circleSlabs(page, [
+      [-40, 0, 30],
+      [40, 0, 30],
+    ])
+    await page.evaluate((list) => {
+      const state = window.__marque.store.getState()
+      state.setSelection(list)
+      state.groupSelection()
+      window.__marque.store.getState().setSelection([])
+    }, ids)
+    const f = await frame(page)
+    await page.touchscreen.tap(f.at(-40, 0).x, f.at(-40, 0).y)
+    expect(await selectedRoots(page)).toEqual([(await groupsIn(page))[0].id])
+    const row = page.locator('[data-hud-row]')
+    const hint = row.getByText('Group selected: double-tap a piece to work on it alone', { exact: true })
+    await expect(hint).toBeVisible()
+    const inside = async () => {
+      const [outer, inner] = [(await row.locator('..').boundingBox())!, (await row.boundingBox())!]
+      return inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height
+    }
+    expect(await inside()).toBe(true)
+    // Nine words take more than a moment to read: it is still there after two seconds.
+    await page.waitForTimeout(2000)
+    await expect(hint).toBeVisible()
+    expect(await inside()).toBe(true)
+    // The next press takes it away.
+    await page.touchscreen.tap(f.at(250, 250).x, f.at(250, 250).y)
+    await expect(hint).toBeHidden()
+  })
+
+  test('on a phone the sheet groups the rows picked in it, since it covers the bar, and says why when it cannot', async ({ page }) => {
+    await openVectorMaker(page)
+    await startOver(page)
+    const ids = await circleSlabs(page, [
+      [-120, 0, 60],
+      [120, 0, 60],
+    ])
+    await page.evaluate(() => window.__marque.store.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: -120, y: 0 }, radius: 20 }))
+    const cut = (await layers(page)).at(-1)!.id
+    await page.evaluate((id) => {
+      window.__marque.store.getState().moveIllustratorLayer(id, 'down')
+      window.__marque.store.getState().setSelection([])
+    }, cut)
+    const drawer = await openLayers(page)
+    await drawer.getByRole('button', { name: /^Add 01 .* to the selection$/ }).tap()
+    await drawer.getByRole('button', { name: /^Add 03 .* to the selection$/ }).tap()
+    const picked = drawer.getByRole('group', { name: 'Picked rows' })
+    if (page.viewportSize()!.width >= 1024) {
+      // The side drawer leaves the bar in sight: Group is there.
+      await expect(picked).toBeHidden()
+      await expect(selectionBar(page).getByRole('button', { name: /^Group/ })).toBeInViewport()
+      return
+    }
+
+    // The sheet says what is picked and why it cannot be grouped, and its Group says so too when tapped.
+    await expect(picked).toContainText('2 selected')
+    await expect(picked).toContainText('Cut 02 lies between them')
+    const refused = picked.getByRole('button', { name: 'Group: Cut 02 lies between them' })
+    await expect(refused).toHaveAttribute('aria-disabled', 'true')
+    const depth = await undoDepth(page)
+    await refused.tap({ force: true })
+    await expect(hudStatus(page)).toHaveText('Cut 02 lies between them')
+    expect(await groupsIn(page)).toEqual([])
+    expect(await undoDepth(page)).toBe(depth)
+
+    // Moved off the circle, the cut is no longer in the way: Group in the sheet groups them, one undo step.
+    await page.evaluate(
+      ({ id, ids }) => {
+        const { illustrator, commitLayerEdits, setSelection } = window.__marque.store.getState()
+        const carve = illustrator.layers.find((layer) => layer.id === id)!.carve!
+        commitLayerEdits({ label: 'Move', edits: [{ layerId: id, carve: { ...carve, center: { x: 0, y: 200 } } as typeof carve }] })
+        setSelection(ids)
+      },
+      { id: cut, ids },
+    )
+    await expect(picked).not.toContainText('lies between')
+    await picked.getByRole('button', { name: 'Group', exact: true }).tap()
+    const [group] = await groupsIn(page)
+    expect(await selectedRoots(page)).toEqual([group.id])
+    expect(await undoDepth(page)).toBe(depth + 2)
+    // One group picked: nothing left to group.
+    await expect(picked).toBeHidden()
+    await expect(drawer.getByRole('button', { name: 'Fold 02 Group 1' })).toBeVisible()
+  })
+
+  test('the drawer adds layers to the selection, so two can be grouped and isolated, and Group says why when it cannot', async ({ page }) => {
+    await openVectorMaker(page)
+    await startOver(page)
+    await page.evaluate(() => window.__marque.store.getState().setCarveSettings({ snapping: false }))
+    const ids = await circleSlabs(page, [
+      [-120, 0, 60],
+      [120, 0, 60],
+    ])
+    await page.evaluate(() => window.__marque.store.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: -120, y: 0 }, radius: 20 }))
+    const cut = (await layers(page)).at(-1)!.id
+    await page.evaluate((id) => {
+      window.__marque.store.getState().moveIllustratorLayer(id, 'down')
+      window.__marque.store.getState().setSelection([])
+    }, cut)
+    const bar = selectionBar(page)
+
+    // No Shift on touch: the square before each row adds it to the selection.
+    const drawer = await openLayers(page)
+    await drawer.getByRole('button', { name: /^Add 01 .* to the selection$/ }).tap()
+    await drawer.getByRole('button', { name: /^Add 03 .* to the selection$/ }).tap()
+    expect(await selectedRoots(page)).toEqual([ids[0], ids[1]])
+    await expect(drawer.getByRole('button', { name: /^Take 03 .* out of the selection$/ })).toHaveAttribute('aria-pressed', 'true')
+    await closeLayers(page)
+
+    // The cut between them stops Group, and a tap on it says why, as Cmd+G does.
+    const depth = await undoDepth(page)
+    const refused = bar.getByRole('button', { name: 'Group: Cut 02 lies between them' })
+    await expect(refused).toHaveAttribute('aria-disabled', 'true')
+    // Dimmed, it still takes a tap: forced past Playwright's own wait for an enabled button.
+    await refused.tap({ force: true })
+    await expect(hudStatus(page)).toHaveText('Cut 02 lies between them')
+    expect(await groupsIn(page)).toEqual([])
+    expect(await undoDepth(page)).toBe(depth)
+
+    // Moved off the circle, the cut is no longer in the way: Group, then Isolate cuts, one undo step each.
+    await page.evaluate((id) => {
+      const { illustrator, commitLayerEdits } = window.__marque.store.getState()
+      const carve = illustrator.layers.find((layer) => layer.id === id)!.carve!
+      commitLayerEdits({ label: 'Move', edits: [{ layerId: id, carve: { ...carve, center: { x: 0, y: 200 } } as typeof carve }] })
+    }, cut)
+    await page.evaluate((list) => window.__marque.store.getState().setSelection(list), ids)
+    await bar.getByRole('button', { name: 'Group', exact: true }).tap()
+    const [group] = await groupsIn(page)
+    expect(await selectedRoots(page)).toEqual([group.id])
+    await bar.getByRole('switch', { name: 'Isolate cuts' }).tap()
+    const [isolated] = await groupsIn(page)
+    expect(isolated.type === 'group' && isolated.isolated).toBe(true)
+    expect(await undoDepth(page)).toBe(depth + 3)
+  })
 })

@@ -8,7 +8,7 @@ import { bakedEditableShape } from '../engine/illustrator/layerPath.ts'
 import { deleteAnchor, editablePathToPathData, toggleSmooth } from '../engine/path/editPath.ts'
 import { getLayerPathItem } from '../engine/illustrator/compose.ts'
 import { savedDocument, type SavedVariation } from '../engine/vector/saved.ts'
-import type { Contour, Guide, PathObject, VectorDocument, VectorObject, VectorSelection } from '../engine/vector/types.ts'
+import type { Contour, GroupObject, Guide, PathObject, VectorDocument, VectorObject, VectorSelection } from '../engine/vector/types.ts'
 import { readLegacyLayers } from '../engine/vector/migrate.ts'
 import {
   pointSelectionToVectorSelection,
@@ -42,6 +42,19 @@ import { composeVectorMarkCached } from '../engine/vector/export.ts'
 import { placeMark, placeSlab } from '../engine/carve/placement.ts'
 import type { SurvivalSize } from '../engine/carve/survival.ts'
 import { sparkLayers, type Spark } from '../engine/sparks/sparks.ts'
+import {
+  copyGroup,
+  gatherIntoGroup,
+  groupRefusal,
+  groupRefusalText,
+  leavesOf,
+  nextGroupName,
+  objectNumbers,
+  sparkGroupName,
+  ungroupObjects,
+  ungroupRefusal,
+  ungroupRefusalText,
+} from '../engine/vector/groups.ts'
 import { getAllModeParamDefaults, getModeGeneratorId, sanitizeBrandInput } from './modes.ts'
 import {
   deepFreeze,
@@ -221,7 +234,7 @@ interface LogoStore {
    * polygon selected, a side more or fewer on the next one.
    */
   stepPolygonSides: (delta: 1 | -1) => void
-  /** A spark's shapes as layers under everything else, beside the ink: one undo step. */
+  /** A spark's shapes in one isolated group named after it, under everything else, beside the ink, selected as the group: one undo step. */
   dropSpark: (spark: Spark) => void
   setSparkSeed: (seed: number) => void
   shuffleSparks: () => void
@@ -270,6 +283,25 @@ interface LogoStore {
   setBand: (id: string, update: BandUpdate, merge?: 'band-setting') => void
   /** The given bands, or the selected ones, stop following their circles and keep their geometry and recipe: an empty one, with none to keep, stays. */
   detachBands: (ids?: string[]) => void
+  /**
+   * Cmd+G: the selected layers and groups, two or more in one group or at
+   * the root, gathered into a new group that does not isolate its cuts,
+   * where the topmost of them was. Selected; one undo step. Nothing when
+   * gathering would change the mark: see `groupRefusalOf`.
+   */
+  groupSelection: () => void
+  /**
+   * Cmd+Shift+G: each selected group ungrouped one level, its members
+   * selected where they are. One undo step. Nothing when ungrouping would
+   * change the mark: see `ungroupRefusalOf`.
+   */
+  ungroupSelection: () => void
+  /** Whether a group keeps its cuts to itself, composing alone: one undo step. */
+  setGroupIsolated: (id: string, isolated: boolean) => void
+  /** Whether an isolated group adds or cuts, as one input: one undo step. */
+  setGroupOperation: (id: string, operation: 'add' | 'subtract') => void
+  /** Lock or unlock a layer or a group: a locked group's members take no presses. One undo step. */
+  toggleIllustratorLayerLock: (id: string) => void
   /** Let go of the selected recipes' pins: one undo step. */
   unpinSelection: () => void
   /** Let go of every pin held to an object's centre: one undo step. */
@@ -429,6 +461,13 @@ export const useLogoStore = create<LogoStore>()((set) => ({
       const objects = state.vectorDocument.objects
       const index = objects.findIndex((candidate) => candidate.id === id)
       const original = objects[index]
+      // A group is copied whole, the links between its members kept between the copies.
+      if (original?.type === 'group') {
+        const copied = copyGroup(state.vectorDocument, id, { x: DUPLICATE_OFFSET, y: DUPLICATE_OFFSET }, shapeNames(state))
+        if (!copied) return {}
+        const { copyId, ...lists } = copied
+        return commitDocument(state, 'Duplicate group', lists, objectSelection([copyId]))
+      }
       // An empty offset copy or band has no geometry to copy, as it has none to keep on Detach.
       if (!original || original.type !== 'path' || isEmptyCopy(original) || isEmptyBand(original)) return {}
       // The copy sits just above, in the same group. A copy of an offset copy follows nothing, and is named so.
@@ -452,7 +491,18 @@ export const useLogoStore = create<LogoStore>()((set) => ({
     set((state) => commitObjects(state, 'Move layer', moveObject(state.vectorDocument.objects, id, direction))),
 
   toggleIllustratorLayerVisibility: (id) =>
-    set((state) => layerUpdate(state, 'Toggle layer visibility', id, (layer) => ({ ...layer, visible: !layer.visible }))),
+    set((state) =>
+      isGroupId(state, id)
+        ? commitObjects(state, 'Toggle group visibility', updateObject(state.vectorDocument.objects, id, (object) => ({ ...object, visible: !object.visible })))
+        : layerUpdate(state, 'Toggle layer visibility', id, (layer) => ({ ...layer, visible: !layer.visible })),
+    ),
+
+  toggleIllustratorLayerLock: (id) =>
+    set((state) => {
+      const object = state.vectorDocument.objects.find((candidate) => candidate.id === id)
+      if (!object) return {}
+      return commitObjects(state, object.locked ? 'Unlock' : 'Lock', updateObject(state.vectorDocument.objects, id, (each) => ({ ...each, locked: !each.locked })))
+    }),
 
   setIllustratorLayerOperation: (id, operation) =>
     set((state) => layerUpdate(state, 'Set layer operation', id, (layer) => ({ ...layer, operation }))),
@@ -481,10 +531,12 @@ export const useLogoStore = create<LogoStore>()((set) => ({
     set((state) => {
       // An offset copy's sides are its source's: a step on the copy steps the shape it follows, as a nudge of it moves that shape.
       const ids = new Set(state.illustrator.selectedLayerIds.map((id) => offsetRoot(state.vectorDocument.objects, id)))
+      // Hidden or locked as the canvas shows it: a polygon in a hidden or locked group is too.
+      const usable = new Set(state.illustrator.layers.flatMap((layer) => (layer.visible && !layer.locked ? [layer.id] : [])))
       let sides: number | null = null
       const stepped: PathObject[] = []
       const objects = updateObjects(state.vectorDocument.objects, (object) => {
-        if (object.type !== 'path' || !ids.has(object.id) || !object.visible || object.locked || object.link || object.carve?.kind !== 'polygon') return object
+        if (object.type !== 'path' || !ids.has(object.id) || !usable.has(object.id) || object.link || object.carve?.kind !== 'polygon') return object
         const carve = stepPolygonSides(object.carve, delta)
         sides = carve.sides
         if (carve === object.carve) return object
@@ -522,10 +574,21 @@ export const useLogoStore = create<LogoStore>()((set) => ({
         existing.compoundPathData ? existing.viewBox : null,
         state.ui.viewport,
       )
-      const dropped = sparkLayers(spark, target).map((layer) => objectFromLayer(layer))
-      // A cut removes only what is below it. Underneath, the spark's cuts cannot reach the work already there.
+      // One group that keeps its cuts to itself: two sparks never cut each other.
+      const group: GroupObject = {
+        id: crypto.randomUUID(),
+        type: 'group',
+        name: sparkGroupName(spark.params.modeId),
+        parentId: null,
+        visible: true,
+        locked: false,
+        isolated: true,
+        operation: 'add',
+      }
+      const dropped = sparkLayers(spark, target).map((layer): VectorObject => ({ ...objectFromLayer(layer), parentId: group.id }))
+      // Underneath, the work already there still cuts it, and its own cuts cannot reach that work.
       return {
-        ...commitObjects(state, 'Add spark', insertObjects(state.vectorDocument.objects, dropped, 'bottom'), objectSelection(idsOf(dropped))),
+        ...commitObjects(state, 'Add spark', insertObjects(state.vectorDocument.objects, [group, ...dropped], 'bottom'), objectSelection([group.id])),
         ui: { ...state.ui, activeTool: null },
       }
     }),
@@ -703,6 +766,51 @@ export const useLogoStore = create<LogoStore>()((set) => ({
       return commitObjects(state, 'Detach', objects)
     }),
 
+  groupSelection: () =>
+    set((state) => {
+      const objects = state.vectorDocument.objects
+      const ids = objectIdsOf(state.selection)
+      const header: Omit<GroupObject, 'parentId'> = {
+        id: crypto.randomUUID(),
+        type: 'group',
+        name: nextGroupName(objects),
+        visible: true,
+        locked: false,
+        isolated: false,
+        operation: 'add',
+      }
+      const gathered = gatherIntoGroup(objects, ids, header)
+      if (!gathered) return {}
+      return commitObjects(state, 'Group', gathered, objectSelection([header.id]))
+    }),
+
+  ungroupSelection: () =>
+    set((state) => {
+      if (ungroupRefusal(state.vectorDocument.objects, objectIdsOf(state.selection))) return {}
+      const ungrouped = ungroupObjects(state.vectorDocument.objects, objectIdsOf(state.selection))
+      if (!ungrouped) return {}
+      const kept = objectIdsOf(state.selection).filter((id) => ungrouped.objects.some((object) => object.id === id))
+      return commitObjects(state, 'Ungroup', ungrouped.objects, objectSelection([...kept, ...ungrouped.released]))
+    }),
+
+  setGroupIsolated: (id, isolated) =>
+    set((state) =>
+      commitObjects(
+        state,
+        isolated ? 'Isolate cuts' : 'Share cuts',
+        updateObject(state.vectorDocument.objects, id, (object) => (object.type === 'group' && object.isolated !== isolated ? { ...object, isolated } : object)),
+      ),
+    ),
+
+  setGroupOperation: (id, operation) =>
+    set((state) =>
+      commitObjects(
+        state,
+        'Set group operation',
+        updateObject(state.vectorDocument.objects, id, (object) => (object.type === 'group' && object.operation !== operation ? { ...object, operation } : object)),
+      ),
+    ),
+
   unpinSelection: () =>
     set((state) => {
       const ids = new Set(state.illustrator.selectedLayerIds)
@@ -744,6 +852,8 @@ export const useLogoStore = create<LogoStore>()((set) => ({
       const doc = state.illustrator
       const ids = doc.selectedLayerIds
       if (ids.length < 2) return {}
+      // A group's pieces are not joined as raw outlines: that would drop its isolation, and each piece's Add or Cut.
+      if (objectIdsOf(state.selection).some((id) => isGroupId(state, id))) return {}
       // In the order they were selected, not the order they are stacked.
       const selected = ids
         .map((id) => doc.layers.find((layer) => layer.id === id))
@@ -969,6 +1079,40 @@ export const useLogoStore = create<LogoStore>()((set) => ({
       }
     }),
 }))
+
+/** Why a command does nothing: in words, and the layer or group in the way, which the canvas outlines. */
+export interface Refused {
+  words: string
+  blocker: string | null
+}
+
+/**
+ * Why Cmd+G would do nothing for the selection now, in words with what is
+ * in the way, or null when it groups: fewer than two selected, not in one group, or a layer of the
+ * other operation lies between them, which gathering would let change the
+ * mark ("Cut 04 lies between them").
+ */
+export function groupRefusalOf(state: Pick<LogoStore, 'selection' | 'vectorDocument'>): Refused | null {
+  const objects = state.vectorDocument.objects
+  const refusal = groupRefusal(objects, objectIdsOf(state.selection))
+  return refusal && { words: groupRefusalText(refusal, objectNumbers(objects)), blocker: refusal.kind === 'between' ? refusal.id : null }
+}
+
+/**
+ * Why Cmd+Shift+G would do nothing for the selection now, in words with
+ * the shape its cuts would reach, or null when it ungroups: no group selected, a locked group, or an
+ * isolated group whose cuts would reach what lies below it, or that cuts as one.
+ */
+export function ungroupRefusalOf(state: Pick<LogoStore, 'selection' | 'vectorDocument'>): Refused | null {
+  const objects = state.vectorDocument.objects
+  const refusal = ungroupRefusal(objects, objectIdsOf(state.selection))
+  return refusal && { words: ungroupRefusalText(refusal, objectNumbers(objects)), blocker: refusal.kind === 'would-cut' ? refusal.id : null }
+}
+
+/** Is this id a group of the document? */
+function isGroupId(state: Pick<LogoStore, 'vectorDocument'>, id: string): boolean {
+  return state.vectorDocument.objects.some((object) => object.id === id && object.type === 'group')
+}
 
 /** The guides drawn on the canvas now: none while they are hidden, and none turned off. */
 function seenGuides(state: Pick<LogoStore, 'ui' | 'vectorDocument'>): Guide[] {
@@ -1289,7 +1433,8 @@ function applyLayerEdits(state: LogoStore, commit: LayerEditCommit): Partial<Log
       continue
     }
     objects = updateObject(objects, edit.layerId, (object) => {
-      if (object.type !== 'path') return object
+      // A group's box turned with its members keeps the turn.
+      if (object.type === 'group') return edit.frameRotation === undefined ? object : writeFrame(object, edit.frameRotation)
       // A copy or band that waits, empty, has nothing to give a recipe or path of its own: it keeps waiting, still linked.
       if (isEmptyCopy(object) || isEmptyBand(object)) return object
       if (edit.carve) {
@@ -1302,7 +1447,7 @@ function applyLayerEdits(state: LogoStore, commit: LayerEditCommit): Partial<Log
   }
   if (objects === state.vectorDocument.objects) return {}
   const doc = state.illustrator
-  const selectedLayerIds = commit.select ?? doc.selectedLayerIds
+  const selectedLayerIds = keptSelection(state, commit.select)
   const pointSelection: PointSelection | null =
     commit.anchor === undefined
       ? doc.pointSelection
@@ -1318,6 +1463,21 @@ function applyLayerEdits(state: LogoStore, commit: LayerEditCommit): Partial<Log
   // The same kind of key edit on other layers is an edit of its own.
   const merge = commit.merge && `${commit.merge} ${objectIdsOf(selection).join(' ')}`
   return commitObjects(state, commit.label, objects, selection, undefined, merge)
+}
+
+/**
+ * What an edit leaves selected, as the objects the selection holds: the
+ * same as before when it names none, or when it names only layers inside
+ * the groups selected, as a move of a group names the layers it moved.
+ * Otherwise the layers it names.
+ */
+function keptSelection(state: LogoStore, select: string[] | undefined): string[] {
+  const roots = objectIdsOf(state.selection)
+  if (select === undefined) return roots
+  const groups = new Set(state.vectorDocument.objects.flatMap((object) => (object.type === 'group' ? [object.id] : [])))
+  if (!roots.some((id) => groups.has(id))) return select
+  const under = new Set(roots.flatMap((id) => [id, ...leavesOf(state.vectorDocument.objects, id)]))
+  return select.every((id) => under.has(id)) ? roots : select
 }
 
 /**

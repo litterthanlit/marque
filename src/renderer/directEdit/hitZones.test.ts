@@ -8,6 +8,7 @@ import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustr
 import { DEFAULT_HANDLE_LAYOUT } from '../../engine/box/box.ts'
 import { scaledHandleLayout, selectionHandles } from './handleSet.ts'
 import { findZone, zoneKey, type HitContext } from './hitZones.ts'
+import { carriedCuts } from './carry.ts'
 import type { Guide } from '../../engine/vector/types.ts'
 
 const scope = new paper.PaperScope()
@@ -121,6 +122,15 @@ describe('edge hit zones', () => {
       expect(zone.free?.t).toBeCloseTo(0.25, 2)
       expect(zone.point.y).toBeCloseTo(-20, 3)
     }
+  })
+
+  it('takes a piece reached through its group by its edge as by its body, to move the group, never to bend the piece', () => {
+    const throughGroup = (layerId: string) => layerId !== 'slab'
+    for (const selected of [[], ['slab']]) {
+      expect(findZone({ ...context(selected), bendable: throughGroup }, { x: 194, y: 20 })).toEqual({ kind: 'body', layerId: 'slab' })
+    }
+    // Once it can be pressed on its own, at the root or inside the group the selection has entered, it bends again.
+    expect(findZone({ ...context([]), bendable: () => true }, { x: 194, y: 20 }).kind).toBe('edge')
   })
 
   it('ignores pointers far from every edge', () => {
@@ -465,5 +475,64 @@ describe('a band over its circles', () => {
   it('leaves a detached band its whole body', () => {
     const detached = { ...belt, link: undefined }
     expect(findZone(context([], [a, b, detached]), { x: 150, y: 0 })).toEqual({ kind: 'body', layerId: 'belt' })
+  })
+})
+
+describe('hits with isolated groups', () => {
+  // Two squares side by side; a cut wide enough to reach both sits inside an isolated group with the right one.
+  const square = (id: string, x: number, half: number, operation: 'add' | 'subtract', parentId?: string): IllustratorLayer => ({
+    ...recipeLayer(id, { ...slabSpec('square', { x, y: 0 }), width: 2 * half, height: 2 * half }, operation),
+    ...(parentId ? { parentId } : {}),
+  })
+  const left = square('left', -150, 100, 'add')
+  const right = square('right', 150, 100, 'add', 'g')
+  const cut = square('cut', 0, 120, 'subtract', 'g')
+  const isolated = (on: boolean): HitContext => {
+    const ctx = context([], [left, right, cut])
+    const doc: IllustratorDocument = { ...ctx.doc, groups: [{ id: 'g', name: 'g', visible: true, locked: false, isolated: on, operation: 'add' }] }
+    const mark = composeIllustratorMark(doc)
+    scope.activate()
+    return { ...ctx, doc, ink: new scope.CompoundPath(mark.compoundPathData) }
+  }
+
+  it('find the shape outside the group where its cut makes no hole', () => {
+    expect(findZone(isolated(true), { x: -80, y: 0 })).toEqual({ kind: 'body', layerId: 'left' })
+    // Shared, the same cut makes a hole there, and the hole is the cut's.
+    expect(findZone(isolated(false), { x: -80, y: 0 })).toEqual({ kind: 'body', layerId: 'cut' })
+  })
+
+  it('give the cut the hole it makes inside the group', () => {
+    expect(findZone(isolated(true), { x: 80, y: 0 })).toEqual({ kind: 'body', layerId: 'cut' })
+  })
+
+  it('do not hand a press to a member cut away inside its group over a shape below that shows', () => {
+    // Under the group, a shape the cut cannot reach shows through where the group's member is cut away.
+    const under = square('under', 100, 60, 'add')
+    const ctx = context([], [under, right, cut])
+    const doc: IllustratorDocument = { ...ctx.doc, groups: [{ id: 'g', name: 'g', visible: true, locked: false, isolated: true, operation: 'add' }] }
+    const mark = composeIllustratorMark(doc)
+    scope.activate()
+    expect(findZone({ ...ctx, doc, ink: new scope.CompoundPath(mark.compoundPathData) }, { x: 100, y: 0 })).toEqual({ kind: 'body', layerId: 'under' })
+  })
+})
+
+describe('cuts a move carries, with isolated groups', () => {
+  it('measure a cut inside an isolated group against its members alone', () => {
+    const square = (id: string, x: number, half: number, operation: 'add' | 'subtract', parentId?: string): IllustratorLayer => ({
+      ...recipeLayer(id, { ...slabSpec('square', { x, y: 0 }), width: 2 * half, height: 2 * half }, operation),
+      ...(parentId ? { parentId } : {}),
+    })
+    const layers = [square('left', -150, 100, 'add'), square('right', 150, 100, 'add', 'g'), square('cut', 0, 120, 'subtract', 'g')]
+    const doc = (on: boolean): IllustratorDocument => ({
+      ...context([], layers).doc,
+      groups: [{ id: 'g', name: 'g', visible: true, locked: false, isolated: on, operation: 'add' }],
+    })
+    scope.activate()
+    scope.project.clear()
+    const items = new Map(layers.map((layer) => [layer.id, getLayerPathItem(scope, layer, true) as paper.PathItem]))
+    // Shared, the cut also bites the shape on the left: it stays when the right one moves.
+    expect(carriedCuts(doc(false), ['right'], items)).toEqual([])
+    // Isolated, it can cut only the right one, so it goes with it.
+    expect(carriedCuts(doc(true), ['right'], items)).toEqual(['cut'])
   })
 })

@@ -21,7 +21,7 @@ export function EditorButton({ pressed, danger, primary, className, children, ..
       {...props}
       className={cn(
         'inline-flex h-8 shrink-0 items-center justify-center rounded-lg px-2.5 text-xs transition-colors',
-        'disabled:opacity-40 disabled:cursor-default aria-expanded:bg-interactive aria-expanded:text-fg',
+        'disabled:opacity-40 disabled:cursor-default aria-disabled:opacity-40 aria-disabled:cursor-default aria-expanded:bg-interactive aria-expanded:text-fg',
         FOCUS_RING,
         pressed
           ? 'bg-interactive text-fg ring-1 ring-interactive-ring'

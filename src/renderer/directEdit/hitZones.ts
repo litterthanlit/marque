@@ -14,6 +14,7 @@ import { locateCarveGrab, type CarveGrab } from '../../engine/carve/edit.ts'
 import type { HandleSet } from './handleSet.ts'
 import { carveThickness } from '../../engine/carve/spec.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
+import { cutReach } from '../../engine/illustrator/compose.ts'
 import type { Guide } from '../../engine/vector/types.ts'
 import { nearestGuide, nearestGuideHandle, type GuideHandle } from './guideEdit.ts'
 
@@ -61,6 +62,12 @@ export interface HitContext {
   touch: boolean
   /** Edge bending enabled. */
   edges: boolean
+  /**
+   * Can this layer's edges bend? A member of a group that a click selects
+   * whole cannot: a press by its edge takes the group, as a press on its
+   * body does. Missing is every layer.
+   */
+  bendable?(layerId: string): boolean
   /** Any free layer's contours with its transform baked in (cached by the caller). */
   freePathOf(layer: IllustratorLayer): EditableShape | null
   /** The guides a press can reach: shown, visible and unlocked. Missing is none. */
@@ -286,6 +293,8 @@ function findEdge(ctx: HitContext, p: Vec, onInk: boolean): { zone: Zone; d: num
   }
 
   if (!best) return null
+  // By the edge of a piece reached through its group, a press takes the group as its body would.
+  if (ctx.bendable && !ctx.bendable(best.layer.id)) return { zone: { kind: 'body', layerId: best.layer.id }, d: best.d }
   const layerPoint = toLayer(ctx, best.point)
 
   if (best.layer.carve) {
@@ -370,10 +379,21 @@ function bandCircleAt(ctx: HitContext, id: string, p: Vec): string | null {
 function findBodyLayer(ctx: HitContext, p: Vec, onInk: boolean): string | null {
   const layers = ctx.doc.layers
   const usable = (layer: IllustratorLayer) => layer.visible && !layer.locked
+  // Inside an isolated group a cut reaches only the group's own members.
+  const reach = cutReach(ctx.doc)
+  /** With isolated groups: is the shape at `index` cut away at the point, by a cut above it that reaches it? */
+  const cutAway = (index: number) => {
+    if (!reach) return false
+    for (let j = index + 1; j < layers.length; j++) {
+      const cut = layers[j]
+      if (cut.visible && cut.operation === 'subtract' && reach(cut, layers[index]) && contains(ctx.items.get(cut.id), p)) return true
+    }
+    return false
+  }
   if (onInk) {
     for (let i = layers.length - 1; i >= 0; i--) {
       const layer = layers[i]
-      if (usable(layer) && layer.operation === 'add' && contains(ctx.items.get(layer.id), p)) {
+      if (usable(layer) && layer.operation === 'add' && contains(ctx.items.get(layer.id), p) && !cutAway(i)) {
         return layer.id
       }
     }
@@ -384,7 +404,7 @@ function findBodyLayer(ctx: HitContext, p: Vec, onInk: boolean): string | null {
       if (!usable(cut) || cut.operation !== 'subtract' || !contains(ctx.items.get(cut.id), p)) continue
       for (let j = i - 1; j >= 0; j--) {
         const below = layers[j]
-        if (below.visible && below.operation === 'add' && contains(ctx.items.get(below.id), p)) {
+        if (below.visible && below.operation === 'add' && (!reach || reach(cut, below)) && contains(ctx.items.get(below.id), p)) {
           return cut.id
         }
       }
