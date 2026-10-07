@@ -175,6 +175,7 @@ const PIECE_NAMES: Record<ShapeNode['type'], string> = {
   polygon: 'Polygon',
   blob: 'Blob',
   ellipse: 'Crescent',
+  stroke: 'Stroke',
 }
 
 let sparkScope: paper.PaperScope | null = null

@@ -35,7 +35,8 @@ export interface LogoParams {
  */
 export interface ShapeNode {
   id: string
-  type: 'circle' | 'rectangle' | 'triangle' | 'polygon' | 'blob' | 'ellipse'
+  /** A primitive, or a piece of a stroked centreline (the monogram's letters and frames), whose path is drawn by its generator. */
+  type: 'circle' | 'rectangle' | 'triangle' | 'polygon' | 'blob' | 'ellipse' | 'stroke'
   role: 'prototype' | 'symmetry-instance'
   operation: 'add' | 'subtract'
   center: { x: number; y: number }
