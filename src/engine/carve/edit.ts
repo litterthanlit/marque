@@ -36,8 +36,9 @@ import {
   type OrientedBox,
 } from '../box/box.ts'
 import { boxGeometryFor, carveOutline, grooveSpine, KAPPA, type SideRef } from './outline.ts'
-import { clampSides, isGroove, polygonApothem, polygonCornerRadius, scaledPolygonCorner } from './spec.ts'
+import { clampSides, isGroove, polygonApothem, polygonCornerRadius, scaledPolygonCorner, scaledSlabRadius } from './spec.ts'
 import type {
+  BandSpec,
   CarveBends,
   CarveSpec,
   CornerFullness,
@@ -74,6 +75,8 @@ function hasBends(spec: CarveBends): boolean {
 }
 
 export function carveHandles(spec: CarveSpec, layout: HandleLayout = DEFAULT_HANDLE_LAYOUT): CarveHandle[] {
+  // A band is made from its circles: it has no handles of its own, and a drag of it moves them.
+  if (spec.kind === 'band') return []
   const outline = carveOutline(spec)
 
   if (isGroove(spec)) {
@@ -226,7 +229,7 @@ function dragSlab(start: SlabSpec, id: HandleId, startPointer: Vec, pointer: Vec
         ...start,
         width: start.width * f,
         height: start.height * f,
-        radius: start.radius * f,
+        radius: scaledSlabRadius(start, f),
         center: add(start.center, rotate(centerLocal, rot)),
       },
       f,
@@ -250,23 +253,24 @@ function dragSlab(start: SlabSpec, id: HandleId, startPointer: Vec, pointer: Vec
 
   let width = right - left
   let height = bottom - top
+  let radius = start.radius
   if (!isCorner && mods.shift) {
-    // Edge with Shift keeps the proportions, growing across the middle.
+    // Edge with Shift keeps the proportions, growing across the middle, its rounding too: a circle stays one.
+    const f = fx !== 0 ? width / start.width : height / start.height
     if (fx !== 0) {
-      const f = width / start.width
       height = start.height * f
       top = -height / 2
       bottom = height / 2
     } else {
-      const f = height / start.height
       width = start.width * f
       left = -width / 2
       right = width / 2
     }
+    radius = scaledSlabRadius(start, f)
   }
 
   const centerLocal = { x: (left + right) / 2, y: (top + bottom) / 2 }
-  return { ...start, width, height, center: add(start.center, rotate(centerLocal, rot)) }
+  return { ...start, width, height, radius, center: add(start.center, rotate(centerLocal, rot)) }
 }
 
 function dragPolygon(start: PolygonSpec, id: HandleId, startPointer: Vec, pointer: Vec, mods: DragModifiers): PolygonSpec {
@@ -411,6 +415,8 @@ export function dragCarveHandle(
     case 'channel':
     case 'slice':
       return dragGroove(start, id, startPointer, pointer, mods)
+    case 'band':
+      return start
     default:
       return start satisfies never
   }
@@ -448,6 +454,8 @@ export function wholeCarveDrag(start: CarveSpec, raw: CarveSpec, id: HandleId, m
       const width = Math.round(raw.width)
       return width === raw.width || width < MIN_GROOVE_WIDTH ? raw : { ...raw, width }
     }
+    case 'band':
+      return raw
     default:
       return raw satisfies never
   }
@@ -488,8 +496,9 @@ function wholeSlabResize(start: SlabSpec, raw: SlabSpec, id: HandleId, mods: Dra
     y: mods.alt || fy === 0 ? 0 : (-fy * start.height) / 2,
   }
   const center = add(start.center, rotate({ x: pivot.x * (1 - sx), y: pivot.y * (1 - sy) }, start.rotation))
-  // A corner with Shift scales the whole recipe, its rounding and bends too.
-  if (fx !== 0 && fy !== 0 && mods.shift) return scaleBends({ ...start, width, height, center, radius: start.radius * sx }, sx)
+  // A corner with Shift scales the whole recipe, its rounding and bends too; a side with Shift, its rounding.
+  if (fx !== 0 && fy !== 0 && mods.shift) return scaleBends({ ...start, width, height, center, radius: scaledSlabRadius(start, sx) }, sx)
+  if (mods.shift) return { ...raw, width, height, center, radius: scaledSlabRadius(start, sx) }
   return { ...raw, width, height, center }
 }
 
@@ -531,7 +540,8 @@ export function locateCarveGrab(spec: CarveSpec, point: Vec): CarveGrab | null {
       return { side, t: hit.t, point }
     }
     case 'polygon':
-      // A polygon's sides stay straight: an edge press moves it.
+    case 'band':
+      // A polygon's sides stay straight, and a band is made from its circles: an edge press moves it.
       return null
     case 'slab':
     case 'punch':
@@ -597,6 +607,7 @@ export function bendCarve(start: CarveSpec, grab: CarveGrab, cursor: Vec): Carve
     case 'slice':
       return bendGroove(start, grab, cursor)
     case 'polygon':
+    case 'band':
       return start
     case 'slab':
     case 'punch':
@@ -673,6 +684,7 @@ export function straightenCarve(spec: CarveSpec, side: SideRef): CarveSpec {
       return next
     }
     case 'polygon':
+    case 'band':
       return spec
     case 'slab':
     case 'punch':
@@ -691,6 +703,7 @@ export function isSideBent(spec: CarveSpec, side: SideRef): boolean {
     case 'slice':
       return Boolean(spec.bend)
     case 'polygon':
+    case 'band':
       return false
     case 'slab':
     case 'punch':
@@ -713,6 +726,9 @@ export function translateCarve(spec: CarveSpec, d: Vec): CarveSpec {
     case 'punch':
     case 'polygon':
       return { ...spec, center: add(spec.center, d) }
+    case 'band':
+      // Moved by moving its circles: both snapshots alike.
+      return { ...spec, a: { c: add(spec.a.c, d), r: spec.a.r }, b: { c: add(spec.b.c, d), r: spec.b.r } }
     default:
       return spec satisfies never
   }
@@ -727,6 +743,11 @@ export function rotateCarveAbout(spec: CarveSpec, pivot: Vec, deg: number): Carv
     case 'punch':
     case 'polygon':
       return { ...spec, center: rotateAbout(spec.center, pivot, deg), rotation: normalizeDegrees(spec.rotation + deg) }
+    case 'band': {
+      const turned: BandSpec = { ...spec, a: { c: rotateAbout(spec.a.c, pivot, deg), r: spec.a.r }, b: { c: rotateAbout(spec.b.c, pivot, deg), r: spec.b.r } }
+      if (spec.angle !== undefined) turned.angle = normalizeDegrees(spec.angle + deg)
+      return turned
+    }
     default:
       return spec satisfies never
   }
@@ -767,11 +788,19 @@ export function foldTransform(spec: CarveSpec, t: IllustratorTransform, pivot: V
           center: map(spec.center),
           width: spec.width * s,
           height: spec.height * s,
-          radius: spec.radius * s,
+          radius: scaledSlabRadius(spec, s),
           rotation: normalizeDegrees(spec.rotation + t.rotation),
         },
         s,
       )
+    case 'band': {
+      // Its circles' snapshots move, scale and turn as the circles would; its settings scale with them.
+      const next: BandSpec = { ...spec, a: { c: map(spec.a.c), r: spec.a.r * s }, b: { c: map(spec.b.c), r: spec.b.r * s } }
+      if (spec.width !== undefined) next.width = spec.width * s
+      if (spec.radius !== undefined) next.radius = spec.radius * s
+      if (spec.angle !== undefined) next.angle = normalizeDegrees(spec.angle + t.rotation)
+      return next
+    }
     default:
       return spec satisfies never
   }
@@ -821,6 +850,8 @@ function recipeMiddle(spec: CarveSpec): Vec {
     case 'punch':
     case 'polygon':
       return spec.center
+    case 'band':
+      return scale(add(spec.a.c, spec.b.c), 0.5)
     default:
       return spec satisfies never
   }

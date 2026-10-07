@@ -17,7 +17,21 @@ import {
 } from '../engine/vector/view.ts'
 import { slabEntrySpec, type CutSpec, type PunchToolShape, type SlabEntry } from '../engine/carve/geometry.ts'
 import { carveOutline } from '../engine/carve/outline.ts'
-import { carveFromCut, carveLayerName, clampSides, DEFAULT_SIDES, roundCarveSpec, type CarveSpec } from '../engine/carve/spec.ts'
+import {
+  carveFromCut,
+  carveLayerName,
+  clampSides,
+  DEFAULT_BAND_WIDTH,
+  DEFAULT_NECK_RADIUS,
+  DEFAULT_SIDES,
+  DEFAULT_STRIP_ANGLE,
+  roundCarveSpec,
+  type BandFit,
+  type BandSpec,
+  type CarveSpec,
+} from '../engine/carve/spec.ts'
+import { bandBetween, bandEnd, bandEndCircle, bandRefitted, bandWith, detachBand, isBand, isEmptyBand, isLinkedBand, writeBand, type BandUpdate } from '../engine/vector/bands.ts'
+import { bandParts } from '../engine/carve/band.ts'
 import { stepPolygonSides, translateCarve } from '../engine/carve/edit.ts'
 import { createEmptyVectorDocument, repairStructure, sanitizeVectorDocument } from '../engine/vector/document.ts'
 import { detachGuide, follow, type DocumentLists } from '../engine/vector/follow.ts'
@@ -68,6 +82,23 @@ interface UIState {
   guideDraws: GuideDraws
   /** What the pen makes when it finishes: a filled shape, or a path guide. */
   penDraws: PenDraws
+  /** What the Band tool makes next: its fit and the fit's setting. */
+  band: BandSettings
+}
+
+/** The next band's fit, and each fit's setting: a bar's width, a strip's angle, a neck's radius. A strip's side is up to its circles. */
+export interface BandSettings {
+  fit: BandFit
+  width: number
+  angle: number
+  radius: number
+}
+
+export const DEFAULT_BAND_SETTINGS: BandSettings = {
+  fit: 'bar',
+  width: DEFAULT_BAND_WIDTH,
+  angle: DEFAULT_STRIP_ANGLE,
+  radius: DEFAULT_NECK_RADIUS,
 }
 
 export type PenDraws = 'shape' | 'guide'
@@ -106,10 +137,10 @@ export interface AnchorRef {
   contourIndex?: number
 }
 
-/** Key edits that run together into one undo step: arrow nudges, turns and scales with Alt, and arrow steps of an offset's distance. */
-export type HistoryMergeKind = 'nudge' | 'key-turn' | 'key-scale' | 'offset-distance'
+/** Key edits that run together into one undo step: arrow nudges, turns and scales with Alt, and arrow steps of an offset's distance or a band's setting. */
+export type HistoryMergeKind = 'nudge' | 'key-turn' | 'key-scale' | 'offset-distance' | 'band-setting'
 
-export type EditorTool = 'pen' | 'punch' | 'channel' | 'slice' | 'guide'
+export type EditorTool = 'pen' | 'punch' | 'channel' | 'slice' | 'guide' | 'band'
 
 /**
  * One undo step. It holds the document's lists (objects, guides, fillets)
@@ -218,6 +249,27 @@ interface LogoStore {
   setOffsetDistance: (id: string, distance: number, merge?: 'offset-distance') => void
   /** The given offset copies, or the selected ones, stop following their sources and keep their geometry: an empty one, with none to keep, stays. */
   detachOffsets: (ids?: string[]) => void
+  /** The Band tool's fit and settings for the next band. */
+  setBandSettings: (update: Partial<BandSettings>) => void
+  /**
+   * A band between two circles, objects `asCircle` reads or circle guides,
+   * in the Band tool's fit, linked to them so it follows them: directly
+   * above the higher of the two, in the group they share, cutting when both
+   * cut. Selected; one undo step. Nothing when either is no circle, when
+   * they are the same, or when they allow the fit none.
+   */
+  addBand: (a: string, b: string) => void
+  /**
+   * A band's fit or setting: one undo step, or with `merge`, as arrow keys
+   * on its slider give it, joined to the last such step on the same band.
+   * A fit or setting its circles allow none is refused: a band is never
+   * emptied by its own controls. A new fit takes the setting the band had
+   * there, or the default, or where its circles allow neither, the nearest
+   * setting they do (see `bandRefitted`).
+   */
+  setBand: (id: string, update: BandUpdate, merge?: 'band-setting') => void
+  /** The given bands, or the selected ones, stop following their circles and keep their geometry and recipe: an empty one, with none to keep, stays. */
+  detachBands: (ids?: string[]) => void
   /** Let go of the selected recipes' pins: one undo step. */
   unpinSelection: () => void
   /** Let go of every pin held to an object's centre: one undo step. */
@@ -279,6 +331,7 @@ export const useLogoStore = create<LogoStore>()((set) => ({
     guideStyle: 'solid',
     guideDraws: 'line',
     penDraws: 'shape',
+    band: { ...DEFAULT_BAND_SETTINGS },
   },
   ...blankDocument(),
   vectorUndoStack: [],
@@ -376,8 +429,8 @@ export const useLogoStore = create<LogoStore>()((set) => ({
       const objects = state.vectorDocument.objects
       const index = objects.findIndex((candidate) => candidate.id === id)
       const original = objects[index]
-      // An empty offset copy has no geometry to copy, as it has none to keep on Detach.
-      if (!original || original.type !== 'path' || isEmptyCopy(original)) return {}
+      // An empty offset copy or band has no geometry to copy, as it has none to keep on Detach.
+      if (!original || original.type !== 'path' || isEmptyCopy(original) || isEmptyBand(original)) return {}
       // The copy sits just above, in the same group. A copy of an offset copy follows nothing, and is named so.
       const layer = duplicateLayer(vectorObjectToLayer(original))
       const named = isOffsetCopy(original) && original.name === offsetName(original.link.distance)
@@ -582,6 +635,70 @@ export const useLogoStore = create<LogoStore>()((set) => ({
       const objects = updateObjects(state.vectorDocument.objects, (object) =>
         // An empty copy has no geometry to keep: it stays linked until its source grows back.
         object.type === 'path' && wanted.has(object.id) && !isEmptyCopy(object) ? detachOffset(object) : object,
+      )
+      return commitObjects(state, 'Detach', objects)
+    }),
+
+  setBandSettings: (update) => set((state) => ({ ui: { ...state.ui, band: { ...state.ui.band, ...update } } })),
+
+  addBand: (a, b) =>
+    set((state) => {
+      if (a === b) return {}
+      const { objects, guides } = state.vectorDocument
+      const byId = new Map(objects.map((object) => [object.id, object]))
+      const guideById = new Map(guides.map((guide) => [guide.id, guide]))
+      const one = bandEndCircle(a, byId, guideById)
+      const two = bandEndCircle(b, byId, guideById)
+      if (!one || !two) return {}
+      const settings = state.ui.band
+      const carve: BandSpec = { v: 1, kind: 'band', a: bandEnd(one), b: bandEnd(two), fit: settings.fit, width: settings.width, angle: settings.angle, side: 1, radius: settings.radius }
+      // Circles that allow the fit none make nothing: the tool says "no fit".
+      const made = bandBetween(carve, one, two)
+      if (!bandParts(made)) return {}
+      // Directly above the higher of its circles that are objects, in the group they share; on top between guides.
+      const ends = [byId.get(a), byId.get(b)].filter((object): object is VectorObject => object !== undefined)
+      const at = ends.length ? Math.max(...ends.map((object) => objects.indexOf(object))) + 1 : 'top'
+      const parents = new Set(ends.map((object) => object.parentId))
+      const band: PathObject = writeBand(
+        {
+          id: crypto.randomUUID(),
+          type: 'path',
+          name: carveLayerName(carve),
+          parentId: parents.size === 1 ? [...parents][0] : null,
+          visible: true,
+          locked: false,
+          // A cut when both its circles cut: it joins two holes.
+          operation: ends.length === 2 && ends.every((object) => object.type === 'path' && object.operation === 'subtract') ? 'subtract' : 'add',
+          contours: [],
+          fillRule: 'evenodd',
+          link: { kind: 'band', a, b },
+        },
+        made,
+      )
+      return commitObjects(state, `Add ${carveLayerName(carve).toLowerCase()}`, insertObjects(objects, [band], at), objectSelection([band.id]))
+    }),
+
+  setBand: (id, update, merge) =>
+    set((state) => {
+      const objects = updateObject(state.vectorDocument.objects, id, (object) => {
+        if (!isBand(object)) return object
+        // A new fit alone takes the setting it had there, or the nearest its circles allow.
+        const refit = update.fit !== undefined && Object.keys(update).length === 1 ? bandRefitted(object.carve, update.fit) : null
+        const written = writeBand(object, refit ?? bandWith(object.carve, update))
+        // A band is never emptied by its own controls: they show which fits and settings its circles allow.
+        if (written === object || (object.contours.length && !written.contours.length)) return object
+        // A name the band was given keeps; the name it was made with follows its fit.
+        return object.name === carveLayerName(object.carve) ? { ...written, name: carveLayerName(written.carve!) } : written
+      })
+      return commitObjects(state, update.fit ? 'Band fit' : 'Band setting', objects, undefined, undefined, merge && `${merge} ${id}`)
+    }),
+
+  detachBands: (ids) =>
+    set((state) => {
+      const wanted = new Set(ids ?? state.illustrator.selectedLayerIds)
+      const objects = updateObjects(state.vectorDocument.objects, (object) =>
+        // An empty band has no geometry to keep: it stays linked until its circles allow it a fit.
+        object.type === 'path' && wanted.has(object.id) && !isEmptyBand(object) ? detachBand(object) : object,
       )
       return commitObjects(state, 'Detach', objects)
     }),
@@ -1161,14 +1278,20 @@ function sameTransform(a: IllustratorLayer['transform'], b: IllustratorLayer['tr
 function applyLayerEdits(state: LogoStore, commit: LayerEditCommit): Partial<LogoStore> {
   const done = new Set<string>()
   let objects = state.vectorDocument.objects
-  // An offset copy edited with its source is left to follow it: the follow pass makes it again, still linked.
+  // An offset copy or band edited with what it follows is left to follow it: the follow pass makes it again, still linked.
   const editing = new Set(commit.edits.map((edit) => edit.layerId))
   for (const edit of commit.edits) {
     if (done.has(edit.layerId)) continue
     done.add(edit.layerId)
-    if (followsAnyOf(objects, edit.layerId, editing)) continue
+    if (followsAnyOf(objects, edit.layerId, editing, state.vectorDocument.guides)) {
+      // A band turned or scaled with its circles keeps following them: it takes in the box's turn and scale as its settings.
+      if (edit.carve?.kind === 'band') objects = updateObject(objects, edit.layerId, (object) => (isLinkedBand(object) ? writeBand(object, edit.carve as BandSpec) : object))
+      continue
+    }
     objects = updateObject(objects, edit.layerId, (object) => {
       if (object.type !== 'path') return object
+      // A copy or band that waits, empty, has nothing to give a recipe or path of its own: it keeps waiting, still linked.
+      if (isEmptyCopy(object) || isEmptyBand(object)) return object
       if (edit.carve) {
         const written = writeRecipe(object, edit.carve)
         return edit.pin === undefined || written.type !== 'path' ? written : writePin(written, edit.pin)

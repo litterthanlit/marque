@@ -3,7 +3,8 @@ import { offsetRecipe, offsetsExactly } from '../carve/offset.ts'
 import { carveLayerName, roundCarveSpec, type CarveSpec } from '../carve/spec.ts'
 import { segsToContour } from '../carve/sync.ts'
 import { offsetContours } from '../geometry/offset.ts'
-import type { Contour, ObjectLink, PathObject, VectorObject } from './types.ts'
+import { linkSources } from './bands.ts'
+import type { Contour, Guide, ObjectLink, PathObject, VectorObject } from './types.ts'
 
 /**
  * Offset copies. A copy remembers the object it was made from and how far
@@ -126,9 +127,11 @@ function movedContour(contour: Contour, by: { x: number; y: number }): Contour {
 /**
  * A source offset by `distance`: the offset recipe and its outline when
  * there is an exact one, else the general offset of its contours. Null when
- * nothing is left.
+ * nothing is left, and while the source is a band its circles allow no fit:
+ * its recipe is kept, but there is nothing to offset.
  */
 export function offsetGeometry(source: Pick<PathObject, 'carve' | 'contours' | 'fillRule'>, distance: number): OffsetGeometry | null {
+  if (source.carve?.kind === 'band' && !source.contours.length) return null
   if (source.carve && offsetsExactly(source.carve)) {
     const offset = offsetRecipe(source.carve, distance)
     if (!offset) return null
@@ -262,21 +265,24 @@ export function renameDetached(before: readonly VectorObject[], after: VectorObj
 }
 
 /**
- * The copies an edit stopped following without being told to: `gone`, their
- * source went (deleted, made a guide, merged into another shape); `edited`,
- * their own geometry was edited. Copies that went too are left out, and so
- * are those detached by hand, which keep their geometry while their source
- * stays.
+ * The copies and bands an edit stopped following without being told to:
+ * `gone`, a source went (deleted, made a guide, merged into another shape;
+ * a band's circle guide deleted); `edited`, their own geometry was edited.
+ * Those that went too are left out, and so are those detached by hand,
+ * which keep their geometry while their sources stay. `guides` are the
+ * guides after the edit, which a band may follow.
  */
-export function linksEndedBy(before: readonly VectorObject[], after: readonly VectorObject[]): { gone: string[]; edited: string[] } {
+export function linksEndedBy(before: readonly VectorObject[], after: readonly VectorObject[], guides: readonly Guide[] = []): { gone: string[]; edited: string[] } {
   const now = new Map(after.map((object) => [object.id, object]))
+  const guideIds = new Set(guides.map((guide) => guide.id))
   const gone: string[] = []
   const edited: string[] = []
   for (const object of before) {
-    if (!isOffsetCopy(object)) continue
+    if (object.type !== 'path' || !object.link) continue
     const later = now.get(object.id)
-    if (later?.type !== 'path' || isOffsetCopy(later)) continue
-    if (now.get(object.link.of)?.type !== 'path') gone.push(object.id)
+    if (later?.type !== 'path' || later.link?.kind === object.link.kind) continue
+    const there = (id: string) => now.get(id)?.type === 'path' || (object.link!.kind === 'band' && guideIds.has(id))
+    if (!linkSources(object.link).every(there)) gone.push(object.id)
     else if (later.contours !== object.contours) edited.push(object.id)
   }
   return { gone, edited }
@@ -327,17 +333,30 @@ export function offsetRoot(objects: ReadonlyArray<{ id: string; link?: ObjectLin
 }
 
 /**
- * Does an offset copy follow, directly or through other copies, one of
- * `ids`? An edit of both a source and its copy, as a box around them makes,
- * edits the source alone: the copy is made again from it, and keeps its
- * link and its distance.
+ * Does an offset copy or a band follow, directly or through other copies
+ * and bands, one of `ids`? An edit of both a source and what follows it, as
+ * a box around them makes, edits the source alone: the copy or band is made
+ * again from it, and keeps its link. A band on a construction circle among
+ * `guides` follows, through it, the shape the guide follows.
  */
-export function followsAnyOf(objects: readonly VectorObject[], id: string, ids: ReadonlySet<string>): boolean {
+export function followsAnyOf(
+  objects: ReadonlyArray<{ id: string; link?: ObjectLink }>,
+  id: string,
+  ids: ReadonlySet<string>,
+  guides: ReadonlyArray<{ id: string; link?: { of: string } }> = [],
+): boolean {
   const byId = new Map(objects.map((object) => [object.id, object]))
-  const seen = new Set<string>()
-  for (let object = byId.get(id); isOffsetCopy(object) && !seen.has(object.id); object = byId.get(object.link.of)) {
-    seen.add(object.id)
-    if (ids.has(object.link.of)) return true
+  const guideOf = new Map(guides.flatMap((guide) => (guide.link ? [[guide.id, guide.link.of] as const] : [])))
+  const seen = new Set<string>([id])
+  const queue = [id]
+  while (queue.length) {
+    for (const end of linkSources(byId.get(queue.shift()!)?.link)) {
+      const source = guideOf.get(end) ?? end
+      if (ids.has(source)) return true
+      if (seen.has(source)) continue
+      seen.add(source)
+      queue.push(source)
+    }
   }
   return false
 }

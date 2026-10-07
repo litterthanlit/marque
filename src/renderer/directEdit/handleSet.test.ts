@@ -224,6 +224,19 @@ describe('the box Alt+arrows turn and scale', () => {
     expect(boxFor(['disc'], [slab, disc])!.box.width).toBeCloseTo(200, 6)
     expect(boxFor(['slab', 'square'], [slab, square])!.box).toEqual(handlesFor(['slab', 'square'], [slab, square])!.box)
   })
+
+  it('leaves out a band that waits, empty: alone it has no box, beside a shape the box is the shape\'s', () => {
+    const empty: IllustratorLayer = {
+      ...recipeLayer('band', { v: 1, kind: 'band', a: { c: { x: 0, y: 0 }, r: 80 }, b: { c: { x: 0, y: 0 }, r: 80 }, fit: 'bar', width: 40 }),
+      pathData: '',
+      link: { kind: 'band', a: 'one', b: 'two' },
+    }
+    expect(boxFor(['band'], [empty])).toBeNull()
+    expect(handlesFor(['band'], [empty])).toBeNull()
+    const beside = boxFor(['slab', 'band'], [slab, empty])!
+    expect(beside.ids).toEqual(['slab'])
+    expect(beside.box).toEqual(boxFor(['slab'], [slab])!.box)
+  })
 })
 
 describe('the handles while a tool is active', () => {

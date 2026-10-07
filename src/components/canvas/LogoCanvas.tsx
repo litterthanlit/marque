@@ -13,12 +13,18 @@ import { composeVectorMarkCached } from '../../engine/vector/export.ts'
 import { tangentCircles, useLogoStore } from '../../store/logoStore.ts'
 import { PenTool } from '../../renderer/tools/PenTool.ts'
 import { GuideTool, type Ghost, type GhostSet } from '../../renderer/tools/GuideTool.ts'
+import { BandTool, type BandCircle } from '../../renderer/tools/BandTool.ts'
+import { bandBetween, bandsEmptiedBy } from '../../engine/vector/bands.ts'
+import { asCircle, type Circle } from '../../engine/geometry/asCircle.ts'
+import { bandOuterPathData, carveOutline } from '../../engine/carve/outline.ts'
+import type { PathObject } from '../../engine/vector/types.ts'
 import { coincide, constructionLines, lineShape } from '../../engine/vector/guides.ts'
 import { commonTangents } from '../../engine/geometry/tangent.ts'
 import { pinsLostWithTarget } from '../../engine/vector/pins.ts'
 import { linksEndedBy, offsetGeometry, offsetIsQuick } from '../../engine/vector/offsets.ts'
 import { contoursToPathData } from '../../engine/vector/pathSerialization.ts'
 import { offsetPreview, type OffsetPreview } from '../../renderer/directEdit/offsetPreview.ts'
+import { bandPreview } from '../../renderer/directEdit/bandPreview.ts'
 import type { Contour } from '../../engine/vector/types.ts'
 import type { EditablePath } from '../../engine/path/editPath.ts'
 import { CanvasHud } from './CanvasHud.tsx'
@@ -26,7 +32,7 @@ import { isShuffleKey, sidesKeyStep, toolForKey } from '../editor/tools.ts'
 import { canvasPixelRatio, fitView, visibleUnits } from '../../renderer/viewFit.ts'
 import { useActiveMark } from '../../hooks/useActiveMark.ts'
 
-type Tool = PenTool | CarveTool | GuideTool
+type Tool = PenTool | CarveTool | GuideTool | BandTool
 
 const CARVE_PREVIEW_ID = '__carve_preview'
 const OFFSET_PREVIEW_ID = '__offset_preview'
@@ -55,6 +61,37 @@ function contourOf(path: EditablePath): Contour {
     closed: path.closed,
     segments: path.segs.map((seg) => ({ point: round(seg.p), handleIn: seg.hIn && round(seg.hIn), handleOut: seg.hOut && round(seg.hOut) })),
   }
+}
+
+// Objects are immutable once in a document: each is read as a circle once.
+const circleCache = new WeakMap<PathObject, Circle | null>()
+
+/**
+ * What the Band tool can join: every visible object read as a circle, the
+ * topmost first, and the circle guides on the canvas after them.
+ */
+function bandCircles(): BandCircle[] {
+  const { vectorDocument, illustrator } = useLogoStore.getState()
+  const shown = new Set(illustrator.layers.filter((layer) => layer.visible).map((layer) => layer.id))
+  const out: BandCircle[] = []
+  for (const object of [...vectorDocument.objects].reverse()) {
+    if (object.type !== 'path' || !shown.has(object.id)) continue
+    let circle = circleCache.get(object)
+    if (circle === undefined) circleCache.set(object, (circle = asCircle(object)))
+    if (circle) out.push({ id: object.id, circle, guide: false })
+  }
+  for (const guide of guidesToDraw() ?? []) {
+    if (guide.visible && guide.shape.kind === 'circle' && guide.shape.r > 0) out.push({ id: guide.id, circle: { c: guide.shape.c, r: guide.shape.r }, guide: true })
+  }
+  return out
+}
+
+/** The band the Band tool would make between two circles, its outline and the edges the sheet strokes, or null when they allow it no fit. */
+function toolBandOutline(a: Circle, b: Circle): { outline: string; edges: string | null } | null {
+  const settings = useLogoStore.getState().ui.band
+  const spec = bandBetween({ v: 1, kind: 'band', a, b, fit: settings.fit, width: settings.width, angle: settings.angle, side: 1, radius: settings.radius }, a, b)
+  const outline = carveOutline(spec)
+  return outline.segs.length ? { outline: outline.pathData, edges: bandOuterPathData(spec) } : null
 }
 
 /** The construction lines of the shape under `p` (layer space) that are not yet guides following it, and its bounds. */
@@ -121,6 +158,8 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
   const carveSessionRef = useRef<{ doc: IllustratorDocument; session: ComposeSession } | null>(null)
   // The composition an offset preview draws over, made once per document and preview target.
   const offsetSessionRef = useRef<{ doc: IllustratorDocument; key: string; session: ComposeSession } | null>(null)
+  /** The composition a band setting being slid is shown with: the band in its place, made again on every step. */
+  const bandSessionRef = useRef<{ doc: IllustratorDocument; id: string; session: ComposeSession } | null>(null)
   // A general offset preview waiting for its slider to rest.
   const offsetSettleRef = useRef(0)
   // Who received the current press: a tool, or the editor (handles stay live under tools).
@@ -209,14 +248,15 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     })
     controllerRef.current = controller
     // A pin let go of because its target went, by an edit made off the canvas, is said too, and so is a copy that stops following
-    // by an edit the canvas does not read out itself. Undo and redo bring back what was.
+    // by an edit the canvas does not read out itself, and a band an edit leaves no fit. Undo and redo bring back what was.
     const unwatch = useLogoStore.subscribe((state, before) => {
       if (state.vectorDocument.objects === before.vectorDocument.objects) return
       const step = state.vectorUndoStack.at(-1)
       if (!step || before.vectorUndoStack.includes(step) || before.vectorRedoStack.includes(step)) return
       const unpinned = pinsLostWithTarget(before.vectorDocument.objects, state.vectorDocument.objects)
-      const { gone, edited } = linksEndedBy(before.vectorDocument.objects, state.vectorDocument.objects)
-      if (unpinned.length || gone.length || edited.length) controller.noteLetGo({ unpinned, gone, edited })
+      const { gone, edited } = linksEndedBy(before.vectorDocument.objects, state.vectorDocument.objects, state.vectorDocument.guides)
+      const emptied = bandsEmptiedBy(before.vectorDocument.objects, state.vectorDocument.objects)
+      if (unpinned.length || gone.length || edited.length || emptied.length) controller.noteLetGo({ unpinned, gone, edited, emptied })
     })
     return () => {
       unwatch()
@@ -277,6 +317,39 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     }
   }, [applyOffsetPreview])
 
+  /** Draw the band whose setting the selection bar's slider is moving, in its place in the ink. With none, the ink goes back to the mark. */
+  const applyBandPreview = useCallback(() => {
+    const scope = scopeRef.current
+    if (!scope) return
+    const preview = bandPreview.get()
+    const state = useLogoStore.getState()
+    const doc = state.illustrator
+    if (!preview || !doc.layers.some((layer) => layer.id === preview.id)) {
+      if (bandSessionRef.current) {
+        bandSessionRef.current = null
+        setInkPathData(scope, composeVectorMarkCached(state.vectorDocument).compoundPathData)
+      }
+      return
+    }
+    if (bandSessionRef.current?.doc !== doc || bandSessionRef.current.id !== preview.id) {
+      bandSessionRef.current = { doc, id: preview.id, session: createComposeSession(doc, [preview.id]) }
+    }
+    const outline = carveOutline(preview.carve)
+    try {
+      setInkPathData(scope, bandSessionRef.current.session.compose(new Map([[preview.id, outline.segs.length ? outline.pathData : null]])))
+    } catch {
+      // A boolean hiccup: the last good frame stays.
+    }
+  }, [scopeRef])
+
+  useEffect(() => {
+    const unsubscribe = bandPreview.subscribe(applyBandPreview)
+    return () => {
+      unsubscribe()
+      bandPreview.set(null)
+    }
+  }, [applyBandPreview])
+
   // Render. The renderer reads only the layers, so a selection change, which
   // keeps the same layers array, does not rebuild the scope.
   const layers = illustrator.layers
@@ -293,10 +366,11 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     controllerRef.current?.sync(itemMap)
     // An offset being set is drawn over the new ink again.
     if (offsetPreview.get()) applyOffsetPreview()
+    if (bandPreview.get()) applyBandPreview()
     // A render clears the canvas: the drawing in progress goes back on top.
     const tool = toolRef.current
-    if (tool instanceof PenTool || tool instanceof GuideTool) tool.redraw()
-  }, [layers, activeMark, survival, ui.viewport, ui.look, params.fillColor, scopeRef, applyOffsetPreview])
+    if (tool instanceof PenTool || tool instanceof GuideTool || tool instanceof BandTool) tool.redraw()
+  }, [layers, activeMark, survival, ui.viewport, ui.look, params.fillColor, scopeRef, applyOffsetPreview, applyBandPreview])
 
   // Guides draw on their own: a guide edit, or showing and hiding them, redraws only them.
   const guides = useLogoStore((s) => s.vectorDocument.guides)
@@ -306,9 +380,15 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     if (!scope) return
     renderGuides(scope, ui.showGuides && ui.look === 'construction' ? guides : null)
     controllerRef.current?.refresh()
-    // The Guide tool's ghosts leave out the lines that are guides now.
-    if (toolRef.current instanceof GuideTool) toolRef.current.redraw()
+    // The Guide tool's ghosts leave out the lines that are guides now; the Band tool's circles take in the guides on the canvas.
+    if (toolRef.current instanceof GuideTool || toolRef.current instanceof BandTool) toolRef.current.redraw()
   }, [guides, ui.showGuides, ui.look, scopeRef])
+
+  // The Band tool's preview follows the pill's settings as they change.
+  const bandSettings = useLogoStore((s) => s.ui.band)
+  useEffect(() => {
+    if (toolRef.current instanceof BandTool) toolRef.current.redraw()
+  }, [bandSettings])
 
   // The editor draws the selection over the canvas: a new selection redraws only that.
   const { selectedLayerIds, pointSelection } = illustrator
@@ -411,12 +491,20 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
           draws: () => useLogoStore.getState().ui.guideDraws,
         })
         break
+      case 'band':
+        // What the tool makes is selected, and the tool stays on for the next band.
+        toolRef.current = new BandTool(scope, {
+          circles: bandCircles,
+          preview: toolBandOutline,
+          onBand: (a, b) => useLogoStore.getState().addBand(a, b),
+        })
+        break
     }
 
     canvas.style.cursor = toolRef.current ? 'crosshair' : 'default'
     // The pen and the Guide tool hide every handle; a carve tool keeps only a recipe's own, to adjust the cut just made.
     const current = toolRef.current
-    controllerRef.current?.setHandlesLive(current instanceof PenTool || current instanceof GuideTool ? 'none' : current ? 'recipe' : 'all')
+    controllerRef.current?.setHandlesLive(current instanceof PenTool || current instanceof GuideTool || current instanceof BandTool ? 'none' : current ? 'recipe' : 'all')
     // Under the Guide tool, guides take presses before the tool does.
     controllerRef.current?.setGuidesFirst(current instanceof GuideTool)
 
@@ -444,8 +532,8 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
         }
         return false
       }
-      if (tool instanceof GuideTool) {
-        // Escape drops the line being drawn (or the ghosts a tap pinned) first, then the tool.
+      if (tool instanceof GuideTool || tool instanceof BandTool) {
+        // Escape drops the line being drawn (or the ghosts a tap pinned, or the band's first circle) first, then the tool.
         if (event.key === 'Escape') {
           if (!tool.dismiss()) setActiveTool(null)
           return true
@@ -509,6 +597,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       controller?.toolDown(p, modifiersOf(e), touch)
       const tool = toolRef.current
       if (tool instanceof GuideTool) tool.onMouseDown(point, modifiersOf(e), touch, target?.kind === 'guide' ? target : null)
+      else if (tool instanceof BandTool) tool.onMouseDown(point, touch)
       else tool.onMouseDown(point)
       return
     }
@@ -533,6 +622,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       }
       controller?.toolPointer(p, modifiersOf(e), touch)
       if (tool instanceof GuideTool) tool.onMouseDrag(point, modifiersOf(e), touch, hovering && controller.toolPressTarget(p, touch) !== null)
+      else if (tool instanceof BandTool) tool.onMouseDrag(point, touch)
       else tool.onMouseDrag(point)
       return
     }
@@ -559,14 +649,14 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
   /** The gesture was interrupted (pointer cancelled or capture lost): undo the preview. */
   const handlePointerCancel = useCallback(() => {
     pressOwnerRef.current = null
-    if (toolRef.current instanceof CarveTool || toolRef.current instanceof GuideTool) toolRef.current.cancel()
+    if (toolRef.current instanceof CarveTool || toolRef.current instanceof GuideTool || toolRef.current instanceof BandTool) toolRef.current.cancel()
     controllerRef.current?.cancel()
   }, [])
 
   /** Hover outlines, snap hints and labels go when the pointer leaves (a captured drag keeps them). */
   const handlePointerLeave = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) return
-    if (toolRef.current instanceof PenTool || toolRef.current instanceof GuideTool) toolRef.current.pointerLeave()
+    if (toolRef.current instanceof PenTool || toolRef.current instanceof GuideTool || toolRef.current instanceof BandTool) toolRef.current.pointerLeave()
     controllerRef.current?.pointerLeave()
   }, [])
 

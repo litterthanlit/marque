@@ -20,7 +20,8 @@ import {
   type Vec,
 } from '../path/bezier.ts'
 import { carveOutline, KAPPA, polygonParts } from '../carve/outline.ts'
-import type { CarveSpec, PolygonSpec } from '../carve/spec.ts'
+import type { BandSpec, CarveSpec, PolygonSpec } from '../carve/spec.ts'
+import { bandParts } from '../carve/band.ts'
 import type { Contour, Guide } from '../vector/types.ts'
 import { asCircle, type CircleSource } from './asCircle.ts'
 
@@ -77,12 +78,15 @@ export function outlinePrimitives(object: PrimitiveSource): readonly Primitive[]
 /**
  * The pieces of a recipe's outline. A polygon is read from its own numbers:
  * its sides are segments and its rounded corners arcs of their circles, so a
- * corner that turns less than a quarter is exact too.
+ * corner that turns less than a quarter is exact too. A band is too: its
+ * edges are segments and its arcs arcs, whatever their sweep.
  */
 export function recipePrimitives(spec: CarveSpec, owner: string): Primitive[] {
   switch (spec.kind) {
     case 'polygon':
       return polygonPrimitives(spec, owner)
+    case 'band':
+      return bandPrimitives(spec, owner)
     case 'slab':
     case 'punch':
     case 'channel':
@@ -94,6 +98,15 @@ export function recipePrimitives(spec: CarveSpec, owner: string): Primitive[] {
     default:
       return spec satisfies never
   }
+}
+
+/** A band's edges, arcs and chords, read from its own numbers: none while its circles allow no fit. */
+function bandPrimitives(spec: BandSpec, owner: string): Primitive[] {
+  return (bandParts(spec)?.parts ?? []).map((part): Primitive => {
+    if (part.kind === 'segment') return { kind: 'segment', a: part.a, b: part.b, owner }
+    const start = part.sweep >= 0 ? part.start : part.start + part.sweep
+    return { kind: 'arc', c: part.c, r: part.r, start, end: start + Math.abs(part.sweep), owner }
+  })
 }
 
 /** A polygon's corner arcs and sides, in order round it. */

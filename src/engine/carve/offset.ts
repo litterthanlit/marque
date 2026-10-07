@@ -1,4 +1,5 @@
-import { polygonApothem, polygonCornerRadius, type CarveSpec, type PolygonSpec, type SlabSpec } from './spec.ts'
+import { bandParts } from './band.ts'
+import { bandSettings, polygonApothem, polygonCornerRadius, type BandSpec, type CarveSpec, type PolygonSpec, type SlabSpec } from './spec.ts'
 
 /**
  * Exact offsets of recipes. A recipe made of straight sides and true arcs
@@ -32,6 +33,7 @@ export function offsetsExactly(spec: CarveSpec): boolean {
     case 'polygon':
     case 'channel':
     case 'slice':
+    case 'band':
       return true
     default:
       return spec satisfies never
@@ -50,7 +52,8 @@ export function offsetsExactly(spec: CarveSpec): boolean {
  *   corners keep their centres;
  * - a square punch: as a slab, so its outset, rounded by d, is a slab;
  * - a triangle punch: the polygon it draws, of radius 1.25 r, as above;
- * - a channel or slice, bent or not: width ± 2d.
+ * - a channel or slice, bent or not: width ± 2d;
+ * - a band: see offsetBand.
  */
 export function offsetRecipe(spec: CarveSpec, d: number): CarveSpec | null {
   if (!offsetsExactly(spec)) return null
@@ -80,6 +83,8 @@ export function offsetRecipe(spec: CarveSpec, d: number): CarveSpec | null {
       const width = spec.width + 2 * d
       return width < OFFSET_MIN_SIZE ? null : { ...spec, width }
     }
+    case 'band':
+      return offsetBand(spec, d)
     default:
       return spec satisfies never
   }
@@ -99,4 +104,37 @@ function offsetPolygon(spec: PolygonSpec, d: number): PolygonSpec | null {
   if (2 * apothem < OFFSET_MIN_SIZE) return null
   const radius = spec.radius + d / Math.cos(Math.PI / spec.sides)
   return { ...spec, radius, cornerRadius: Math.max(polygonCornerRadius(spec) + d, 0) }
+}
+
+/**
+ * A band offset by `d`, as the band between its circles offset by `d`:
+ *
+ * - a belt: both radii ± d, its exact offset, since it wraps its circles;
+ * - a bar: width ± 2d, as a channel;
+ * - a strip: both radii ± d, which moves each edge out by d and keeps its
+ *   ends through the centres;
+ * - a neck: both radii ± d and its arcs' radius ∓ d, which keeps the arcs'
+ *   centres.
+ *
+ * A strip's and a neck's are exact for the mark they make with their
+ * circles offset alike, whose edges and arcs they are, though not for the
+ * band alone: its ends and chords lie inside the circles. Nothing is left
+ * when a radius falls under half of OFFSET_MIN_SIZE, a neck's arcs to
+ * nothing, or the offset circles allow no fit.
+ */
+function offsetBand(spec: BandSpec, d: number): BandSpec | null {
+  if (spec.fit === 'bar') {
+    const width = bandSettings(spec).width + 2 * d
+    return width < OFFSET_MIN_SIZE ? null : { ...spec, width }
+  }
+  const ra = spec.a.r + d
+  const rb = spec.b.r + d
+  if (Math.min(ra, rb) < OFFSET_MIN_SIZE / 2) return null
+  const next: BandSpec = { ...spec, a: { c: spec.a.c, r: ra }, b: { c: spec.b.c, r: rb } }
+  if (spec.fit === 'neck') {
+    const radius = bandSettings(spec).radius - d
+    if (radius < OFFSET_MIN_SIZE / 2) return null
+    next.radius = radius
+  }
+  return bandParts(next) ? next : null
 }

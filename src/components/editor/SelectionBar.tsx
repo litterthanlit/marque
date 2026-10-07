@@ -1,20 +1,25 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { tangentCircles, useLogoStore } from '../../store/logoStore.ts'
-import { describeCarve, MAX_SIDES, MIN_SIDES, polygonApothem, type CarveSpec } from '../../engine/carve/spec.ts'
+import { BAND_FITS, bandSettings, describeCarve, MAX_SIDES, MIN_SIDES, polygonApothem, type BandFit, type BandSpec, type CarveSpec } from '../../engine/carve/spec.ts'
+import { bandParts } from '../../engine/carve/band.ts'
+import { bandRefitted, bandsOf, bandWith, noFitReason, type BandUpdate } from '../../engine/vector/bands.ts'
+import { BandFitControl, BandSettingControl } from './BandControls.tsx'
 import { editableShapeOf } from '../../engine/illustrator/layerPath.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
 import { closedContourOf, describeGuide } from '../../engine/vector/guides.ts'
 import type { Guide, PathObject, VectorObject } from '../../engine/vector/types.ts'
 import { hiddenRadiusDots, selectionBox } from '../../renderer/directEdit/handleSet.ts'
 import { hud } from '../../renderer/directEdit/hud.ts'
+import { bandPreview } from '../../renderer/directEdit/bandPreview.ts'
 import { offsetPreview } from '../../renderer/directEdit/offsetPreview.ts'
 import { MAX_OFFSET, offsetGeometry, offsetIsQuick, offsetName, type OffsetGeometry } from '../../engine/vector/offsets.ts'
 import { cn } from '../../lib/utils.ts'
 import { SliderControl } from '../controls/SliderControl.tsx'
 import { Divider, EditorButton, FLOATING_SURFACE, Segmented, Stepper, SwitchButton } from './controls.tsx'
-import { layerNumber } from './layerNumber.ts'
+import { bandEnds, layerNumber } from './layerNumber.ts'
 import { steppedPolygonSides } from './tools.ts'
 import { Popover } from './Popover.tsx'
+import { useShiftHeld } from './useShiftHeld.ts'
 import { GUIDE_STYLE_OPTIONS } from './ToolPill.tsx'
 
 const OPERATION_OPTIONS = [
@@ -41,6 +46,23 @@ const FREE_SHAPE_HINT =
  * canvas: a recipe that is the only one left reads as that recipe. Where the
  * Sides stepper shows beside it, a polygon's sides are not read twice.
  */
+/** A band's fit and the fit's setting, short: "strip 60°", "bar 40", "neck r 38", "belt". */
+function bandFitText(carve: BandSpec): string {
+  const settings = bandSettings(carve)
+  switch (carve.fit) {
+    case 'belt':
+      return 'belt'
+    case 'bar':
+      return `bar ${Math.round(settings.width)}`
+    case 'strip':
+      return `strip ${Math.round(settings.angle)}°`
+    case 'neck':
+      return `neck r ${Math.round(settings.radius)}`
+    default:
+      return carve.fit satisfies never
+  }
+}
+
 function describeSelection(
   doc: IllustratorDocument,
   objects: VectorObject[],
@@ -53,6 +75,11 @@ function describeSelection(
   const link = alone?.link?.kind === 'offset' ? alone.link : null
   const copyName = link ? `${offsetName(link.distance)} of ${layerNumber(doc.layers, link.of) ?? '—'}` : null
   if (alone && copyName && !alone.pathData) return { name: copyName, numbers: 'nothing left' }
+  // A band by its fit and the circles it follows, "Band · strip 60° · 02, 05", and "no fit" while they allow it none.
+  if (alone?.carve?.kind === 'band' && !copyName) {
+    const ends = alone.link?.kind === 'band' ? ` · ${bandEnds(doc, alone.link).join(', ')}` : ''
+    return { name: `Band · ${bandFitText(alone.carve)}${ends}`, numbers: alone.pathData ? null : 'no fit' }
+  }
   if (alone?.carve) {
     const stepped = steppedPolygonSides(selected, doc.layers).length > 0
     const [kind, ...numbers] = describeCarve(alone.carve)
@@ -143,18 +170,27 @@ function LayerBar() {
         {selectedLayer?.pin && <PinnedTo target={selectedLayer.pin} />}
         {selectedLayer && <Holds id={selectedLayer.id} />}
         {selectedLayer && <Copies id={selectedLayer.id} />}
+        {selectedLayer && <Bands id={selectedLayer.id} />}
         {selectedLayer?.link?.kind === 'offset' && <OffsetDistance layer={selectedLayer} />}
 
         <PolygonSides layers={selectedLayers} />
         {selectedLayer && !selectedLayer.link && <CornerRadius layer={selectedLayer} />}
 
+        {/*
+          A band's own controls keep together where the bar wraps, so Detach is never left on a row of its own.
+          A copy of a band is made from the band: its own fit and setting would change nothing.
+        */}
         {selectedLayer && (
-          <Segmented
-            label="Add or cut"
-            options={OPERATION_OPTIONS}
-            value={selectedLayer.operation}
-            onChange={(operation) => setIllustratorLayerOperation(selectedLayer.id, operation)}
-          />
+          <div className="flex items-center gap-x-2">
+            {selectedLayer.carve?.kind === 'band' && selectedLayer.link?.kind !== 'offset' && <BandMenu layer={selectedLayer} />}
+            <Segmented
+              label="Add or cut"
+              options={OPERATION_OPTIONS}
+              value={selectedLayer.operation}
+              onChange={(operation) => setIllustratorLayerOperation(selectedLayer.id, operation)}
+            />
+            {selectedLayer.link?.kind === 'band' && <DetachBand layer={selectedLayer} />}
+          </div>
         )}
 
         {selectedPoint && (
@@ -193,15 +229,15 @@ function LayerBar() {
         <Divider className="max-sm:hidden" />
 
         <div className="flex gap-1">
-          {selectedLayer && !selectedLayer.link && <OffsetMenu layer={selectedLayer} />}
+          {selectedLayer && selectedLayer.link?.kind !== 'offset' && selectedLayer.pathData && <OffsetMenu layer={selectedLayer} />}
           <GuidesMenu />
           <EditorButton title="Turn each outline of the selection into a guide. The shapes go." onClick={makeGuidesFromSelection}>
             Make guide
           </EditorButton>
           {selectedLayer && (
             <EditorButton
-              title={selectedLayer.link?.kind === 'offset' && !selectedLayer.pathData ? 'Nothing is left of it to copy: it comes back when its shape grows' : undefined}
-              disabled={selectedLayer.link?.kind === 'offset' && !selectedLayer.pathData}
+              title={selectedLayer.link && !selectedLayer.pathData ? 'Nothing is left of it to copy: it comes back when what it follows allows it' : undefined}
+              disabled={Boolean(selectedLayer.link) && !selectedLayer.pathData}
               onClick={() => duplicateIllustratorLayer(selectedLayer.id)}
             >
               Copy
@@ -355,32 +391,122 @@ function Copies({ id }: { id: string }) {
   )
 }
 
-/** The longest offset the bar makes, out or in. */
-const OFFSET_REACH = 120
+/** A circle that bands follow: which, by their numbers. Nothing when none does. */
+function Bands({ id }: { id: string }) {
+  const layers = useLogoStore((s) => s.illustrator.layers)
+  const numbers = bandsOf(layers, id).map((band) => layerNumber(layers, band)!)
+  if (!numbers.length) return null
+  return (
+    <span className="px-1 text-xs text-sidebar-text" title="Bands that follow this circle as it moves and resizes">
+      Bands {numbers.join(', ')}
+    </span>
+  )
+}
 
 /**
- * Is Shift held? Read while a slider moves, which lands on steps of 5 then.
- * Kept in a ref: holding it must not draw the bar again.
+ * Band…: the band's fit and the fit's setting, in a popover that keeps the
+ * bar short. One undo step a release, a burst of arrow keys one too; the
+ * canvas shows the band as the slider moves. A fit its circles leave no
+ * room for is disabled, its title saying why, and a setting let go of where
+ * they allow none is refused and said: a band's own controls never empty it.
+ * While it has no fit, it says why as it is selected.
  */
-function useShiftHeld() {
-  const held = useRef(false)
+function BandMenu({ layer }: { layer: IllustratorLayer }) {
+  const carve = layer.carve?.kind === 'band' ? layer.carve : null
+  const empty = !layer.pathData
+  // Read out once as an empty band is selected, or as it empties: not again as its recipe follows its circles.
+  const reason = carve && empty ? noFitReason(carve) : null
+  const said = useRef<string | null>(null)
   useEffect(() => {
-    const note = (event: KeyboardEvent | PointerEvent) => {
-      held.current = event.shiftKey
-    }
-    window.addEventListener('keydown', note, true)
-    window.addEventListener('keyup', note, true)
-    window.addEventListener('pointermove', note, true)
-    window.addEventListener('pointerdown', note, true)
-    return () => {
-      window.removeEventListener('keydown', note, true)
-      window.removeEventListener('keyup', note, true)
-      window.removeEventListener('pointermove', note, true)
-      window.removeEventListener('pointerdown', note, true)
-    }
-  }, [])
-  return held
+    const key = reason && `${layer.id} ${reason}`
+    if (key && said.current !== key) hud.announce(`No fit: ${reason}`)
+    said.current = key
+  }, [layer.id, reason])
+  if (!carve) return null
+  return (
+    <Popover
+      label="This band"
+      // On a phone it opens across the bar, which it is placed against, so it never runs off the screen.
+      className="sm:relative"
+      panelClassName="absolute bottom-full mb-2 flex flex-col gap-2.5 p-3 max-sm:inset-x-0 sm:left-0 sm:w-64"
+      trigger={(props) => (
+        <EditorButton {...props} title="The band's fit and its setting">
+          Band…
+        </EditorButton>
+      )}
+    >
+      <BandSettings layer={layer} carve={carve} />
+    </Popover>
+  )
 }
+
+function BandSettings({ layer, carve }: { layer: IllustratorLayer; carve: BandSpec }) {
+  const setBand = useLogoStore((s) => s.setBand)
+  // A preview left by a slider goes with the band's controls.
+  useEffect(() => () => bandPreview.set(null), [layer.id])
+  const fits = Boolean(layer.pathData)
+  // A band that fits is refused only the fits its circles leave no room for at any setting: their titles say why.
+  // Any other fit takes its setting there, or the nearest its circles allow.
+  const refused: Partial<Record<BandFit, string>> = {}
+  if (fits) {
+    for (const fit of BAND_FITS) if (!bandRefitted(carve, fit)) refused[fit] = noFitReason(bandWith(carve, { fit }), true)
+  }
+  // False when refused: the slider goes back to the band's setting.
+  const change = (update: BandUpdate, merge?: 'band-setting'): boolean => {
+    bandPreview.set(null)
+    const next = bandWith(carve, update)
+    if (fits && !update.fit && !bandParts(next)) {
+      hud.hold('no fit', NO_FIT_MS)
+      hud.announce(`No fit: ${noFitReason(next)}`)
+      return false
+    }
+    setBand(layer.id, update, merge)
+    return true
+  }
+  return (
+    <>
+      <span aria-hidden="true" className="text-[10px] uppercase tracking-widest text-sidebar-text">
+        This band
+      </span>
+      <BandFitControl fit={carve.fit} refused={refused} onChange={(fit) => change({ fit })} />
+      <BandSettingControl
+        fit={carve.fit}
+        values={bandSettings(carve)}
+        className="min-w-0 px-1.5"
+        onChange={(update, byKey) => change(update, byKey ? 'band-setting' : undefined)}
+        onInput={(update) => {
+          const next = bandWith(carve, update)
+          bandPreview.set({ id: layer.id, carve: next })
+          if (fits && !bandParts(next)) hud.hold('no fit', NO_FIT_MS)
+        }}
+      />
+    </>
+  )
+}
+
+/** How long "no fit" shows when a band's setting is refused. */
+const NO_FIT_MS = 1200
+
+/** Detach: the band keeps its geometry and recipe and stops following its circles. An empty one, with nothing to keep, waits. */
+function DetachBand({ layer }: { layer: IllustratorLayer }) {
+  const detachBands = useLogoStore((s) => s.detachBands)
+  const empty = !layer.pathData
+  return (
+    <EditorButton
+      title={empty ? 'Nothing is left of it to keep: it comes back when its circles allow it' : 'Stop following the circles: the band stays as it is'}
+      disabled={empty}
+      onClick={() => {
+        detachBands([layer.id])
+        hud.announce('Detached: it no longer follows its circles')
+      }}
+    >
+      Detach
+    </EditorButton>
+  )
+}
+
+/** The longest offset the bar makes, out or in. */
+const OFFSET_REACH = 120
 
 /**
  * An offset distance as the slider lands it: whole units, steps of 5 with
@@ -628,7 +754,7 @@ function OffsetDistance({ layer }: { layer: IllustratorLayer }) {
   return (
     <div className="flex items-center gap-1 max-sm:w-full max-sm:flex-wrap" role="group" aria-label="Offset">
       <div
-        className="min-w-0 px-1.5 max-sm:flex-1 sm:w-36"
+        className="min-w-0 px-1.5 max-sm:order-last max-sm:basis-full sm:w-36"
         title="How far the copy lies from the shape it follows"
         onKeyDownCapture={() => (byKey.current = true)}
         onPointerDownCapture={() => (byKey.current = false)}

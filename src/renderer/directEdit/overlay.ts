@@ -5,6 +5,8 @@ import type { SnapHint } from '../../engine/snap/snapping.ts'
 
 export const SELECTION_COLOR = '#3b82f6'
 export const HINT_COLOR = '#ec4899'
+/** Where a band its circles allow no fit would be: the red of a lost fillet. */
+export const NO_FIT_COLOR = '#e11d48'
 
 // Layer units per CSS pixel: overlay marks keep a constant on-screen size
 // whatever the view zoom.
@@ -82,6 +84,13 @@ export function outlinePathData(
   if (!pathData) return
   const item = new scope.CompoundPath({ pathData, insert: false })
   item.translate(new scope.Point(center.x, center.y))
+  addWithHalo(scope, layer, item, style)
+}
+
+/** Trace a circle given in layer space. */
+export function outlineCircle(scope: paper.PaperScope, layer: paper.Layer, c: Vec, r: number, center: Vec, style: StrokeStyle = {}) {
+  if (!(r > 0)) return
+  const item = new scope.Path.Circle({ center: new scope.Point(c.x + center.x, c.y + center.y), radius: r, insert: false })
   addWithHalo(scope, layer, item, style)
 }
 

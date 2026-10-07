@@ -2,6 +2,7 @@ import { isObjectCarveValid } from '../carve/sync.ts'
 import { follow } from './follow.ts'
 import { MAX_OFFSET, breakOffsetLoops } from './offsets.ts'
 import { breakPinLoops } from './pins.ts'
+import { breakBandLinks } from './bands.ts'
 import type {
   ConstructionRole,
   Contour,
@@ -75,7 +76,10 @@ export function isBlankDocument(document: Pick<VectorDocument, 'objects' | 'guid
  *   is not there, is detached, and so is a pin; pins that would hold each
  *   other in a loop lose the pin that closes it, offset copies that would
  *   follow each other in a loop lose the link that closes it, and an offset
- *   of a group is detached;
+ *   of a group is detached; a band link stays only on a band whose recipe is
+ *   a band of a fit it knows, to two circles apart, each an object other
+ *   than a band or a group, or a guide; a band waiting empty for its circles
+ *   keeps its recipe, and one empty that follows nothing goes;
  * - a guide of a shape it does not know is dropped, and so is a fillet
  *   between objects that are not there;
  * - a construction guide is rebuilt from the shape it follows, or detached
@@ -118,10 +122,12 @@ export function repairVectorDocument(value: unknown): VectorDocument | null {
     if (object) read.push(object)
   }
   const structured = repairStructure(uniqueIds(read))
-  const referenced = breakPinLoops(breakOffsetLoops(repairReferences(structured)))
-
-  const ids = new Set(referenced.map((object) => object.id))
+  const ids = new Set(structured.map((object) => object.id))
   const readGuides = readList(value.guides, (raw) => readGuide(raw, ids))
+  // A band may follow a circle guide as well as an object.
+  const guideIds = new Set(readGuides.map((guide) => guide.id))
+  // An empty band that the repairs leave following nothing goes: what referred to it is repaired again.
+  const referenced = breakPinLoops(breakOffsetLoops(repairReferences(breakBandLinks(repairReferences(structured, guideIds), guideIds), guideIds)))
   const fillets = readList(value.fillets, (raw) => readFillet(raw, ids))
   // What follows an object is brought up to date with it once, as the document opens. Pins are only checked: a pinned recipe stays where it was stored.
   const { objects, guides } = follow(null, { objects: referenced, guides: readGuides, fillets })
@@ -499,16 +505,17 @@ function uniqueIds(objects: VectorObject[]): VectorObject[] {
   return changed ? next : objects
 }
 
-/** Links and pins to objects that are not there are detached. The same array when none is. */
-function repairReferences(objects: VectorObject[]): VectorObject[] {
+/** Links and pins to objects that are not there are detached, a band's ends being guides too. The same array when none is. */
+function repairReferences(objects: VectorObject[], guideIds: ReadonlySet<string>): VectorObject[] {
   const ids = new Set(objects.map((object) => object.id))
   const there = (id: string, self: string) => id !== self && ids.has(id)
+  const end = (id: string, self: string) => there(id, self) || guideIds.has(id)
   let changed = false
   const next = objects.map((object) => {
     if (object.type !== 'path') return object
     const { link, pin } = object
     const keepLink =
-      !link || (link.kind === 'band' ? there(link.a, object.id) && there(link.b, object.id) : there(link.of, object.id))
+      !link || (link.kind === 'band' ? end(link.a, object.id) && end(link.b, object.id) : there(link.of, object.id))
     const keepPin = !pin || there(pin.centreOf, object.id)
     if (keepLink && keepPin) return object
     changed = true
@@ -523,7 +530,7 @@ function repairReferences(objects: VectorObject[]): VectorObject[] {
 /* ─── Guides and fillets ─── */
 
 const GUIDE_STYLES = new Set(['solid', 'dashed', 'dotted'])
-const ROLES = new Set(['centre-x', 'centre-y', 'top', 'right', 'bottom', 'left', 'circumcircle', 'incircle'])
+const ROLES = new Set(['centre-x', 'centre-y', 'top', 'right', 'bottom', 'left', 'circumcircle', 'incircle', 'centre-line', 'edge-1', 'edge-2'])
 
 function isConstructionRole(value: unknown): value is ConstructionRole {
   return typeof value === 'string' && (ROLES.has(value) || /^axis-\d+$/.test(value))

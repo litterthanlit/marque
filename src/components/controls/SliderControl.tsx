@@ -7,7 +7,8 @@ interface SliderControlProps {
   min: number
   max: number
   step: number
-  onChange: (value: number) => void
+  /** The value let go on. `false` says it was refused: the thumb goes back to `value`. */
+  onChange: (value: number) => void | boolean
   /** How the value reads beside the label, where it says more than the number. */
   format?: (value: number) => string
   /** Every value the thumb passes through, before the one let go on reaches `onChange`. */
@@ -27,6 +28,8 @@ interface SliderControlProps {
 export function SliderControl({ label, value, min, max, step, onChange, format, onInput, adjust, mark, ends, autoFocus, emphasis }: SliderControlProps) {
   const [draftValue, setDraftValue] = useState(value)
   const thumbRef = useRef<HTMLSpanElement>(null)
+  // The value `onChange` last refused. A key commits before it moves the thumb: that move is not taken up.
+  const refused = useRef<number | null>(null)
 
   // Only as it appears, not when the prop changes later; a frame on, once the thumb is placed and shown.
   useEffect(() => {
@@ -58,12 +61,20 @@ export function SliderControl({ label, value, min, max, step, onChange, format, 
         min={min}
         max={max}
         step={step}
+        onPointerDown={() => (refused.current = null)}
         onValueChange={([v]) => {
           const next = land(v)
+          if (next === refused.current) return
           setDraftValue(next)
           onInput?.(next)
         }}
-        onValueCommit={([v]) => onChange(land(v))}
+        onValueCommit={([v]) => {
+          const next = land(v)
+          // Refused, the value stays as it was: so does the thumb.
+          const taken = onChange(next) !== false
+          refused.current = taken ? null : next
+          if (!taken) setDraftValue(value)
+        }}
       >
         <Slider.Track className="relative grow h-[3px] bg-interactive-active rounded-full">
           {mark === undefined ? (

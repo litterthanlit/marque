@@ -2,8 +2,8 @@ import paper from 'paper'
 import { compressToEncodedURIComponent } from 'lz-string'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useLogoStore } from './logoStore.ts'
-import { translateCarve } from '../engine/carve/edit.ts'
-import { polygonApothem, type PolygonSpec, type PunchSpec, type SlabSpec } from '../engine/carve/spec.ts'
+import { rotateCarveAbout, scaleCarveAbout, translateCarve } from '../engine/carve/edit.ts'
+import { describeCarve, polygonApothem, type BandSpec, type PolygonSpec, type PunchSpec, type SlabSpec } from '../engine/carve/spec.ts'
 import { composeIllustratorMark } from '../engine/illustrator/compose.ts'
 import type { IllustratorLayer } from '../engine/illustrator/types.ts'
 import { rollSparks } from '../engine/sparks/sparks.ts'
@@ -12,6 +12,7 @@ import { readLegacyLayers } from '../engine/vector/migrate.ts'
 import { constructionLines, guideRows } from '../engine/vector/guides.ts'
 import type { PathObject, VectorDocument, VectorObject } from '../engine/vector/types.ts'
 import { decodeLink, encodeLink } from '../engine/vector/link.ts'
+import { sanitizeVectorDocument } from '../engine/vector/document.ts'
 import { createSavedVariation, type SavedVariation } from '../engine/vector/saved.ts'
 import { pinsLostWithTarget } from '../engine/vector/pins.ts'
 
@@ -2071,5 +2072,205 @@ describe('offset copies', () => {
     expect(object(copyId).carve).toMatchObject({ center: by })
     expect(object(punchId).carve).toMatchObject({ center: by })
     expect(object(punchId).pin).toEqual({ centreOf: copyId })
+  })
+})
+
+describe('bands', () => {
+  beforeEach(() => reset())
+
+  const object = (id: string) => objects().find((each) => each.id === id) as PathObject
+
+  /** Circle slabs at the given centres and radii: their ids, bottom first. */
+  function circles(...list: Array<[number, number, number]>): string[] {
+    return list.map(([x, y, r]) => {
+      useLogoStore.getState().addSlab('circle')
+      const id = objects().at(-1)!.id
+      const carve: SlabSpec = { ...(object(id).carve as SlabSpec), center: { x, y }, width: 2 * r, height: 2 * r, radius: r }
+      useLogoStore.getState().commitLayerEdits({ label: 'Place', edits: [{ layerId: id, carve }] })
+      return id
+    })
+  }
+
+  it("adds ref 4's strip as one undo step, directly above the higher circle, selected, the tool's fit and setting in it", () => {
+    const [a, other, c] = circles([-150, -100, 100], [200, 200, 30], [-125, 111, 65])
+    useLogoStore.getState().setBandSettings({ fit: 'strip', angle: 60 })
+    const depth = undoDepth()
+    useLogoStore.getState().addBand(c, a)
+    expect(undoDepth()).toBe(depth + 1)
+    const ids = objects().map((each) => each.id)
+    const band = objects()[3] as PathObject
+    expect(ids).toEqual([a, other, c, band.id])
+    expect(band).toMatchObject({ name: 'Band · strip', operation: 'add', link: { kind: 'band', a: c, b: a }, carve: { kind: 'band', fit: 'strip', angle: 60 } })
+    expect(useLogoStore.getState().illustrator.selectedLayerIds).toEqual([band.id])
+    // Picked from C, the strip's first edge would fall on C's other side, where it has no fit: it takes the side that fits.
+    expect(band.carve).toMatchObject({ side: -1 })
+    expect(band.contours).toHaveLength(1)
+    expect(describeCarve(band.carve!)).toBe('Band · strip · 60° · 81 wide')
+    // Turned half round it is the same strip: its side is up to its circles, so nothing changes.
+    useLogoStore.getState().setBand(band.id, { angle: 240 })
+    expect(object(band.id)).toBe(band)
+    expect(undoDepth()).toBe(depth + 1)
+    // Flat, these circles allow it none: refused, as its controls never empty a band.
+    useLogoStore.getState().setBand(band.id, { angle: 0 })
+    expect(object(band.id)).toBe(band)
+    expect(undoDepth()).toBe(depth + 1)
+    useLogoStore.getState().undoVectorCommand()
+    expect(objects()).toHaveLength(3)
+  })
+
+  it('cuts when both circles cut, joins a circle guide, and makes nothing from one circle or no circle', () => {
+    const [a, b] = circles([-150, 0, 60], [150, 0, 60])
+    useLogoStore.getState().setIllustratorLayerOperation(a, 'subtract')
+    useLogoStore.getState().setIllustratorLayerOperation(b, 'subtract')
+    useLogoStore.getState().addBand(a, b)
+    expect(objects().at(-1)).toMatchObject({ operation: 'subtract', name: 'Band · bar' })
+    useLogoStore.getState().addGuides([{ kind: 'circle', c: { x: 0, y: 200 }, r: 40 }])
+    const guide = useLogoStore.getState().vectorDocument.guides[0].id
+    useLogoStore.getState().addBand(guide, a)
+    // Directly above its one circle that is a shape: under the first band, which sits above b.
+    expect(objects()[1]).toMatchObject({ operation: 'add', link: { kind: 'band', a: guide, b: a } })
+    const count = objects().length
+    useLogoStore.getState().addBand(a, a)
+    useLogoStore.getState().addBand(a, objects().at(-1)!.id)
+    expect(objects()).toHaveLength(count)
+  })
+
+  it('follows a circle moved as one undo step with it, and a fit or setting is one step, a burst of keys one too', () => {
+    const [a, b] = circles([-150, 0, 60], [150, 0, 60])
+    useLogoStore.getState().addBand(a, b)
+    const band = objects().at(-1)!.id
+    const depth = undoDepth()
+    const moved = translateCarve(object(b).carve!, { x: 20, y: 30 })
+    useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: b, carve: moved }] })
+    expect(undoDepth()).toBe(depth + 1)
+    expect(object(band).carve).toMatchObject({ b: { c: { x: 170, y: 30 } } })
+    useLogoStore.getState().undoVectorCommand()
+    expect(object(band).carve).toMatchObject({ b: { c: { x: 150, y: 0 } } })
+    // A neck of 30, the tool's, cannot reach across 300 and keep a waist: switched to, it takes the nearest radius that can.
+    useLogoStore.getState().setBand(band, { fit: 'neck' })
+    expect(object(band)).toMatchObject({ name: 'Band · neck', carve: { fit: 'neck', radius: 158 } })
+    // A setting it allows none is refused: of 30 it would empty. Of 170 it can, and keeps a waist.
+    const unchanged = object(band)
+    useLogoStore.getState().setBand(band, { radius: 30 })
+    expect(object(band)).toBe(unchanged)
+    useLogoStore.getState().setBand(band, { fit: 'neck', radius: 170 })
+    expect(object(band)).toMatchObject({ name: 'Band · neck', carve: { fit: 'neck', radius: 170 } })
+    const before = undoDepth()
+    useLogoStore.getState().setBand(band, { radius: 171 }, 'band-setting')
+    useLogoStore.getState().setBand(band, { radius: 172 }, 'band-setting')
+    expect(undoDepth()).toBe(before + 1)
+    expect(object(band).carve).toMatchObject({ radius: 172 })
+  })
+
+  it('is detached by deleting a circle, in the same undo step, and undo restores both', () => {
+    const [a, b] = circles([-150, 0, 60], [150, 0, 60])
+    useLogoStore.getState().addBand(a, b)
+    const band = objects().at(-1) as PathObject
+    useLogoStore.getState().deleteIllustratorLayers([b])
+    expect(object(band.id).link).toBeUndefined()
+    expect(object(band.id).contours).toBe(band.contours)
+    useLogoStore.getState().undoVectorCommand()
+    expect(object(band.id)).toBe(band)
+    expect(object(b)).toBeDefined()
+  })
+
+  it('is not made where its circles allow no fit; empties while they allow none, keeps its link, and Detach waits for it', () => {
+    const [a, b] = circles([0, 0, 100], [20, 0, 30])
+    useLogoStore.getState().setBandSettings({ fit: 'belt' })
+    const count = objects().length
+    useLogoStore.getState().addBand(a, b)
+    expect(objects()).toHaveLength(count)
+    useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: b, carve: translateCarve(object(b).carve!, { x: 200, y: 0 }) }] })
+    useLogoStore.getState().addBand(a, b)
+    const band = objects().at(-1)!.id
+    expect(object(band).contours).toHaveLength(1)
+    useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: b, carve: translateCarve(object(b).carve!, { x: -200, y: 0 }) }] })
+    expect(object(band).contours).toEqual([])
+    expect(object(band).link).toEqual({ kind: 'band', a, b })
+    useLogoStore.getState().detachBands([band])
+    expect(object(band).link).toBeDefined()
+    useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: b, carve: translateCarve(object(b).carve!, { x: 200, y: 0 }) }] })
+    expect(object(band).contours).toHaveLength(1)
+    useLogoStore.getState().detachBands([band])
+    expect(object(band).link).toBeUndefined()
+    expect(object(band).carve?.kind).toBe('band')
+  })
+
+  it('waits, empty and linked, through a box or key edit of its own: nothing is written and no step is made, and it comes back with its circles', () => {
+    const [a, b, other] = circles([0, 0, 80], [200, 0, 80], [400, 400, 30])
+    useLogoStore.getState().setBandSettings({ fit: 'bar' })
+    useLogoStore.getState().addBand(a, b)
+    const band = objects().find((each) => each.type === 'path' && each.carve?.kind === 'band')!.id
+    const moveB = (x: number) =>
+      useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: b, carve: translateCarve(object(b).carve!, { x, y: 0 }) }] })
+    moveB(-200)
+    expect(object(band).contours).toEqual([])
+    const waiting = object(band)
+    const depth = undoDepth()
+    // What Alt with an arrow would write to it alone: turned about its middle.
+    const turned = { layerId: band, carve: rotateCarveAbout(object(band).carve!, { x: 0, y: 0 }, 1) }
+    useLogoStore.getState().commitLayerEdits({ label: 'Turn', edits: [turned] })
+    expect(undoDepth()).toBe(depth)
+    expect(object(band)).toBe(waiting)
+    // Boxed with a shape it does not follow, the shape is edited and the band waits.
+    const shifted = { layerId: other, carve: translateCarve(object(other).carve!, { x: 10, y: 0 }) }
+    useLogoStore.getState().commitLayerEdits({ label: 'Turn', edits: [turned, shifted] })
+    expect(undoDepth()).toBe(depth + 1)
+    expect((object(other).carve as SlabSpec).center).toEqual({ x: 410, y: 400 })
+    expect(object(band)).toBe(waiting)
+    // It keeps its recipe through a reload, and comes back when its circles allow it.
+    expect(readable(sanitizeVectorDocument(useLogoStore.getState().vectorDocument)).objects.some((each) => each.id === band)).toBe(true)
+    moveB(200)
+    expect(object(band).contours).toHaveLength(1)
+    expect(object(band).link).toEqual({ kind: 'band', a, b })
+  })
+
+  it('edited with its circles by a box follows them; edited alone, it is detached', () => {
+    const [a, b] = circles([-150, 0, 60], [150, 0, 60])
+    useLogoStore.getState().addBand(a, b)
+    const band = objects().at(-1)!.id
+    const shift = (id: string) => ({ layerId: id, carve: translateCarve(object(id).carve!, { x: 0, y: 40 }) })
+    useLogoStore.getState().commitLayerEdits({ label: 'Box', edits: [shift(a), shift(b), shift(band)] })
+    expect(object(band).link).toBeDefined()
+    expect(object(band).carve).toMatchObject({ a: { c: { y: 40 } }, b: { c: { y: 40 } } })
+    useLogoStore.getState().commitLayerEdits({ label: 'Box', edits: [shift(band)] })
+    expect(object(band).link).toBeUndefined()
+  })
+
+  it('turned or scaled whole by a box with both its circles, takes the turn into its angle and the scale into its width or radius', () => {
+    // Ref 4's A and C, and their strip: turned 15° about their middle, as a box around all three turns them.
+    const [a, c] = circles([-77, -88, 100], [-52, 123, 65])
+    useLogoStore.getState().setBandSettings({ fit: 'strip', angle: 60 })
+    useLogoStore.getState().addBand(a, c)
+    const strip = objects().at(-1)!.id
+    const width = describeCarve(object(strip).carve!)
+    const middle = { x: -64.5, y: 17.5 }
+    const turn = (id: string) => ({ layerId: id, carve: rotateCarveAbout(object(id).carve!, middle, 15) })
+    useLogoStore.getState().commitLayerEdits({ label: 'Rotate shapes', edits: [turn(a), turn(c), turn(strip)] })
+    expect(object(strip).link).toEqual({ kind: 'band', a, b: c })
+    expect(object(strip).carve).toMatchObject({ angle: 75 })
+    expect(describeCarve(object(strip).carve!)).toBe(width.replace('60°', '75°'))
+    // Ref 2's right and bottom circles and their neck of 38, scaled twice as large.
+    reset()
+    const towards = { x: -136 / Math.hypot(136, 200), y: 200 / Math.hypot(136, 200) }
+    const gap = 91 + 110 + 40.9
+    const [right, low] = circles([143, -110, 91], [143 + towards.x * gap, -110 + towards.y * gap, 110])
+    useLogoStore.getState().setBandSettings({ fit: 'neck', radius: 38 })
+    useLogoStore.getState().addBand(right, low)
+    const neck = objects().at(-1)!.id
+    const grow = (id: string) => ({ layerId: id, carve: scaleCarveAbout(object(id).carve!, { x: 0, y: 0 }, 2) })
+    useLogoStore.getState().commitLayerEdits({ label: 'Resize shapes', edits: [grow(right), grow(low), grow(neck)] })
+    expect(object(neck).link).toEqual({ kind: 'band', a: right, b: low })
+    expect(object(neck).carve).toMatchObject({ radius: 76 })
+    expect((object(neck).carve as BandSpec).a.r).toBe(182)
+    expect(object(neck).contours).toHaveLength(1)
+  })
+
+  it('keeps its link through a link of the document, and through a saved mark', () => {
+    const [a, b] = circles([-150, 0, 60], [150, 0, 60])
+    useLogoStore.getState().addBand(a, b)
+    const document = useLogoStore.getState().vectorDocument
+    const decoded = decodeLink(encodeLink(document, '#000000'))
+    expect(decoded.kind === 'vector' && decoded.document.objects).toEqual(document.objects)
   })
 })

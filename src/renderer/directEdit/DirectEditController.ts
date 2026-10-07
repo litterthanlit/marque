@@ -86,7 +86,8 @@ import { PIN_SLACK, recipeCentre, shapeCentre } from '../../engine/vector/pins.t
 import { boxGeometryFor, carveOutline, grooveSpine, type SideRef } from '../../engine/carve/outline.ts'
 import { bentEdgeCount, isGroove, polygonApothem, polygonCornerRadius, roundCarveSpec, type CarveSpec, type SlabSpec } from '../../engine/carve/spec.ts'
 import { offsetRecipe, offsetsExactly } from '../../engine/carve/offset.ts'
-import { offsetRoot } from '../../engine/vector/offsets.ts'
+import { followsAnyOf, offsetRoot } from '../../engine/vector/offsets.ts'
+import { bandBetween, linkSources } from '../../engine/vector/bands.ts'
 import { bakedEditableShape } from '../../engine/illustrator/layerPath.ts'
 import { createComposeSession, type ComposeSession } from '../../engine/illustrator/composeSession.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
@@ -122,6 +123,8 @@ import {
   drawGhostPoint,
   drawGuideHandles,
   drawSnapHints,
+  NO_FIT_COLOR,
+  outlineCircle,
   outlineItem,
   outlinePathData,
   resetOverlay,
@@ -283,10 +286,15 @@ function moveCommit({ starts }: MoveStarts, ids: string[], d: Vec): LayerEditCom
   }
 }
 
-/** The members of a box, and the cuts they carry along. */
+/**
+ * The members of a box, the cuts they carry along, and the bands between
+ * them, whose settings it turns and scales as it does their circles: a
+ * band whose circles are both carried takes the map as they do.
+ */
 interface BoxMembers {
   members: Map<string, MovedStart>
   carried: Map<string, MovedStart>
+  bands: Map<string, MovedStart & { carried: boolean }>
 }
 
 /**
@@ -294,7 +302,7 @@ interface BoxMembers {
  * members take only the even scale or the turn, so they stay recipes; a
  * carried recipe takes the similarity nearest the map.
  */
-function boxMoved({ members, carried }: BoxMembers, move: BoxMove): Array<{ id: string; from: MovedStart; next: Moved; carried: boolean }> {
+function boxMoved({ members, carried, bands }: BoxMembers, move: BoxMove): Array<{ id: string; from: MovedStart; next: Moved; carried: boolean }> {
   const member = (start: MovedStart): Moved => {
     if (!start.carve) return { path: transformShape(start.path!, move.affine) }
     const scaled = move.factor === 1 ? start.carve : scaleCarveAbout(start.carve, move.pivot, move.factor)
@@ -303,6 +311,7 @@ function boxMoved({ members, carried }: BoxMembers, move: BoxMove): Array<{ id: 
   return [
     ...[...members].map(([id, from]) => ({ id, from, next: member(from), carried: false })),
     ...[...carried].map(([id, from]) => ({ id, from, next: underAffine(from, move.affine), carried: true })),
+    ...[...bands].map(([id, from]) => ({ id, from, next: from.carried ? underAffine(from, move.affine) : member(from), carried: true })),
   ]
 }
 
@@ -343,6 +352,7 @@ function unbent(spec: CarveSpec): CarveSpec {
       return next
     }
     case 'polygon':
+    case 'band':
       return spec
     default:
       return spec satisfies never
@@ -377,6 +387,9 @@ function handleReadout(spec: CarveSpec, handle: CarveHandle, shift = false): str
       const angle = (Math.atan2(spec.to.y - spec.from.y, spec.to.x - spec.from.x) * 180) / Math.PI
       return `${r0(len)} long · ${r0(angle)}°`
     }
+    case 'band':
+      // A band has no handles of its own.
+      return ''
     default:
       return spec satisfies never
   }
@@ -404,6 +417,7 @@ function bendReadout(spec: CarveSpec, side: SideRef): string {
     case 'slice':
       return isSideBent(spec, side) ? `depth ${r0(maxChordDeviation(grooveSpine(spec)))}` : 'straight'
     case 'polygon':
+    case 'band':
       return 'straight'
     case 'slab':
     case 'punch': {
@@ -433,6 +447,8 @@ function bendLabel(spec: CarveSpec, side: SideRef): string {
     case 'punch':
     case 'polygon':
       return side.type === 'corner' ? 'Shape corner' : 'Bend edge'
+    case 'band':
+      return 'Move band'
     default:
       return spec satisfies never
   }
@@ -452,6 +468,8 @@ function handleGeometry(spec: CarveSpec, id: HandleId): Vec | null {
       const frame = recipeFrame(spec)
       return add(spec.center, rotate({ x: (f.x * frame.width) / 2, y: (f.y * frame.height) / 2 }, spec.rotation))
     }
+    case 'band':
+      return null
     default:
       return spec satisfies never
   }
@@ -537,8 +555,16 @@ const DOUBLE_CLICK_MS = 300
 const DOUBLE_CLICK_PX = 6
 /** How long the size or angle that Alt with the arrow keys reached stays by the box. */
 const KEY_CHIP_MS = 1000
+/** Why a layer a move would take along stays, by the pointer and read out. */
+interface Held {
+  label: string
+  sentence: string
+}
+
 /** How long "unpinned" shows over every other label when a pin is let go of. */
 const UNPINNED_MS = 1000
+/** How long a frame that leaves a band no fit keeps saying so: a little past the frame, so a drag shows it steadily. */
+const NO_FIT_LIVE_MS = 400
 
 /**
  * Direct editing for Vector Maker: one mode, where what you press decides what
@@ -588,6 +614,8 @@ export class DirectEditController {
   private sessionDetaches = false
   /** True while the controller writes an edit it reads out itself: what the edit lets go of is said then, once. */
   private sayingOwn = false
+  /** What the last edit said of the bands it left no fit, kept so a drag's release does not clear it. */
+  private emptied: Held | null = null
   /** The offset the bar is showing, drawn dashed (layer space), and the copy it stands in for. */
   private offsetOutline: { pathData: string; replaces: string | null } | null = null
   private readonly unregisterKeys: () => void
@@ -740,12 +768,17 @@ export class DirectEditController {
       this.session = null
       this.press = null
       const before = this.host.getDoc()
+      this.emptied = null
       this.saysOwn(() => session.commit())
+      // A band the drag left no fit was said as it committed: that stays its moment.
+      const emptied = this.emptied as Held | null
+      this.emptied = null
       // What a keyboard edit read out before no longer holds.
-      hud.silence()
+      if (!emptied) hud.silence()
       // "unpinned" or "detached" stays its moment only if a pin or a link was let go of: one the drag showed letting go may have come back.
-      if (this.noteUnpinned(before) || this.noteDetached(before)) this.announceEdit(before, null)
-      else hud.letGo()
+      if (this.noteUnpinned(before) || this.noteDetached(before)) this.announceEdit(before, emptied?.sentence ?? null)
+      else if (!emptied) hud.letGo()
+      if (emptied) hud.hold(emptied.label, UNPINNED_MS)
       this.endGesture()
       return
     }
@@ -1007,17 +1040,20 @@ export class DirectEditController {
   }
 
   /**
-   * The recipes pinned to any of `ids` and the offset copies of them, and
-   * those that follow them in turn: they move with them.
+   * The recipes pinned to any of `ids`, the offset copies of them and the
+   * bands between them or on their construction circles, and those that
+   * follow them in turn: they move with them.
    */
   private followersOf(doc: IllustratorDocument, ids: Iterable<string>): string[] {
     const reached = new Set(ids)
     const out: string[] = []
+    // A band may follow a construction circle of a shape that moves: through the guide, it follows the shape.
+    const guideOf = new Map((doc.guides ?? []).flatMap((guide) => (guide.link ? [[guide.id, guide.link.of] as const] : [])))
     for (let grew = true; grew; ) {
       grew = false
       for (const layer of doc.layers) {
-        const held = layer.pin ?? (layer.link?.kind === 'offset' ? layer.link.of : undefined)
-        if (held === undefined || !reached.has(held) || reached.has(layer.id)) continue
+        const held = [...(layer.pin ? [layer.pin] : []), ...linkSources(layer.link).map((id) => guideOf.get(id) ?? id)]
+        if (!held.some((id) => reached.has(id)) || reached.has(layer.id)) continue
         reached.add(layer.id)
         out.push(layer.id)
         grew = true
@@ -1049,14 +1085,42 @@ export class DirectEditController {
   /**
    * What follows the layers a live frame replaces, put in the frame too: the
    * recipes pinned to them, moved as far as the centres they are pinned to
-   * move, and their offset copies. A copy of a recipe with an exact offset
-   * is made again from the live recipe; any other copy moves with its
-   * source's centre, and the commit makes it again. So the drag shows them
-   * where the follow pass will put them.
+   * move, their offset copies, and the bands between them. A copy of a
+   * recipe with an exact offset is made again from the live recipe; any
+   * other copy moves with its source's centre, and the commit makes it
+   * again. A band is made again from its circles as they are in the frame.
+   * So the drag shows them where the follow pass will put them.
    */
   private withFollowers(replacements: Map<string, string | null>, carves: Map<string, CarveSpec>, frames: Map<string, number>): void {
     const doc = this.host.getDoc()
     if (!doc.layers.some((layer) => layer.pin || layer.link)) return
+    const guideOf = (id: string) => (doc.guides ?? []).find((each) => each.id === id)
+    /** A construction guide's shape as the frame has it, when the shape it follows is in the frame. */
+    const liveGuideShape = (id: string) => {
+      const link = guideOf(id)?.link
+      if (!link || !replacements.has(link.of)) return undefined
+      const carve = carves.get(link.of)
+      const pathData = replacements.get(link.of)
+      const rotation = frames.get(link.of) ?? this.layer(link.of)?.frameRotation ?? 0
+      const source = carve ? { carve, contours: [] } : pathData ? { contours: pathDataToContours(pathData), frame: { rotation } } : null
+      // A shape with no such line now keeps its guide where it was, as the follow pass does.
+      return (source && constructionShape(source, link.role)) ?? undefined
+    }
+    /** Does a band's end change in the frame: a layer in it, or a guide that follows one? */
+    const endMoves = (id: string) => replacements.has(id) || liveGuideShape(id) !== undefined
+    /** A band's end as the frame has it: a live recipe or path, the layer as it is, or a circle guide, live when it follows a shape in the frame. */
+    const liveCircle = (id: string): Circle | null => {
+      const carve = carves.get(id)
+      if (carve) return asCircle({ carve, contours: [] })
+      const pathData = replacements.get(id)
+      if (pathData !== undefined) return pathData ? asCircle({ contours: pathDataToContours(pathData) }) : null
+      const layer = this.layer(id)
+      if (layer) return layer.carve?.kind === 'band' ? null : this.layerCircle(layer)
+      const shape = liveGuideShape(id) ?? guideOf(id)?.shape
+      return shape?.kind === 'circle' && shape.r > 0 ? { c: shape.c, r: shape.r } : null
+    }
+    /** The bands this frame leaves no fit, said by the pointer while it does. */
+    const lost: string[] = []
     const shifts = new Map<string, Vec | null>()
     const shiftOf = (id: string): Vec | null => {
       if (shifts.has(id)) return shifts.get(id)!
@@ -1075,7 +1139,27 @@ export class DirectEditController {
       grew = false
       for (const layer of doc.layers) {
         if (replacements.has(layer.id)) continue
+        if (layer.link?.kind === 'band' && layer.carve?.kind === 'band' && (endMoves(layer.link.a) || endMoves(layer.link.b))) {
+          const a = liveCircle(layer.link.a)
+          const b = liveCircle(layer.link.b)
+          const made = a && b ? bandBetween(layer.carve, a, b) : null
+          const outline = made && carveOutline(made)
+          this.scope.activate()
+          // A band its circles allow no fit has no recipe in the frame, so its copies empty with it.
+          const filled = outline?.segs.length ? outline : null
+          if (!filled && layer.pathData) lost.push(layer.id)
+          replacements.set(layer.id, filled ? filled.pathData : null)
+          if (made && filled) carves.set(layer.id, made)
+          grew = true
+          continue
+        }
         if (layer.link?.kind === 'offset' && replacements.has(layer.link.of)) {
+          // A source with nothing in the frame leaves its copy nothing, as the follow pass will.
+          if (replacements.get(layer.link.of) === null) {
+            replacements.set(layer.id, null)
+            grew = true
+            continue
+          }
           const live = carves.get(layer.link.of)
           if (live && offsetsExactly(live)) {
             const offset = offsetRecipe(live, layer.link.distance)
@@ -1108,56 +1192,82 @@ export class DirectEditController {
         grew = true
       }
     }
+    if (lost.length) {
+      const numbers = lost.flatMap((id) => {
+        const index = doc.layers.findIndex((layer) => layer.id === id)
+        return index < 0 ? [] : [String(index + 1).padStart(2, '0')]
+      })
+      hud.hold(`band ${numbers.join(', ')}: no fit`, NO_FIT_LIVE_MS)
+    }
   }
 
-  /** Does the layer follow, as an offset copy, directly or through other copies, one of `ids`? */
+  /**
+   * Does the layer follow, as an offset copy or a band, directly or through
+   * other copies and bands or a construction circle, one of `ids`?
+   */
   private followsLayerOf(id: string, ids: ReadonlySet<string>): boolean {
-    const seen = new Set<string>()
-    for (let layer = this.layer(id); layer?.link?.kind === 'offset' && !seen.has(layer.id); layer = this.layer(layer.link.of)) {
-      seen.add(layer.id)
-      if (ids.has(layer.link.of)) return true
-    }
-    return false
+    const doc = this.host.getDoc()
+    return followsAnyOf(doc.layers, id, ids, doc.guides)
   }
 
   /**
    * What a move of `ids` moves: an offset copy moves its source instead,
-   * and the source of that in turn; a copy whose source cannot move stays.
-   * `redirected` says whether any copy was swapped for its source, `held`
-   * names the sources that are locked or hidden.
+   * and the source of that in turn; a band moves its circles that are
+   * shapes, each as a move of it would, and not its circle guides; so a
+   * copy of a band moves the band's circles. One whose source or circle
+   * cannot move stays whole, and so does a band whose circles are both
+   * guides. `redirected` says what a copy or band swapped for what it
+   * follows moves, for the HUD; `held` says why each that stays stays.
    */
-  private movedSources(ids: readonly string[]): { ids: string[]; redirected: boolean; held: string[] } {
+  private movedSources(ids: readonly string[]): { ids: string[]; redirected: string | null; held: Held[] } {
     const out: string[] = []
-    const held: string[] = []
-    let redirected = false
-    const layers = this.host.getDoc().layers
-    for (const id of ids) {
+    const held: Held[] = []
+    let redirected: string | null = null
+    const doc = this.host.getDoc()
+    const layers = doc.layers
+    const bands = new Set<string>()
+    /** What a move of `id` moves, or why it cannot; `chosen` when it is in the selection, which is usable already. */
+    const resolve = (id: string, chosen: boolean, role: 'source' | 'circle'): string[] | Held => {
+      if (!chosen && !usable(this.layer(id))) return this.heldSource(doc, id, role)
       const at = offsetRoot(layers, id)
       if (at !== id) {
-        redirected = true
-        if (!usable(this.layer(at))) {
-          if (this.layer(at) && !held.includes(at)) held.push(at)
-          continue
-        }
+        redirected ??= 'moves the source'
+        if (!usable(this.layer(at))) return this.heldSource(doc, at)
       }
-      if (!out.includes(at)) out.push(at)
+      const layer = this.layer(at)
+      if (layer?.link?.kind !== 'band') return [at]
+      // A band goes where its circles do: dragging it, or a copy of it, moves them, all or none.
+      redirected = 'moves its circles'
+      if (bands.has(at)) return []
+      bands.add(at)
+      const ends = [layer.link.a, layer.link.b].filter((end) => this.layer(end))
+      if (!ends.length) return { label: 'follows guides: move them', sentence: 'Its circles are guides: move them to move the band' }
+      const moved: string[] = []
+      for (const end of ends) {
+        const taken = resolve(end, false, 'circle')
+        if (!Array.isArray(taken)) return taken
+        moved.push(...taken)
+      }
+      return moved
+    }
+    for (const id of ids) {
+      const taken = resolve(id, true, 'source')
+      if (!Array.isArray(taken)) held.push(taken)
+      else for (const each of taken) if (!out.includes(each)) out.push(each)
     }
     return { ids: out, redirected, held }
   }
 
-  /**
-   * Why a copy does not move when its source is locked or hidden: a label by
-   * the pointer, and a sentence that says what to do.
-   */
-  private heldSource(doc: IllustratorDocument, id: string): { label: string; sentence: string } {
+  /** Why a layer a move would take along stays: the source of a copy, or a band's circle, locked or hidden. */
+  private heldSource(doc: IllustratorDocument, id: string, role: 'source' | 'circle' = 'source'): Held {
     const layer = this.layer(id)
     const number = String(doc.layers.findIndex((each) => each.id === id) + 1).padStart(2, '0')
     return layer?.locked
-      ? { label: 'source is locked', sentence: `source is locked: unlock ${number} to move it` }
-      : { label: 'source is hidden', sentence: `source is hidden: show ${number} to move it` }
+      ? { label: `${role} is locked`, sentence: `${role} is locked: unlock ${number} to move it` }
+      : { label: `${role} is hidden`, sentence: `${role} is hidden: show ${number} to move it` }
   }
 
-  /** A drag of a copy whose source cannot move: nothing moves, and the HUD says why all the way. */
+  /** A drag of a copy or band whose source or circles cannot move: nothing moves, and the HUD says why all the way. */
   private heldSession(said: { label: string; sentence: string }): Session {
     // What an earlier edit held up goes: this drag's own word shows.
     hud.letGo()
@@ -1647,7 +1757,32 @@ export class DirectEditController {
     }
     if (!members.size) return null
     const carried = carry ? this.carriedStarts(doc, members.keys(), new Set(members.keys()), picked) : new Map<string, MovedStart>()
-    return { members, carried }
+    return { members, carried, bands: this.boxedBands(doc, new Set(members.keys()), new Set(carried.keys())) }
+  }
+
+  /**
+   * The bands a box turns and scales along with both their circles: those
+   * whose two ends are shapes the box moves, follow them, or are
+   * construction circles of them. Each takes the
+   * box's turn and scale into its angle, width and radius, and keeps
+   * following its circles, so a mark turned or scaled whole keeps its bands.
+   */
+  private boxedBands(doc: IllustratorDocument, members: ReadonlySet<string>, carried: ReadonlySet<string>): BoxMembers['bands'] {
+    const bands: BoxMembers['bands'] = new Map()
+    const moving = new Set([...members, ...carried])
+    // An end on a construction circle moves with the shape the guide follows.
+    const guideOf = new Map((doc.guides ?? []).flatMap((guide) => (guide.link ? [[guide.id, guide.link.of] as const] : [])))
+    const moves = (end: string, among: ReadonlySet<string>) => {
+      const id = guideOf.get(end) ?? end
+      return this.layer(id) !== undefined && (among.has(id) || this.followsLayerOf(id, among))
+    }
+    for (const layer of doc.layers) {
+      if (layer.link?.kind !== 'band' || layer.carve?.kind !== 'band' || moving.has(layer.id)) continue
+      const { a, b } = layer.link
+      if (!moves(a, moving) || !moves(b, moving)) continue
+      bands.set(layer.id, { carve: layer.carve, frame: 0, carried: moves(a, carried) && moves(b, carried) })
+    }
+    return bands
   }
 
   /** Where the cuts that some shapes carry start, leaving out layers the edit moves anyway: `picked`, or else found now. */
@@ -1679,8 +1814,8 @@ export class DirectEditController {
     const sources = this.movedSources(selected)
     // Alt moves the shape alone, leaving its holes where they are.
     const plan = this.movePlan(sources.ids, !mods.alt, selected)
-    if (!plan) return sources.held.length ? this.heldSession(this.heldSource(doc, sources.held[0])) : null
-    const fallback = sources.redirected ? 'moves the source' : null
+    if (!plan) return sources.held.length ? this.heldSession(sources.held[0]) : null
+    const fallback = sources.redirected
     let index: SnapIndex | null = null
     let d: Vec = { x: 0, y: 0 }
     // The recipes moved that are pinned to something staying put: dragged, they let go, unless dropped back on a centre.
@@ -1801,15 +1936,15 @@ export class DirectEditController {
     hud.announce(status ? `${status}. ${said}` : said)
   }
 
-  /** Did the last edit end an offset copy's link: its own geometry edited, so it no longer follows its shape? */
+  /** Did the last edit end an offset copy's or a band's link: its own geometry edited, so it no longer follows what it did? */
   private noteDetached(before: IllustratorDocument): boolean {
     const after = new Map(this.host.getDoc().layers.map((layer) => [layer.id, layer]))
-    return before.layers.some((layer) => layer.link?.kind === 'offset' && after.has(layer.id) && after.get(layer.id)!.link === undefined)
+    return before.layers.some((layer) => layer.link !== undefined && after.has(layer.id) && after.get(layer.id)!.link === undefined)
   }
 
-  /** Would an edit of these layers end a copy's link: a copy among them edited without the shape it follows? */
+  /** Would an edit of these layers end a link: a copy or band among them edited without what it follows? */
   private detaches(ids: ReadonlySet<string>): boolean {
-    return [...ids].some((id) => this.layer(id)?.link?.kind === 'offset' && !this.followsLayerOf(id, ids))
+    return [...ids].some((id) => this.layer(id)?.link !== undefined && !this.followsLayerOf(id, ids))
   }
 
   /** Run an edit whose read-out the controller gives itself, after it. */
@@ -1831,8 +1966,17 @@ export class DirectEditController {
    * for a moment and all of it is read out, so no pin and no link goes
    * without a word.
    */
-  noteLetGo({ unpinned = [], gone = [], edited = [] }: { unpinned?: readonly string[]; gone?: readonly string[]; edited?: readonly string[] }) {
-    if (this.sayingOwn) return
+  noteLetGo({
+    unpinned = [],
+    gone = [],
+    edited = [],
+    emptied = [],
+  }: {
+    unpinned?: readonly string[]
+    gone?: readonly string[]
+    edited?: readonly string[]
+    emptied?: readonly string[]
+  }) {
     const doc = this.host.getDoc()
     // Numbered as the drawer numbers them, from 01 at the bottom.
     const numbered = (ids: readonly string[]) =>
@@ -1840,6 +1984,14 @@ export class DirectEditController {
         const index = doc.layers.findIndex((layer) => layer.id === id)
         return index < 0 ? [] : [String(index + 1).padStart(2, '0')]
       })
+    // A band its circles now allow no fit vanishes from the canvas: said whoever made the edit, as nothing else shows it.
+    const lost = numbered(emptied)
+    if (lost.length) {
+      this.emptied = { label: `band ${lost.join(', ')}: no fit`, sentence: `No fit: band ${lost.join(', ')} waits until its circles allow it` }
+      hud.hold(this.emptied.label, UNPINNED_MS)
+      hud.announce(this.emptied.sentence)
+    }
+    if (this.sayingOwn) return
     const said = (ids: readonly string[], one: string, many: string, verb: string) => {
       const numbers = numbered(ids)
       return numbers.length ? [`${verb} ${numbers.join(', ')}: ${numbers.length > 1 ? many : one}`] : []
@@ -2133,6 +2285,8 @@ export class DirectEditController {
     const tolerance = this.snapTolerance(touch)
     const none = { spec: raw, snap: NO_SNAP }
     const sizes = () => this.sizesFor(doc, exclude)
+    // A band has no handles of its own: nothing of it snaps.
+    if (raw.kind === 'band' || start.kind === 'band') return none
 
     if (handle.kind === 'resize' || handle.kind === 'endpoint') {
       const point = handleGeometry(raw, handle.id)
@@ -2765,6 +2919,7 @@ export class DirectEditController {
       if (item) outlineItem(this.scope, layer, item)
     }
     if (offset) outlinePathData(this.scope, layer, offset.pathData, this.center(), { dashed: true, width: 1.5 })
+    if (!editing) for (const id of selected) this.drawBandCircles(doc, layer, id)
 
     // Guides: the one under the pointer, the selected ones, and those following a reshaped layer.
     const movingGuides = editing?.guideIds ?? new Set<string>()
@@ -2816,6 +2971,24 @@ export class DirectEditController {
       drawSnapHints(this.scope, layer, this.snapHints, this.center())
     }
     this.scope.view.update()
+  }
+
+  /**
+   * A selected band marks the circles it follows, dashed; one they allow no
+   * fit shows where it would run, a dashed red line between their centres.
+   */
+  private drawBandCircles(doc: IllustratorDocument, overlay: paper.Layer, id: string) {
+    const band = this.layer(id)
+    if (band?.link?.kind !== 'band' || band.carve?.kind !== 'band') return
+    for (const end of [band.link.a, band.link.b]) {
+      const layer = this.layer(end)
+      const guide = layer ? undefined : (doc.guides ?? []).find((each) => each.id === end)?.shape
+      const circle = layer ? this.layerCircle(layer) : guide?.kind === 'circle' ? guide : null
+      if (circle) outlineCircle(this.scope, overlay, circle.c, circle.r, this.center(), { dashed: true, width: 1.25 })
+    }
+    if (band.pathData) return
+    const { a, b } = band.carve
+    outlinePathData(this.scope, overlay, `M${a.c.x},${a.c.y}L${b.c.x},${b.c.y}`, this.center(), { dash: [5, 4], width: 1.5, color: NO_FIT_COLOR })
   }
 
   private drawEdgeHover(overlay: paper.Layer, zone: EdgeZone) {
@@ -2920,6 +3093,22 @@ export class DirectEditController {
   }
 
   /**
+   * A key that finds nothing to turn or scale because the selection waits,
+   * empty, says so: a band "no fit", a copy "empty". It writes nothing.
+   */
+  private sayWaiting(doc: IllustratorDocument) {
+    const selected = new Set(doc.selectedLayerIds)
+    const waiting = doc.layers.flatMap((layer, index) =>
+      selected.has(layer.id) && layer.link && !layer.pathData ? [{ band: layer.link.kind === 'band', number: String(index + 1).padStart(2, '0') }] : [],
+    )
+    if (!waiting.length) return
+    const numbers = waiting.map((one) => one.number).join(', ')
+    const bands = waiting.every((one) => one.band)
+    hud.hold(bands ? `band ${numbers}: no fit` : `${numbers}: empty`, UNPINNED_MS)
+    hud.announce(bands ? `No fit: band ${numbers} waits until its circles allow it` : `Nothing to turn or scale: ${numbers} waits, empty`)
+  }
+
+  /**
    * The burst a key of `kind` goes on with: the last one, if it was of the
    * same kind on the same selection, nothing else has changed the layers
    * since, and its last key came within the time the store joins a burst
@@ -2952,7 +3141,7 @@ export class DirectEditController {
   private turnBy(step: number) {
     const doc = this.host.getDoc()
     const target = this.keyBox(doc, 'key-turn')
-    if (!target) return
+    if (!target) return this.sayWaiting(doc)
     const { moved, going } = target
     const center = going?.turn ? going.turn.center : target.box.center
     const was = going?.turn ? going.turn.rotation : target.box.rotation
@@ -2973,7 +3162,7 @@ export class DirectEditController {
   private growBy(step: number) {
     const doc = this.host.getDoc()
     const target = this.keyBox(doc, 'key-scale')
-    if (!target) return
+    if (!target) return this.sayWaiting(doc)
     const { box, moved } = target
     const longer = Math.max(box.width, box.height)
     if (longer <= 1e-6) return
@@ -3059,7 +3248,7 @@ export class DirectEditController {
     if (!moved.starts.size) {
       // A copy whose shape is locked or hidden stays, and says why: a label over any other, without a chip, as nothing moved.
       if (!held.length || !this.placeKeyHud()) return
-      const said = this.heldSource(doc, held[0])
+      const said = held[0]
       hud.hold(said.label, KEY_CHIP_MS)
       hud.announce(said.sentence)
       return
@@ -3070,8 +3259,8 @@ export class DirectEditController {
     this.saysOwn(() => this.host.commitLayerEdits({ ...moveCommit(moved, ids, d), ...(keepPoint ? { anchor: undefined } : {}), merge: 'nudge' }))
     this.noteBurst('nudge', moved.carried)
     if (redirected) {
-      this.showKeyChip(`${r2(d.x)}, ${r2(d.y)}`, undefined, 'moves the source')
-      this.announceEdit(doc, 'Moved the source')
+      this.showKeyChip(`${r2(d.x)}, ${r2(d.y)}`, undefined, redirected)
+      this.announceEdit(doc, redirected === 'moves its circles' ? 'Moved its circles' : 'Moved the source')
       return
     }
     if (!this.noteUnpinned(doc)) return

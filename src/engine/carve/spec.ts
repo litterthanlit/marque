@@ -1,4 +1,5 @@
 import type { Vec } from '../path/bezier.ts'
+import { bandWidth } from './band.ts'
 
 /**
  * A carve recipe: everything needed to regenerate a slab or cut exactly.
@@ -91,7 +92,73 @@ export interface PolygonSpec {
   cornerRadius: number
 }
 
-export type CarveSpec = SlabSpec | PunchSpec | PolygonSpec | GrooveSpec
+/** How a band joins its two circles. */
+export type BandFit = 'belt' | 'bar' | 'strip' | 'neck'
+
+/** One end of a band: a snapshot of the circle it follows, as it was when the band was last made. */
+export interface BandEnd {
+  c: Vec
+  r: number
+}
+
+/**
+ * A band between two circles. It holds snapshots of both, so its outline is
+ * a function of the recipe alone; the band link names the circles, and the
+ * follow pass takes new snapshots whenever they change.
+ *
+ * - belt: the two outer tangents and the far arcs, wrapping both circles;
+ * - bar: a channel of `width` from centre to centre;
+ * - strip: edges at `angle` degrees (clockwise from flat), one touching a on
+ *   the `side` its normal points to, the other touching b on the other side,
+ *   its ends through the centres;
+ * - neck: two concave arcs of `radius`, each touching both circles.
+ *
+ * Each fit reads only its own setting; the others are kept, so a band put
+ * back to a fit has the setting it had there.
+ */
+export interface BandSpec {
+  v: 1
+  kind: 'band'
+  a: BandEnd
+  b: BandEnd
+  fit: BandFit
+  /** A bar's width. */
+  width?: number
+  /** A strip's angle in degrees, clockwise on screen from flat, in [0, 180): ref 4's bands fall to the right at 60. */
+  angle?: number
+  /**
+   * Which side of a the strip's first edge touches: along its normal (−sin θ, cos θ), or against it.
+   * Where the circles lie decides it: a strip takes the side that fits whenever it is written, and keeps
+   * the one it has while both do.
+   */
+  side?: 1 | -1
+  /** A neck's arc radius. */
+  radius?: number
+}
+
+export type CarveSpec = SlabSpec | PunchSpec | PolygonSpec | GrooveSpec | BandSpec
+
+export const BAND_FITS: readonly BandFit[] = ['belt', 'bar', 'strip', 'neck']
+/** A new bar is as wide as ref 2's connectors. */
+export const DEFAULT_BAND_WIDTH = 40
+/** A new strip falls to the right at ref 4's angle. */
+export const DEFAULT_STRIP_ANGLE = 60
+export const DEFAULT_NECK_RADIUS = 30
+/**
+ * What a band's sliders reach: a bar's width, a strip's angle (turned half
+ * round it is the same strip, so short of 180°) and a neck's radius.
+ */
+export const BAND_SETTING_RANGE = { width: [2, 160], angle: [0, 179], radius: [2, 200] } as const satisfies Record<string, readonly [number, number]>
+
+/** A band's setting for its fit, filled in from the defaults where it has none. */
+export function bandSettings(spec: BandSpec): { width: number; angle: number; side: 1 | -1; radius: number } {
+  return {
+    width: spec.width ?? DEFAULT_BAND_WIDTH,
+    angle: spec.angle ?? DEFAULT_STRIP_ANGLE,
+    side: spec.side ?? 1,
+    radius: spec.radius ?? DEFAULT_NECK_RADIUS,
+  }
+}
 
 export const MIN_SIDES = 3
 export const MAX_SIDES = 12
@@ -132,6 +199,16 @@ export function polygonCornerRadius(spec: Pick<PolygonSpec, 'sides' | 'radius' |
 export function scaledPolygonCorner(spec: Pick<PolygonSpec, 'sides' | 'radius' | 'cornerRadius'>, factor: number): number {
   const round = polygonCornerRadius(spec) === polygonApothem(spec)
   return round ? polygonApothem({ sides: spec.sides, radius: spec.radius * factor }) : spec.cornerRadius * factor
+}
+
+/**
+ * A slab's corner radius once its size is multiplied by `factor`: one
+ * rounded all the way, its radius within storage rounding of half its
+ * shorter side, stays exactly so, as a circle slab must to read as one.
+ */
+export function scaledSlabRadius(spec: Pick<SlabSpec, 'width' | 'height' | 'radius'>, factor: number): number {
+  const half = Math.min(spec.width, spec.height) / 2
+  return spec.radius >= half - 2 * FULL_ROUND_SLACK ? half * factor : spec.radius * factor
 }
 
 /** The shape a carve tool produces while dragging, before it becomes a recipe. */
@@ -196,6 +273,8 @@ export function carveLayerName(spec: CarveSpec): string {
       return 'Channel'
     case 'slice':
       return 'Slice'
+    case 'band':
+      return `Band · ${spec.fit}`
     default:
       return spec satisfies never
   }
@@ -213,6 +292,9 @@ export function carveThickness(spec: CarveSpec): number {
     case 'channel':
     case 'slice':
       return spec.width
+    case 'band':
+      // A band has no bends to grab: its narrowest circle stands for it.
+      return 2 * Math.min(spec.a.r, spec.b.r)
     default:
       return spec satisfies never
   }
@@ -224,6 +306,10 @@ export function isSlab(spec: CarveSpec | undefined | null): spec is SlabSpec {
 
 export function isGroove(spec: CarveSpec | undefined | null): spec is GrooveSpec {
   return spec?.kind === 'channel' || spec?.kind === 'slice'
+}
+
+export function isBandSpec(spec: CarveSpec | undefined | null): spec is BandSpec {
+  return spec?.kind === 'band'
 }
 
 /* ─── Validation and rounding ─── */
@@ -255,6 +341,30 @@ function isSideBend(value: unknown): value is SideBend {
   )
 }
 
+function isBandEnd(value: unknown): value is BandEnd {
+  return isRecord(value) && isVec(value.c) && isFiniteNumber(value.r) && value.r > 0
+}
+
+const BAND_FIT_SET = new Set<string>(BAND_FITS)
+
+/** A band's fields: its ends and fit, and each setting that is there valid. The fit's own setting must be there, except a strip's side. */
+function isBandValue(value: Record<string, unknown>): boolean {
+  const positive = (key: string) => value[key] === undefined || (isFiniteNumber(value[key]) && (value[key] as number) > 0)
+  return (
+    isBandEnd(value.a) &&
+    isBandEnd(value.b) &&
+    typeof value.fit === 'string' &&
+    BAND_FIT_SET.has(value.fit) &&
+    positive('width') &&
+    positive('radius') &&
+    (value.angle === undefined || isFiniteNumber(value.angle)) &&
+    (value.side === undefined || value.side === 1 || value.side === -1) &&
+    (value.fit !== 'bar' || value.width !== undefined) &&
+    (value.fit !== 'strip' || value.angle !== undefined) &&
+    (value.fit !== 'neck' || value.radius !== undefined)
+  )
+}
+
 function isCornerFullness(value: unknown): value is CornerFullness {
   return isRecord(value) && isFiniteNumber(value.k1) && isFiniteNumber(value.k2)
 }
@@ -279,7 +389,8 @@ function areBendsValid(value: Record<string, unknown>): boolean {
  * Structural check for recipes read from URLs, saved variations or old
  * builds. A polygon must have a whole number of sides from 3 to 12: any
  * other count would draw another outline than the one stored, so the recipe
- * is not trusted and goes, and the shape stays as its path.
+ * is not trusted and goes, and the shape stays as its path. So does a band
+ * of a fit this build does not know.
  */
 export function isCarveSpec(value: unknown): value is CarveSpec {
   if (!isRecord(value) || value.v !== 1) return false
@@ -323,6 +434,7 @@ export function isCarveSpec(value: unknown): value is CarveSpec {
       areBendsValid(value)
     )
   }
+  if (value.kind === 'band') return isBandValue(value)
   if (value.kind === 'channel' || value.kind === 'slice') {
     return (
       isVec(value.from) &&
@@ -397,20 +509,55 @@ export function roundCarveSpec(spec: CarveSpec): CarveSpec {
     case 'channel':
     case 'slice':
       return roundGroove(spec)
+    case 'band':
+      return roundBand(spec)
     default:
       return spec satisfies never
   }
 }
 
+/**
+ * A band rounded: its ends and settings to hundredths. A strip's angle is
+ * kept in [0°, 180°): one turned half round, its side flipped, is the same
+ * strip, so each strip has one angle. Settings it lacks stay out.
+ */
+function roundBand(spec: BandSpec): BandSpec {
+  const out: BandSpec = {
+    v: 1,
+    kind: 'band',
+    a: { c: roundVec(spec.a.c), r: round2(spec.a.r) },
+    b: { c: roundVec(spec.b.c), r: round2(spec.b.r) },
+    fit: spec.fit,
+  }
+  if (spec.width !== undefined) out.width = round2(spec.width)
+  let side = spec.side
+  if (spec.angle !== undefined) {
+    let angle = round2(((spec.angle % 360) + 360) % 360) % 360
+    if (angle >= 180) {
+      angle = round2(angle - 180)
+      side = side === -1 ? 1 : -1
+    }
+    out.angle = angle
+  }
+  if (side !== undefined) out.side = side
+  if (spec.radius !== undefined) out.radius = round2(spec.radius)
+  return out
+}
+
 function roundSlab(spec: SlabSpec): SlabSpec {
+  const width = round2(spec.width)
+  const height = round2(spec.height)
+  // A slab rounded all the way stays so: its radius is not stored short of half its shorter side, as rounding the two apart could leave it.
+  const full = spec.radius >= Math.min(spec.width, spec.height) / 2 - 1e-9
+  const radius = full ? Math.max(round2(spec.radius), round2(Math.ceil((Math.min(width, height) / 2) * 100 - 1e-6) / 100)) : round2(spec.radius)
   return {
     v: 1,
     kind: 'slab',
     preset: spec.preset,
     center: roundVec(spec.center),
-    width: round2(spec.width),
-    height: round2(spec.height),
-    radius: round2(spec.radius),
+    width,
+    height,
+    radius,
     rotation: round2(spec.rotation),
     ...roundBends(spec),
   }
@@ -455,6 +602,8 @@ export function bentEdgeCount(spec: CarveSpec): number {
     case 'channel':
     case 'slice':
       return spec.bend ? 1 : 0
+    case 'band':
+      return 0
     default:
       return spec satisfies never
   }
@@ -486,7 +635,32 @@ export function describeCarve(spec: CarveSpec): string {
       const name = spec.kind === 'channel' ? 'Channel' : 'Slice'
       return `${name} · ${n0(len)} long · ${n0(spec.width)} wide${bentText}`
     }
+    case 'band':
+      return describeBand(spec)
     default:
       return spec satisfies never
+  }
+}
+
+/**
+ * A band in words: its fit and the fit's setting, "Band · bar · 40 wide",
+ * "Band · strip · 60° · 81 wide", "Band · neck · r 38", and "no fit" while
+ * its circles allow none. The strip's width comes from where its circles sit.
+ */
+function describeBand(spec: BandSpec): string {
+  const settings = bandSettings(spec)
+  const width = bandWidth(spec)
+  if (width === null) return `Band · ${spec.fit} · no fit`
+  switch (spec.fit) {
+    case 'belt':
+      return 'Band · belt'
+    case 'bar':
+      return `Band · bar · ${n0(settings.width)} wide`
+    case 'strip':
+      return `Band · strip · ${n0(settings.angle)}° · ${n0(width)} wide`
+    case 'neck':
+      return `Band · neck · r ${n0(settings.radius)}`
+    default:
+      return spec.fit satisfies never
   }
 }

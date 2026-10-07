@@ -24,6 +24,12 @@ export const EDITOR_TOOLS: ToolEntry[] = [
     shortcut: 'G',
     hint: 'Drag to draw a guide line, with Shift in 15° steps; Alt-drag draws a circle. Point at a shape to see its construction lines: click one to add it, Shift-click to add them all. Guides show in the construction look and never print.',
   },
+  {
+    id: 'band',
+    label: 'Band',
+    shortcut: 'B',
+    hint: 'Click a circle, then another, to join them with a band that follows them. Fit sets how: Belt wraps both, Bar runs centre to centre, Strip runs at an angle touching each, Neck curves between them. Escape drops the first circle.',
+  },
 ]
 
 export function toolForKey(event: KeyboardEvent): ToolEntry | undefined {

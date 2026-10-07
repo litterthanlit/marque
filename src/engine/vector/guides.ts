@@ -17,7 +17,8 @@ import {
 } from '../path/bezier.ts'
 import { KAPPA } from '../path/arc.ts'
 import { carveOutline, outlineBounds, polygonParts } from '../carve/outline.ts'
-import { polygonApothem, type CarveSpec } from '../carve/spec.ts'
+import { polygonApothem, type BandSpec, type CarveSpec } from '../carve/spec.ts'
+import { bandParts } from '../carve/band.ts'
 import { asCircle, fitCircle, type Circle, type CircleSource } from '../geometry/asCircle.ts'
 import { recipeCentre } from './pins.ts'
 import type { ConstructionRole, Contour, Guide, PathObject } from './types.ts'
@@ -228,6 +229,22 @@ function sourceFrame(source: ConstructionSource): SourceFrame | null {
     case 'polygon':
       // Measured unturned, about its own centre.
       return about(spec.center, outlineBounds(carveOutline({ ...spec, rotation: 0 })), spec.rotation)
+    case 'band': {
+      // Along the line between its circles, about its middle.
+      const middle = scale(add(spec.a.c, spec.b.c), 0.5)
+      const rotation = (Math.atan2(spec.b.c.y - spec.a.c.y, spec.b.c.x - spec.a.c.x) * 180) / Math.PI
+      const bounds = outlineBounds(carveOutline(spec))
+      if (!Number.isFinite(bounds.minX)) return null
+      const corners = [
+        { x: bounds.minX, y: bounds.minY },
+        { x: bounds.maxX, y: bounds.minY },
+        { x: bounds.maxX, y: bounds.maxY },
+        { x: bounds.minX, y: bounds.maxY },
+      ].map((p) => add(middle, rotate(sub(p, middle), -rotation)))
+      const reach = emptyBounds()
+      for (const p of corners) includeCubic(reach, [p, p, p, p])
+      return about(middle, reach, rotation)
+    }
     case 'channel':
     case 'slice': {
       // Along its spine, and a slice by its spine and width, not its reach past the canvas.
@@ -276,6 +293,7 @@ function recipeVertices(spec: CarveSpec): Vec[] | null {
       return polygonParts(spec).vertices
     case 'channel':
     case 'slice':
+    case 'band':
       return null
     default:
       return spec satisfies never
@@ -299,6 +317,7 @@ function recipeCircles(spec: CarveSpec): { circum: Circle; in: Circle | null } |
       return { circum: { c: spec.center, r: spec.radius }, in: { c: spec.center, r: polygonApothem(spec) } }
     case 'channel':
     case 'slice':
+    case 'band':
       return null
     default:
       return spec satisfies never
@@ -388,6 +407,7 @@ export function coincide(a: GuideShape, b: GuideShape): boolean {
  * once, by the first: a triangle's first spoke is its upright centre line.
  */
 export function constructionLines(source: ConstructionSource): ConstructionLine[] {
+  if (source.carve?.kind === 'band') return bandLines(source.carve)
   const roles: ConstructionRole[] = [...BOUNDS_ROLES]
   const frame = sourceFrame(source)
   if (!frame) return []
@@ -422,6 +442,7 @@ export function constructionShape(source: ConstructionSource, role: Construction
  * guide's name stays true as its shape turns.
  */
 export function constructionLine(source: ConstructionSource, role: ConstructionRole): ConstructionLine | null {
+  if (source.carve?.kind === 'band') return bandLines(source.carve).find((line) => line.role === role) ?? null
   const frame = sourceFrame(source)
   return frame && lineInFrame(source, frame, role)
 }
@@ -513,9 +534,34 @@ export function roleName(role: ConstructionRole): string {
       return 'Circumcircle'
     case 'incircle':
       return 'Incircle'
+    case 'centre-line':
+      return 'Centre line'
+    case 'edge-1':
+      return 'Edge 1'
+    case 'edge-2':
+      return 'Edge 2'
     default:
       return spokeName(Number(role.slice('axis-'.length)))
   }
+}
+
+/**
+ * The construction lines of a band: the line through its circles' centres,
+ * and its two edges, a belt's tangents, a bar's or strip's sides, a neck's
+ * arc circles, named Arc 1 and Arc 2. None while its circles allow no fit.
+ */
+function bandLines(spec: BandSpec): ConstructionLine[] {
+  const parts = bandParts(spec)
+  if (!parts) return []
+  const along = (Math.atan2(spec.b.c.y - spec.a.c.y, spec.b.c.x - spec.a.c.x) * 180) / Math.PI
+  const lines: ConstructionLine[] = [{ role: 'centre-line', shape: lineShape(spec.a.c, along), name: roleName('centre-line') }]
+  parts.edges.forEach((edge, k) => {
+    const role: ConstructionRole = k === 0 ? 'edge-1' : 'edge-2'
+    const shape: GuideShape = edge.kind === 'line' ? lineShape(edge.p, edge.angle) : { kind: 'circle', c: { ...edge.c }, r: edge.r }
+    // A neck's edges are its arc circles, and named so.
+    lines.push({ role, shape, name: edge.kind === 'circle' ? `Arc ${k + 1}` : roleName(role) })
+  })
+  return lines
 }
 
 /* ─── A frame touching circles ─── */

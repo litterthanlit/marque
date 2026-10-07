@@ -1,4 +1,5 @@
 import { constructionLine, sameGuideShape } from './guides.ts'
+import { bandsOnGuides, followBands, isEmptyBand } from './bands.ts'
 import { followOffsets, isEmptyCopy } from './offsets.ts'
 import { followPins } from './pins.ts'
 import type { Fillet, Guide, PathObject, VectorObject } from './types.ts'
@@ -9,9 +10,10 @@ import type { Fillet, Guide, PathObject, VectorObject } from './types.ts'
  * each of them whose source changed, so it follows the source. One whose
  * source is gone, or no longer has what it was made from, is detached in the
  * same edit: it keeps its last geometry and becomes a plain one, and an undo
- * restores both. A recipe pinned to an object's centre moves with it, and an
- * offset copy is made again from its source. Later steps add their own
- * followers here (bands, fillets); each reads the lists the earlier ones left.
+ * restores both. A recipe pinned to an object's centre moves with it, an
+ * offset copy is made again from its source, and a band from its circles.
+ * Later steps add their own followers here (fillets); each reads the lists
+ * the earlier ones left.
  *
  * It is pure, and hands back the very same arrays, and the very same items in
  * them, wherever nothing changed.
@@ -40,23 +42,30 @@ interface FollowContext {
   settling: boolean
   /** The objects as they were before the edit, by id; null as a document opens. */
   was: ReadonlyMap<string, VectorObject> | null
+  /** The guides a band reads its circle guides against: one not the same as here has moved. Null as a document opens. */
+  guidesWere: readonly Guide[] | null
 }
 
 type Follower = (context: FollowContext) => DocumentLists
 
 /**
- * Pins and offset copies move objects that other pins and copies may follow
- * in turn: a recipe pinned to a copy's centre, an offset of that recipe. So
- * they take turns, pins first, until a round moves nothing; each round
- * settles at least one more link of any chain, so there are no more rounds
- * than objects. Each sees only what the edit changed and what the other
- * moved since its last turn: it settles its own chains, so nothing is made
- * twice in one pass. Whether a recipe moved off its target lets go is
- * decided once all has settled, against where the target landed. Guides
- * follow whatever moved, last.
+ * Pins, offset copies and bands move objects that the others may follow in
+ * turn: a recipe pinned to a copy's centre, an offset of that recipe, a
+ * band between copies, an offset of a band. So they take turns, pins first,
+ * until a round moves nothing; each round settles at least one more link of
+ * any chain, so there are no more rounds than objects. Each sees only what
+ * the edit changed and what the others moved since its last turn: it
+ * settles its own chains, so nothing is made twice in one pass. Whether a
+ * recipe moved off its target lets go is decided once all has settled,
+ * against where the target landed. Guides follow whatever moved, last; a
+ * band on a circle guide that moved then follows it, and what follows the
+ * band in turn, once more.
  */
-const SETTLING: Follower[] = [followPinned, followOffsetCopies]
+const SETTLING: Follower[] = [followPinned, followOffsetCopies, followBandLinks]
 const FOLLOWERS: Follower[] = [followConstructionGuides]
+
+/** How many times bands on guides the guides pass moved may set the pass going again: a guide of a band of a guide… */
+const GUIDE_ROUNDS = 3
 
 /**
  * Bring everything that follows an object up to date after an edit from
@@ -66,15 +75,16 @@ const FOLLOWERS: Follower[] = [followConstructionGuides]
 export function follow(before: DocumentLists | null, after: DocumentLists): DocumentLists {
   const changed = before ? changedIds(before.objects, after.objects) : null
   const freshGuides = before ? freshLinkedGuides(before.guides, after.guides) : null
-  if (changed && changed.size === 0 && freshGuides?.size === 0) return after
+  if (changed && changed.size === 0 && freshGuides?.size === 0 && !bandsOnGuides(after.objects, before!.guides, after.guides)) return after
   let lists = after
   let moved = changed
   /** What each settling follower has yet to see: null when everything counts as changed. */
   const unseen = SETTLING.map(() => (changed ? new Set(changed) : null))
   const was = before ? new Map(before.objects.map((object) => [object.id, object])) : null
+  let guidesWere = before ? before.guides : null
   /** Run one follower on what it is to see; the ids it moved, null when none. */
   const run = (follower: Follower, due: Set<string> | null, settling: boolean): Set<string> | null => {
-    const next = follower({ lists, byId: new Map(lists.objects.map((object) => [object.id, object])), changed: due, freshGuides, settling, was })
+    const next = follower({ lists, byId: new Map(lists.objects.map((object) => [object.id, object])), changed: due, freshGuides, settling, was, guidesWere })
     if (next.objects === lists.objects) {
       lists = next
       return null
@@ -85,23 +95,40 @@ export function follow(before: DocumentLists | null, after: DocumentLists): Docu
     lists = next
     return ids
   }
-  for (let round = 0; round <= after.objects.length; round++) {
-    let touched = false
-    SETTLING.forEach((follower, k) => {
-      const due = unseen[k]
-      if (due?.size === 0) return
-      if (due) unseen[k] = new Set()
-      const ids = run(follower, due, true)
-      if (!ids) return
-      touched = true
-      unseen.forEach((other, j) => {
-        if (j !== k && other) for (const id of ids) other.add(id)
+  const settle = () => {
+    for (let round = 0; round <= after.objects.length; round++) {
+      let touched = false
+      SETTLING.forEach((follower, k) => {
+        const due = unseen[k]
+        // A band reads its guides on every turn: one is due while its circle guide differs from before the edit.
+        if (due?.size === 0 && follower !== followBandLinks) return
+        if (due) unseen[k] = new Set()
+        const ids = run(follower, due, true)
+        if (!ids) return
+        touched = true
+        unseen.forEach((other, j) => {
+          if (j !== k && other) for (const id of ids) other.add(id)
+        })
       })
-    })
-    if (!touched) break
+      if (!touched) break
+    }
+    if (moved) run(followPinned, moved, false)
+    const guides = lists.guides
+    for (const follower of FOLLOWERS) run(follower, moved, false)
+    return guides
   }
-  if (moved) run(followPinned, moved, false)
-  for (const follower of FOLLOWERS) run(follower, moved, false)
+  let guidesBefore = settle()
+  // A band on a circle guide the guides pass just moved follows it, and so does what follows the band.
+  for (let round = 0; changed && round < GUIDE_ROUNDS && bandsOnGuides(lists.objects, guidesBefore, lists.guides); round++) {
+    guidesWere = guidesBefore
+    const k = SETTLING.indexOf(followBandLinks)
+    const ids = run(followBandLinks, new Set(), true)
+    if (!ids) break
+    unseen.forEach((other, j) => {
+      if (j !== k && other) for (const id of ids) other.add(id)
+    })
+    guidesBefore = settle()
+  }
   return lists
 }
 
@@ -140,6 +167,13 @@ function followOffsetCopies({ lists, changed }: FollowContext): DocumentLists {
   return objects === lists.objects ? lists : { ...lists, objects }
 }
 
+/* ─── Bands ─── */
+
+function followBandLinks({ lists, changed, guidesWere }: FollowContext): DocumentLists {
+  const objects = followBands(lists.objects, lists.guides, changed, guidesWere)
+  return objects === lists.objects ? lists : { ...lists, objects }
+}
+
 /* ─── Construction guides ─── */
 
 function followConstructionGuides({ lists, byId, changed, freshGuides }: FollowContext): DocumentLists {
@@ -163,8 +197,9 @@ function followGuide(guide: Guide, byId: Map<string, VectorObject>): Guide {
   const link = guide.link
   if (!link) return guide
   const source = byId.get(link.of)
-  // An offset copy left empty by its source comes back when the source grows: its guides keep their link and their last line.
-  if (isEmptyCopy(source)) return guide
+  // An offset copy left empty by its source comes back when the source grows, and a band its circles allow no fit when they do:
+  // its guides keep their link and their last line.
+  if (isEmptyCopy(source) || isEmptyBand(source)) return guide
   const line = source?.type === 'path' ? constructionLine(source as PathObject, link.role) : null
   if (!line) return detachGuide(guide)
   if (sameGuideShape(line.shape, guide.shape)) return guide

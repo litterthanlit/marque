@@ -102,8 +102,9 @@ export function boxHandleList(box: OrientedBox, layout: HandleLayout, uniform: b
   ]
 }
 
+/** A layer a box takes in: not hidden or locked, and not a copy or band that waits, empty, with nothing to turn or scale. */
 const usable = (layer: IllustratorLayer | undefined): layer is IllustratorLayer =>
-  Boolean(layer && layer.visible && !layer.locked)
+  Boolean(layer && layer.visible && !layer.locked && !(layer.link && !layer.pathData))
 
 /**
  * The box around some layers, with the layers it moves. A slice is moved but
@@ -181,6 +182,16 @@ export function recipeFrame(spec: CarveSpec): OrientedBox {
       return { center: spec.center, width: spec.radius * 2, height: spec.radius * 2, rotation: spec.rotation }
     case 'slab':
       return { center: spec.center, width: spec.width, height: spec.height, rotation: spec.rotation }
+    case 'band': {
+      // Along the line between its circles, about its middle, as wide as its wider circle.
+      const along: Vec = { x: spec.b.c.x - spec.a.c.x, y: spec.b.c.y - spec.a.c.y }
+      return {
+        center: { x: (spec.a.c.x + spec.b.c.x) / 2, y: (spec.a.c.y + spec.b.c.y) / 2 },
+        width: Math.hypot(along.x, along.y),
+        height: 2 * Math.max(spec.a.r, spec.b.r),
+        rotation: (Math.atan2(along.y, along.x) * 180) / Math.PI,
+      }
+    }
     default:
       return spec satisfies never
   }
@@ -227,7 +238,7 @@ export function selectionHandles(
 ): HandleSet | null {
   if (live === 'none') return null
   const byId = new Map(doc.layers.map((layer) => [layer.id, layer]))
-  // Hidden and locked layers stay selected but take no part.
+  // Hidden, locked and empty layers stay selected but take no part.
   const members = doc.selectedLayerIds.map((id) => byId.get(id)).filter(usable)
   if (!members.length) return null
   const lone = members.length === 1 ? members[0] : null

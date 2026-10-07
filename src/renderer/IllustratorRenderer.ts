@@ -4,8 +4,8 @@ import type { SurvivalResult } from '../engine/carve/survival.ts'
 import type { CanvasLook } from '../store/logoStore.ts'
 import type { Guide } from '../engine/vector/types.ts'
 import type { IllustratorLayer } from '../engine/illustrator/types.ts'
-import { carveOutline } from '../engine/carve/outline.ts'
-import type { CarveSpec } from '../engine/carve/spec.ts'
+import { bandOuterPathData, carveOutline } from '../engine/carve/outline.ts'
+import type { BandSpec, CarveSpec } from '../engine/carve/spec.ts'
 import { unitsPerCssPixel } from './viewFit.ts'
 import { guidePathItem, guideWidth, styleGuideItem, visibleLayerRect } from './guideItems.ts'
 
@@ -37,6 +37,8 @@ export const CONSTRUCTION = {
   subtract: { color: '#444444', width: 1.25, dash: [1.25, 2.75] },
   /** A corner's circle: the faintest line on the sheet, lighter than any guide. */
   cornerCircle: { color: '#c8c8c8', width: 0.75 },
+  /** A band its circles allow no fit: a dashed red line between their centres, where it would be. */
+  noFit: { color: '#e11d48', width: 1, dash: [4, 3] },
   /** A centre: a ring that knocks out the lines under it, around a dot, in widths across. */
   centre: { color: '#444444', ring: 7, knockOut: 5, dot: 2 },
 }
@@ -97,6 +99,18 @@ export function renderIllustratorOnScope(
     item.strokeColor = construction ? new scope.Color(CONSTRUCTION[layer.operation].color) : null
     item.data = { illustratorLayerId: layer.id, operation: layer.operation }
     itemMap.set(layer.id, item)
+    // A linked band's caps, ends and chords, and its sides' runs inside its circles, are buried in them: the sheet draws only what lies outside.
+    const outer = construction && layer.carve?.kind === 'band' && layer.link?.kind === 'band' ? bandOuterPathData(layer.carve) : null
+    if (outer !== null) item.strokeColor = null
+    if (outer) {
+      const edges = scope.PathItem.create(outer)
+      edges.fillColor = null
+      edges.strokeColor = new scope.Color(CONSTRUCTION[layer.operation].color)
+      edges.data = { operation: layer.operation, edgesOf: layer.id }
+      edges.locked = true
+      edges.translate(center)
+      edges.insertAbove(item)
+    }
   }
 
   if (construction) {
@@ -144,17 +158,22 @@ export function scaleConstructionLines(scope: paper.PaperScope): void {
 /** Give a group of construction marks their widths at `u` units to the CSS pixel. */
 function scaleMarks(group: paper.Item, u: number): void {
   for (const item of group.children ?? []) {
-    const mark = item.data as { cornerCircle?: true; centreWidth?: number }
+    const mark = item.data as { cornerCircle?: true; centreWidth?: number; noFit?: true }
     // Never under one device pixel, as guides.
     if (mark.cornerCircle) item.strokeWidth = guideWidth('solid') * u
     if (mark.centreWidth) item.strokeWidth = mark.centreWidth * u
+    if (mark.noFit) {
+      item.strokeWidth = CONSTRUCTION.noFit.width * u
+      item.dashArray = CONSTRUCTION.noFit.dash.map((length) => length * u)
+    }
   }
 }
 
 /**
- * The circles of a polygon's rounded corners: solid hairlines in the
- * lightest grey on the sheet, so they never read as a guide or an edge.
- * Above the ink and the layers' own lines, below the guides and the mark's
+ * The circles of a polygon's rounded corners and of a neck's arcs: solid
+ * hairlines in the lightest grey on the sheet, so they never read as a guide
+ * or an edge; and a red dashed line where a band its circles allow no fit
+ * would be. Above the ink and the layers' own lines, below the guides and the mark's
  * outline. Only the construction look draws them; they never reach the ink,
  * the export or anything composed.
  */
@@ -164,6 +183,13 @@ function renderConstructionMarks(scope: paper.PaperScope, layers: readonly Illus
   group.locked = true
   group.insertBelow(outline)
   for (const layer of layers) {
+    // A band its circles allow no fit is marked where it would be, so it is not lost from the sheet.
+    const lost = layer.visible && layer.carve?.kind === 'band' && layer.link?.kind === 'band' && !layer.pathData ? noFitMark(scope, layer.carve, scope.view.center) : null
+    if (lost) {
+      lost.data = { marksOf: layer.id }
+      group.addChild(lost)
+      continue
+    }
     // A linked offset copy's corners share its source's centres: only the source draws them.
     const marks = layer.visible && layer.carve && layer.link?.kind !== 'offset' ? cornerCircleMarks(scope, layer.carve, scope.view.center) : null
     if (!marks) continue
@@ -172,10 +198,25 @@ function renderConstructionMarks(scope: paper.PaperScope, layers: readonly Illus
   }
 }
 
+/** A band with no fit as a dashed red line between its circles' centres, as last seen, about `center`. */
+function noFitMark(scope: paper.PaperScope, spec: BandSpec, center: { x: number; y: number }): paper.Group {
+  const marks = new scope.Group({ insert: false })
+  const line = new scope.Path.Line({
+    from: new scope.Point(spec.a.c.x + center.x, spec.a.c.y + center.y),
+    to: new scope.Point(spec.b.c.x + center.x, spec.b.c.y + center.y),
+    insert: false,
+  })
+  line.strokeColor = new scope.Color(CONSTRUCTION.noFit.color)
+  line.data = { noFit: true }
+  marks.addChild(line)
+  return marks
+}
+
 /** A recipe's corner circles as a group of hairlines, about `center`, or null when its corners have none. */
 function cornerCircleMarks(scope: paper.PaperScope, spec: CarveSpec, center: { x: number; y: number }): paper.Group | null {
   const frame = carveOutline(spec).frame
-  if (frame.kind !== 'box' || !frame.cornerCircles.length) return null
+  // A polygon's corner circles, and a neck's arcs drawn whole, as ref 2 shows them.
+  if (frame.kind === 'groove' || !frame.cornerCircles.length) return null
   const marks = new scope.Group({ insert: false })
   for (const circle of frame.cornerCircles) {
     const item = new scope.Path.Circle({ center: new scope.Point(circle.c.x + center.x, circle.c.y + center.y), radius: circle.r, insert: false })
@@ -298,7 +339,12 @@ export function hideGuides(scope: paper.PaperScope, hidden: ReadonlySet<string>)
  * the layer's own outline would lag behind: the editor hides it meanwhile.
  */
 export function hideLayerOutlines(items: Map<string, paper.Item>, hidden: Set<string>): void {
-  for (const [id, item] of items) item.opacity = hidden.has(id) ? 0 : 1
+  for (const [id, item] of items) {
+    item.opacity = hidden.has(id) ? 0 : 1
+    // A band strokes its edges as an item of their own, just above it.
+    const edges = item.nextSibling
+    if ((edges?.data as { edgesOf?: string } | undefined)?.edgesOf === id) edges!.opacity = item.opacity
+  }
   // A layer's construction marks would lag behind as well.
   const first = items.values().next().value
   for (const name of [MARKS_ITEM_NAME, CENTRES_ITEM_NAME]) {

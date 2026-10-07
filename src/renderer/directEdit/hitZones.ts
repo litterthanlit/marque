@@ -346,13 +346,35 @@ export function freeCurve(path: EditablePath, i: number) {
 }
 
 function findBody(ctx: HitContext, p: Vec, onInk: boolean): Zone | null {
+  const body = findBodyLayer(ctx, p, onInk)
+  return body === null ? null : { kind: 'body', layerId: bandCircleAt(ctx, body, p) ?? body }
+}
+
+/**
+ * A press on a band inside one of its circles is a press on that circle:
+ * the ink there is the circle's, and a belt, which covers both of its
+ * circles, would leave neither to drag alone. The higher of the two wins
+ * where they overlap; a locked or hidden one leaves the press to the band.
+ */
+function bandCircleAt(ctx: HitContext, id: string, p: Vec): string | null {
+  const layers = ctx.doc.layers
+  const link = layers.find((layer) => layer.id === id)?.link
+  if (link?.kind !== 'band') return null
+  for (let i = layers.length - 1; i >= 0; i--) {
+    const layer = layers[i]
+    if ((layer.id === link.a || layer.id === link.b) && layer.visible && !layer.locked && contains(ctx.items.get(layer.id), p)) return layer.id
+  }
+  return null
+}
+
+function findBodyLayer(ctx: HitContext, p: Vec, onInk: boolean): string | null {
   const layers = ctx.doc.layers
   const usable = (layer: IllustratorLayer) => layer.visible && !layer.locked
   if (onInk) {
     for (let i = layers.length - 1; i >= 0; i--) {
       const layer = layers[i]
       if (usable(layer) && layer.operation === 'add' && contains(ctx.items.get(layer.id), p)) {
-        return { kind: 'body', layerId: layer.id }
+        return layer.id
       }
     }
   } else {
@@ -363,7 +385,7 @@ function findBody(ctx: HitContext, p: Vec, onInk: boolean): Zone | null {
       for (let j = i - 1; j >= 0; j--) {
         const below = layers[j]
         if (below.visible && below.operation === 'add' && contains(ctx.items.get(below.id), p)) {
-          return { kind: 'body', layerId: cut.id }
+          return cut.id
         }
       }
     }
@@ -371,7 +393,7 @@ function findBody(ctx: HitContext, p: Vec, onInk: boolean): Zone | null {
   if (ctx.selectedIds.length === 1) {
     const id = ctx.selectedIds[0]
     const layer = layers.find((candidate) => candidate.id === id)
-    if (layer && usable(layer) && contains(ctx.items.get(id), p)) return { kind: 'body', layerId: id }
+    if (layer && usable(layer) && contains(ctx.items.get(id), p)) return id
   }
   // A cut removes nothing where no shape lies under it, but it is still there to pick up.
   const overShape = layers.some((layer) => layer.visible && layer.operation === 'add' && contains(ctx.items.get(layer.id), p))
@@ -379,7 +401,7 @@ function findBody(ctx: HitContext, p: Vec, onInk: boolean): Zone | null {
   for (let i = layers.length - 1; i >= 0; i--) {
     const cut = layers[i]
     if (usable(cut) && cut.operation === 'subtract' && contains(ctx.items.get(cut.id), p)) {
-      return { kind: 'body', layerId: cut.id }
+      return cut.id
     }
   }
   return null

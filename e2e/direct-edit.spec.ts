@@ -1,7 +1,8 @@
 import { expect, test as base, type Locator, type Page } from '@playwright/test'
 import LZString from 'lz-string'
 import type { DevHook } from '../src/devHook.ts'
-import type { CarveSpec, GrooveSpec, PolygonSpec, PunchSpec, SlabSpec } from '../src/engine/carve/spec.ts'
+import type { BandSpec, CarveSpec, GrooveSpec, PolygonSpec, PunchSpec, SlabSpec } from '../src/engine/carve/spec.ts'
+import { neckCentres } from '../src/engine/carve/band.ts'
 import { STAGE_1_LINK } from './fixtures/stage1Link.ts'
 
 declare global {
@@ -72,7 +73,7 @@ async function startOver(page: Page) {
 const addSlab = (page: Page, name: 'Square' | 'Rounded' | 'Circle' | 'Tall' | 'Polygon') =>
   page.getByRole('button', { name: `Add ${name.toLowerCase()} slab` }).click()
 
-const pickTool = (page: Page, name: 'Pen' | 'Punch' | 'Channel' | 'Slice' | 'Guide') =>
+const pickTool = (page: Page, name: 'Pen' | 'Punch' | 'Channel' | 'Slice' | 'Guide' | 'Band') =>
   page.getByRole('group', { name: 'Tools' }).getByRole('button', { name, exact: true }).click()
 
 /* ─── The spark tray under the canvas ─── */
@@ -2711,6 +2712,12 @@ async function circleSlabs(page: Page, circles: Array<[number, number, number]>)
 }
 
 const slabOf = async (page: Page, id: string) => (await layers(page)).find((layer) => layer.id === id)!.carve as SlabSpec
+/** A slab's centre, to a tenth: where a drag left it. */
+async function expectCentre(page: Page, id: string, x: number, y: number) {
+  const { center } = await slabOf(page, id)
+  expect(center.x).toBeCloseTo(x, 1)
+  expect(center.y).toBeCloseTo(y, 1)
+}
 const pinOf = (page: Page, id: string) => page.evaluate((layerId) => window.__marque.store.getState().illustrator.layers.find((layer) => layer.id === layerId)?.pin ?? null, id)
 
 test("ref 2: a circle dragged near a line of the circles' tangent frame snaps to touch it", async ({ page }) => {
@@ -3914,4 +3921,575 @@ test('an offset of a pen shape is made by the general method, follows a drag of 
   expect(left).toHaveLength(1)
   expect(left[0].link).toBeUndefined()
   expect(left[0].name).toMatch(/^Shape \d+$/)
+})
+
+/* ─── Bands ─── */
+
+const nextBand = (page: Page) => page.getByRole('group', { name: 'Next band' })
+
+/** Every band in the document, read from the store: its link, its recipe, and its contour's straight edges and arcs as anchors. */
+function bandsIn(page: Page) {
+  return page.evaluate(() =>
+    (window.__marque.store.getState().vectorDocument.objects as Array<{ id: string; carve?: BandSpec; link?: { kind: string; a: string; b: string }; contours: Array<{ segments: unknown[] }> }>)
+      .filter((object) => object.carve?.kind === 'band')
+      .map((object) => ({ id: object.id, carve: object.carve!, link: object.link ?? null, contours: object.contours.length })),
+  )
+}
+
+/**
+ * How far from touching each circle a strip's edge lies: for each end, the
+ * distance from the circle's centre (as the circle is now, read from its own
+ * recipe) to the nearer edge of the band's outline, less its radius.
+ */
+function stripGaps(page: Page, bandId: string) {
+  return page.evaluate((id) => {
+    const objects = window.__marque.store.getState().vectorDocument.objects as Array<{
+      id: string
+      carve?: { kind: string; center?: { x: number; y: number }; width?: number }
+      link?: { a: string; b: string }
+      contours: Array<{ segments: Array<{ point: { x: number; y: number } }> }>
+    }>
+    const band = objects.find((object) => object.id === id)!
+    const points = band.contours[0].segments.map((segment) => segment.point)
+    const edges = points.map((p, i) => [p, points[(i + 1) % points.length]] as const)
+    const fromLine = (c: { x: number; y: number }, [p, q]: readonly [{ x: number; y: number }, { x: number; y: number }]) =>
+      Math.abs((q.x - p.x) * (c.y - p.y) - (q.y - p.y) * (c.x - p.x)) / Math.hypot(q.x - p.x, q.y - p.y)
+    return [band.link!.a, band.link!.b].map((end) => {
+      const circle = objects.find((object) => object.id === end)!.carve!
+      const r = circle.width! / 2
+      return Math.min(...edges.map((edge) => Math.abs(fromLine(circle.center!, edge) - r)))
+    })
+  }, bandId)
+}
+
+test("ref 4: B with Strip joins circle A to C and to B at 60°, each edge touching its circle; dragging B keeps its strip touching it, one undo step; Escape drops circle a", async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  // A, C and B as on the sheet, about its middle.
+  const [a, c, b] = await circleSlabs(page, [
+    [-77, -88, 100],
+    [-52, 123, 65],
+    [141, 123, 65],
+  ])
+  const f = await frame(page)
+  await page.keyboard.press('b')
+  await expect(page.getByRole('group', { name: 'Tools' }).getByRole('button', { name: 'Band', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await nextBand(page).getByRole('button', { name: 'Strip' }).click()
+  await expect(nextBand(page).getByText('60°', { exact: true })).toBeVisible()
+
+  const depth = await undoDepth(page)
+  await click(page, f.at(-77, -88))
+  await click(page, f.at(-52, 123))
+  await click(page, f.at(-77, -88))
+  await click(page, f.at(141, 123))
+  expect(await undoDepth(page)).toBe(depth + 2)
+  const [toC, toB] = await bandsIn(page)
+  expect(toC.link).toEqual({ kind: 'band', a, b: c })
+  expect(toB.link).toEqual({ kind: 'band', a, b })
+  expect(toC.carve).toMatchObject({ fit: 'strip', angle: 60, side: 1 })
+  // The second strip touches A on its other side: it takes the side that fits.
+  expect(toB.carve).toMatchObject({ fit: 'strip', angle: 60, side: -1 })
+  for (const band of [toC, toB]) for (const gap of await stripGaps(page, band.id)) expect(gap).toBeLessThan(0.01)
+  expect(await selectedIds(page)).toEqual([toB.id])
+  await expect(selectionSummary(page)).toHaveText('Band · strip 60° · 01, 04')
+
+  // Escape drops circle a: a click on C then picks it afresh, and makes nothing.
+  await click(page, f.at(-77, -88))
+  await page.keyboard.press('Escape')
+  await click(page, f.at(-52, 123))
+  expect((await bandsIn(page)).length).toBe(2)
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('group', { name: 'Tools' }).getByRole('button', { name: 'Band', exact: true })).toHaveAttribute('aria-pressed', 'false')
+
+  // Drag B by its lower half, off its strip: the strip follows, still touching, one undo step for both.
+  const before = await undoDepth(page)
+  const from = f.at(141, 165)
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(from.x + 25 * f.unit, from.y + 12 * f.unit, { steps: 8 })
+  await page.mouse.move(from.x + 31 * f.unit, from.y + 17 * f.unit, { steps: 4 })
+  await page.mouse.up()
+  expect(await undoDepth(page)).toBe(before + 1)
+  const moved = await slabOf(page, b)
+  expect(moved.center.x).not.toBeCloseTo(141, 0)
+  const after = (await bandsIn(page)).find((band) => band.id === toB.id)!
+  expect(after.carve.b.c).toEqual(moved.center)
+  for (const gap of await stripGaps(page, toB.id)) expect(gap).toBeLessThan(0.01)
+  await page.keyboard.press('ControlOrMeta+z')
+  expect((await slabOf(page, b)).center).toEqual({ x: 141, y: 123 })
+  expect((await bandsIn(page)).find((band) => band.id === toB.id)!.carve).toEqual(toB.carve)
+
+  // Dragging a strip by its body moves both its circles, and the HUD says so; the strip follows them whole.
+  const body = f.at(-64.5, 17.5)
+  await page.mouse.move(body.x, body.y)
+  await page.mouse.down()
+  await page.mouse.move(body.x - 20 * f.unit, body.y + 10 * f.unit, { steps: 8 })
+  await expect(page.locator('main').getByText(/^moves its circles/)).toBeVisible()
+  await page.mouse.up()
+  const [movedA, movedC] = [await slabOf(page, a), await slabOf(page, c)]
+  expect(movedA.center.x - -77).toBeCloseTo(movedC.center.x - -52, 6)
+  expect(movedA.center.x).toBeLessThan(-80)
+  for (const gap of await stripGaps(page, toC.id)) expect(gap).toBeLessThan(0.01)
+  expect((await bandsIn(page)).find((band) => band.id === toC.id)!.link).toEqual({ kind: 'band', a, b: c })
+})
+
+test("ref 2: Bar 40 joins the circles centre to centre and follows a dragged circle; Neck 38 joins two circles 40.9 apart with arcs touching both, one piece; deleting a circle detaches its bands, and undo restores both", async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  // Right circle R, and the bottom circle 40.9 from its edge, down and to the left.
+  const towards = { x: -136 / Math.hypot(136, 200), y: 200 / Math.hypot(136, 200) }
+  const gap = 91 + 110 + 40.9
+  const bottom: [number, number, number] = [Math.round((143 + towards.x * gap) * 100) / 100, Math.round((-110 + towards.y * gap) * 100) / 100, 110]
+  const [left, right, low] = await circleSlabs(page, [[-161, -128, 73], [143, -110, 91], bottom])
+  const f = await frame(page)
+  await pickTool(page, 'Band')
+  await expect(nextBand(page).getByRole('button', { name: 'Bar' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(nextBand(page).getByText('40', { exact: true })).toBeVisible()
+  await click(page, f.at(-161, -128))
+  await click(page, f.at(143, -110))
+  await click(page, f.at(-161, -128))
+  await click(page, f.at(bottom[0], bottom[1]))
+  // The neck's radius, set by keys on its slider.
+  await nextBand(page).getByRole('button', { name: 'Neck' }).click()
+  const radius = nextBand(page).getByRole('slider', { name: 'Radius' })
+  await radius.focus()
+  for (let i = 0; i < 8; i++) await page.keyboard.press('ArrowRight')
+  await expect(nextBand(page).getByText('38', { exact: true })).toBeVisible()
+  await click(page, f.at(143, -110))
+  await click(page, f.at(bottom[0], bottom[1]))
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+
+  const bands = await bandsIn(page)
+  expect(bands.map((band) => [band.carve.fit, band.link?.a, band.link?.b])).toEqual([
+    ['bar', left, right],
+    ['neck', right, low],
+    ['bar', left, low],
+  ])
+  expect(bands.every((band) => band.contours === 1)).toBe(true)
+  const neckOf = async () => (await bandsIn(page)).find((band) => band.carve.fit === 'neck')!
+  /** How far each arc of the neck is from touching each circle: its centre r + 38 from theirs. */
+  const neckGaps = async () => {
+    const neck = (await neckOf()).carve
+    const [one, two] = [await slabOf(page, right), await slabOf(page, low)]
+    const centres = neckCentres(neck.a, neck.b, 38)!
+    return centres.flatMap((p) => [
+      Math.abs(Math.hypot(p.x - one.center.x, p.y - one.center.y) - one.width / 2 - 38),
+      Math.abs(Math.hypot(p.x - two.center.x, p.y - two.center.y) - two.width / 2 - 38),
+    ])
+  }
+  expect(neckCentres((await neckOf()).carve.a, (await neckOf()).carve.b, 38)).not.toBeNull()
+  for (const gapOf of await neckGaps()) expect(gapOf).toBeLessThan(0.01)
+  // One piece: the neck's waist, between the circles on the line through their centres, is ink, and nothing failed to combine.
+  await pointerAway(page, f)
+  const waist = { x: 143 + towards.x * (91 + 20.45), y: -110 + towards.y * (91 + 20.45) }
+  expect(await isInk(page, f.at(waist.x, waist.y))).toBe(true)
+  expect(await page.evaluate(() => window.__marque.mark().warnings ?? [])).toEqual([])
+
+  // Drag the right circle by its far rim: its bar follows its centre, and the neck's arcs still touch both.
+  const depth = await undoDepth(page)
+  const from = f.at(143 + 75, -110)
+  await drag(page, from, { x: from.x + 14 * f.unit, y: from.y - 9 * f.unit })
+  expect(await undoDepth(page)).toBe(depth + 1)
+  const r = await slabOf(page, right)
+  expect(r.center.x).toBeGreaterThan(150)
+  const bar = (await bandsIn(page)).find((band) => band.link?.b === right)!
+  expect(bar.carve.b.c).toEqual(r.center)
+  for (const gapOf of await neckGaps()) expect(gapOf).toBeLessThan(0.01)
+
+  // Delete the bottom circle: the neck and its bar stay as they are, no longer following; undo brings all back.
+  const before = await bandsIn(page)
+  await page.evaluate((id) => window.__marque.store.getState().setSelection([id]), low)
+  await page.keyboard.press('Delete')
+  const detached = await bandsIn(page)
+  expect(detached.find((band) => band.carve.fit === 'neck')!.link).toBeNull()
+  expect(detached.find((band) => band.carve.fit === 'neck')!.contours).toBe(1)
+  expect(detached.filter((band) => band.link).map((band) => band.link!.b)).toEqual([right])
+  await page.keyboard.press('ControlOrMeta+z')
+  expect(await bandsIn(page)).toEqual(before)
+  expect((await layers(page)).some((layer) => layer.id === low)).toBe(true)
+})
+
+test('the drawer names a band by its fit and circles, flags one with no fit, and a circle lists its bands', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  const [, b] = await circleSlabs(page, [
+    [-150, 0, 60],
+    [150, 0, 60],
+  ])
+  const f = await frame(page)
+  await pickTool(page, 'Band')
+  await nextBand(page).getByRole('button', { name: 'Belt' }).click()
+  await click(page, f.at(-150, 0))
+  await click(page, f.at(150, 0))
+  await page.keyboard.press('Escape')
+  const drawer = await openLayers(page)
+  await expect(drawer.getByRole('button', { name: '03 Band · belt · 01, 02', exact: true })).toBeVisible()
+  await expect(drawer.getByRole('button', { name: '02 Slab, bands 03', exact: true })).toBeVisible()
+  // B moved inside A: a belt has no fit there.
+  await page.evaluate((id) => {
+    const state = window.__marque.store.getState()
+    const layer = state.illustrator.layers.find((each) => each.id === id)!
+    state.commitLayerEdits({ label: 'Move', edits: [{ layerId: id, carve: { ...(layer.carve as SlabSpec), center: { x: -160, y: 0 }, width: 40, height: 40, radius: 20 } }] })
+  }, b)
+  const row = drawer.getByRole('button', { name: '03 Band · belt · 01, 02, no fit', exact: true })
+  await expect(row).toBeVisible()
+  // The circles' numbers and the flag are never cut off: both lie whole inside the row.
+  const inside = async (part: Locator) => {
+    const [outer, inner] = [(await row.boundingBox())!, (await part.boundingBox())!]
+    return inner.x >= outer.x && inner.x + inner.width <= outer.x + outer.width
+  }
+  expect(await inside(row.getByText('01, 02', { exact: true }))).toBe(true)
+  expect(await inside(row.getByTitle('No fit', { exact: true }))).toBe(true)
+  expect(await row.getByText('01, 02', { exact: true }).evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+
+  // A band between two guides keeps its own number, and its guides, written short, lie whole inside the row.
+  await page.evaluate(() => {
+    const state = window.__marque.store.getState()
+    state.addGuides([
+      { kind: 'circle', c: { x: -150, y: -250 }, r: 50 },
+      { kind: 'circle', c: { x: 150, y: -250 }, r: 50 },
+    ])
+    const [one, two] = window.__marque.store.getState().vectorDocument.guides.map((guide: { id: string }) => guide.id)
+    window.__marque.store.getState().addBand(one, two)
+  })
+  const guided = drawer.getByRole('button', { name: /^0\d Band · belt · guide 1, guide 2$/ })
+  await expect(guided).toBeVisible()
+  const whole = async (part: Locator) => {
+    const [outer, inner] = [(await guided.boundingBox())!, (await part.boundingBox())!]
+    return inner.width > 0 && inner.x >= outer.x && inner.x + inner.width <= outer.x + outer.width
+  }
+  expect(await whole(guided.getByText(/^0\d\s?$/))).toBe(true)
+  expect(await whole(guided.getByText('g1, g2', { exact: true }))).toBe(true)
+})
+
+test('a belt leaves each of its circles to drag alone: a press inside one moves it, a press on the belt between them moves both', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await page.evaluate(() => window.__marque.store.getState().setCarveSettings({ snapping: false }))
+  const [a, b] = await circleSlabs(page, [
+    [-100, 0, 100],
+    [150, 0, 40],
+  ])
+  await page.evaluate(({ a, b }) => {
+    const state = window.__marque.store.getState()
+    state.setBandSettings({ fit: 'belt' })
+    state.addBand(a, b)
+    window.__marque.store.getState().setSelection([])
+  }, { a, b })
+  const f = await frame(page)
+  // Inside B, which the belt covers: B alone moves, and the belt follows it.
+  await drag(page, f.at(150, 0), f.at(150, 30))
+  await expectCentre(page, b, 150, 30)
+  await expectCentre(page, a, -100, 0)
+  expect(await page.evaluate(() => window.__marque.store.getState().illustrator.selectedLayerIds)).toEqual([b])
+  const [belt] = await bandsIn(page)
+  expect(belt.link).toEqual({ kind: 'band', a, b })
+  expect(belt.carve.b.c.y).toBeCloseTo(30, 1)
+  // Inside A, though A sits under the belt: A alone.
+  await drag(page, f.at(-100, 0), f.at(-100, -20))
+  await expectCentre(page, a, -100, -20)
+  await expectCentre(page, b, 150, 30)
+  // On the belt between them: both move with it.
+  const from = f.at(50, 5)
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(from.x + 20 * f.unit, from.y, { steps: 8 })
+  await expect(hudLabel(page, 'moves its circles')).toBeVisible()
+  await page.mouse.up()
+  await expectCentre(page, a, -80, -20)
+  await expectCentre(page, b, 170, 30)
+})
+
+test('a drag that leaves a band no fit holds "band 03: no fit" past the release, and reads it out', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await page.evaluate(() => window.__marque.store.getState().setCarveSettings({ snapping: false }))
+  const [p, q] = await circleSlabs(page, [
+    [-75, 0, 70],
+    [75, 0, 60],
+  ])
+  await page.evaluate(({ p, q }) => {
+    const state = window.__marque.store.getState()
+    state.setBandSettings({ fit: 'neck', radius: 30 })
+    state.addBand(p, q)
+    window.__marque.store.getState().setSelection([])
+  }, { p, q })
+  expect((await bandsIn(page))[0].contours).toBe(1)
+  const f = await frame(page)
+  await drag(page, f.at(75, 0), f.at(135, 0))
+  await expectCentre(page, q, 135, 0)
+  expect((await bandsIn(page))[0].contours).toBe(0)
+  await expect(hudLabel(page, 'band 03: no fit')).toBeVisible()
+  await expect(hudStatus(page)).toHaveText('No fit: band 03 waits until its circles allow it')
+  await page.waitForTimeout(400)
+  await expect(hudLabel(page, 'band 03: no fit')).toBeVisible()
+})
+
+test('Alt with an arrow on a band that waits, empty, writes nothing and says "no fit": it stays linked, Copy waits, and it comes back with its circles', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await page.evaluate(() => window.__marque.store.getState().setCarveSettings({ snapping: false }))
+  const [p, q] = await circleSlabs(page, [
+    [0, 0, 80],
+    [200, 0, 80],
+  ])
+  await page.evaluate(({ p, q }) => {
+    const state = window.__marque.store.getState()
+    state.setBandSettings({ fit: 'bar', width: 40 })
+    state.addBand(p, q)
+  }, { p, q })
+  const f = await frame(page)
+  await page.evaluate(() => window.__marque.store.getState().setSelection([]))
+  // Pressed on the circle off the bar, which a press would move with both its circles.
+  await drag(page, f.at(200, 60), f.at(0, 60))
+  await expectCentre(page, q, 0, 0)
+  const [band] = await bandsIn(page)
+  expect(band.contours).toBe(0)
+  // Selected on its own, as a drawer click selects it.
+  await page.evaluate((id) => window.__marque.store.getState().setSelection([id]), band.id)
+  const depth = await undoDepth(page)
+  for (const key of ['Alt+ArrowRight', 'Alt+ArrowUp']) {
+    await page.keyboard.press(key)
+    await expect(hudLabel(page, 'band 03: no fit')).toBeVisible()
+    await expect(hudStatus(page)).toHaveText('No fit: band 03 waits until its circles allow it')
+  }
+  expect(await undoDepth(page)).toBe(depth)
+  expect((await bandsIn(page))[0]).toEqual(band)
+  await expect(page.getByRole('button', { name: 'Copy', exact: true })).toBeDisabled()
+  await page.evaluate(() => window.__marque.store.getState().setSelection([]))
+  await drag(page, f.at(0, 60), f.at(200, 60))
+  await expectCentre(page, q, 200, 0)
+  const [back] = await bandsIn(page)
+  expect(back.contours).toBe(1)
+  expect(back.link).toEqual({ kind: 'band', a: p, b: q })
+})
+
+/** Two circle slabs and a bar between them, made with the Band tool: their ids, and the bar's. */
+async function barBetween(page: Page, f: Frame, one: [number, number, number], two: [number, number, number]) {
+  const [p, q] = await circleSlabs(page, [one, two])
+  await pickTool(page, 'Band')
+  await click(page, f.at(one[0], one[1]))
+  await click(page, f.at(two[0], two[1]))
+  // Out of the tool, the bar still selected.
+  await page.keyboard.press('Escape')
+  const [bar] = await bandsIn(page)
+  return { p, q, bar: bar.id }
+}
+
+const hudStatus = (page: Page) => page.locator('main p[role="status"]')
+
+test("an offset copy of a band, dragged or nudged, moves the band's circles, the band still following them; a locked circle holds it, and a band between guides says to move them", async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await page.evaluate(() => window.__marque.store.getState().setCarveSettings({ snapping: false }))
+  const f = await frame(page)
+  const { p, q, bar } = await barBetween(page, f, [-150, 0, 70], [150, 0, 60])
+  // An outset of 10: 60 wide about the bar's 40.
+  const copy = await page.evaluate((id) => {
+    window.__marque.store.getState().addOffset(id, 10, false)
+    return window.__marque.store.getState().illustrator.selectedLayerIds[0]
+  }, bar)
+  expect(copy).not.toBe(bar)
+
+  // Dragged by the outset alone, outside the bar: both circles move, and the bar and the copy follow, one undo step.
+  const depth = await undoDepth(page)
+  const from = f.at(0, 25)
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(from.x, from.y + 30 * f.unit, { steps: 8 })
+  await expect(hudLabel(page, 'moves its circles')).toBeVisible()
+  await page.mouse.up()
+  expect(await undoDepth(page)).toBe(depth + 1)
+  const [movedP, movedQ] = [await slabOf(page, p), await slabOf(page, q)]
+  expect(movedP.center.y).toBeCloseTo(30, 6)
+  expect(movedQ.center.y).toBeCloseTo(30, 6)
+  const followed = (await bandsIn(page)).find((band) => band.id === bar)!
+  expect(followed.link).toEqual({ kind: 'band', a: p, b: q })
+  expect(followed.carve.a.c).toEqual(movedP.center)
+
+  // Nudged: the same, one step.
+  await page.evaluate((id) => window.__marque.store.getState().setSelection([id]), copy)
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  const nudged = await undoDepth(page)
+  await page.keyboard.press('ArrowUp')
+  expect((await slabOf(page, p)).center.y).toBeCloseTo(29, 6)
+  expect((await slabOf(page, q)).center.y).toBeCloseTo(29, 6)
+  expect(await undoDepth(page)).toBe(nudged + 1)
+  await expect(hudLabel(page, 'moves its circles')).toBeVisible()
+  await expect(hudStatus(page)).toHaveText(/^Moved its circles/)
+  expect((await bandsIn(page)).find((band) => band.id === bar)!.link).toEqual({ kind: 'band', a: p, b: q })
+
+  // With circle P locked, the bar moves nothing, by a drag or a key, and says why.
+  await page.evaluate(({ p, bar }) => {
+    const state = window.__marque.store.getState()
+    state.updateIllustratorLayer(p, { locked: true })
+    state.setSelection([bar])
+  }, { p, bar })
+  const locked = await undoDepth(page)
+  await page.keyboard.press('ArrowRight')
+  await expect(hudLabel(page, 'circle is locked')).toBeVisible()
+  await expect(hudStatus(page)).toHaveText('circle is locked: unlock 01 to move it')
+  const body = f.at(0, 29)
+  await page.mouse.move(body.x, body.y)
+  await page.mouse.down()
+  await page.mouse.move(body.x + 40 * f.unit, body.y, { steps: 8 })
+  await expect(hudLabel(page, 'circle is locked')).toBeVisible()
+  await page.mouse.up()
+  expect(await undoDepth(page)).toBe(locked)
+  expect((await slabOf(page, q)).center).toEqual({ x: 150, y: 29 })
+
+  // A bar between two circle guides: its circles are guides, and it says to move them.
+  const between = await page.evaluate(() => {
+    const state = window.__marque.store.getState()
+    state.addGuides([
+      { kind: 'circle', c: { x: -150, y: -200 }, r: 50 },
+      { kind: 'circle', c: { x: 150, y: -200 }, r: 50 },
+    ])
+    const [one, two] = window.__marque.store.getState().vectorDocument.guides.map((guide: { id: string }) => guide.id)
+    window.__marque.store.getState().addBand(one, two)
+    return window.__marque.store.getState().illustrator.selectedLayerIds[0]
+  })
+  expect((await bandsIn(page)).find((band) => band.id === between)!.contours).toBe(1)
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  const guided = await undoDepth(page)
+  await page.keyboard.press('ArrowRight')
+  await expect(hudLabel(page, 'follows guides: move them')).toBeVisible()
+  expect(await undoDepth(page)).toBe(guided)
+})
+
+test("Band… holds the fit and its setting: a fit takes the nearest setting its circles allow, one they allow none at all is disabled and says why, and the slider shows the band as it moves, one undo step on release", async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  const f = await frame(page)
+  const { bar } = await barBetween(page, f, [-150, 0, 70], [150, 0, 60])
+  await expect(selectionSummary(page)).toHaveText('Band · bar 40 · 01, 02')
+  await selectionBar(page).getByRole('button', { name: 'Band…' }).click()
+  const menu = page.getByRole('group', { name: 'This band' })
+  // A neck of 30 cannot reach across 300, nor a strip at 60° touch both, but other settings can: every fit is offered.
+  for (const fit of ['Belt', 'Strip', 'Neck']) await expect(menu.getByRole('button', { name: fit })).toBeEnabled()
+
+  // The Width slider shows the wider bar on the canvas as its thumb moves; the store has it on release, one step.
+  await pointerAway(page, f)
+  const outside = f.at(0, 30)
+  expect(await isInk(page, outside)).toBe(false)
+  const thumb = menu.getByRole('slider', { name: 'Width' })
+  const box = (await thumb.boundingBox())!
+  const depth = await undoDepth(page)
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width / 2 + 60, box.y + box.height / 2, { steps: 6 })
+  await expect.poll(() => isInk(page, outside)).toBe(true)
+  expect((await bandsIn(page)).find((band) => band.id === bar)!.carve.width).toBe(40)
+  await page.mouse.up()
+  expect(await undoDepth(page)).toBe(depth + 1)
+  expect((await bandsIn(page)).find((band) => band.id === bar)!.carve.width).toBeGreaterThan(60)
+  // Arrow keys on it are one step together.
+  await thumb.focus()
+  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowLeft')
+  expect(await undoDepth(page)).toBe(depth + 2)
+
+  // A neck takes the nearest radius that reaches across and keeps a waist: 141, one step.
+  await menu.getByRole('button', { name: 'Neck' }).click()
+  expect(await undoDepth(page)).toBe(depth + 3)
+  expect((await bandsIn(page)).find((band) => band.id === bar)!.carve).toMatchObject({ fit: 'neck', radius: 141 })
+  // One less leaves no fit: refused and said, and the slider goes back to the band's radius.
+  const radius = menu.getByRole('slider', { name: 'Radius' })
+  await expect(radius).toHaveAttribute('aria-valuenow', '141')
+  await radius.focus()
+  await page.keyboard.press('ArrowLeft')
+  await expect(hudLabel(page, 'no fit')).toBeVisible()
+  await expect(radius).toHaveAttribute('aria-valuenow', '141')
+  expect(await undoDepth(page)).toBe(depth + 3)
+  expect((await bandsIn(page)).find((band) => band.id === bar)!.carve.radius).toBe(141)
+  await page.keyboard.press('ArrowRight')
+  await expect(radius).toHaveAttribute('aria-valuenow', '142')
+  expect((await bandsIn(page)).find((band) => band.id === bar)!.carve.radius).toBe(142)
+  // Dragged to a radius with no fit and let go: refused, the thumb back where the band is.
+  const knob = (await radius.boundingBox())!
+  const steps = await undoDepth(page)
+  await page.mouse.move(knob.x + knob.width / 2, knob.y + knob.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(knob.x - 80, knob.y + knob.height / 2, { steps: 6 })
+  await page.mouse.up()
+  await expect(hudLabel(page, 'no fit')).toBeVisible()
+  await expect(radius).toHaveAttribute('aria-valuenow', '142')
+  expect(await undoDepth(page)).toBe(steps)
+  await menu.getByRole('button', { name: 'Belt' }).click()
+  expect((await bandsIn(page)).find((band) => band.id === bar)!.carve.fit).toBe('belt')
+
+  // A small circle inside a large one: no belt, and no neck of any radius. Both disabled, saying why.
+  await page.keyboard.press('Escape')
+  await startOver(page)
+  const [big, small] = await circleSlabs(page, [
+    [0, 0, 100],
+    [20, 0, 30],
+  ])
+  await page.evaluate(({ big, small }) => {
+    const state = window.__marque.store.getState()
+    state.setBandSettings({ fit: 'bar' })
+    state.addBand(big, small)
+  }, { big, small })
+  await selectionBar(page).getByRole('button', { name: 'Band…' }).click()
+  await expect(menu.getByRole('button', { name: 'Belt' })).toBeDisabled()
+  await expect(menu.getByRole('button', { name: 'Belt' })).toHaveAttribute('title', 'These circles leave no room for a belt: one lies inside the other')
+  await expect(menu.getByRole('button', { name: 'Neck' })).toBeDisabled()
+  await expect(menu.getByRole('button', { name: 'Neck' })).toHaveAttribute('title', 'These circles leave no room for a neck of any radius')
+})
+
+test('a band on a construction circle of a shape being dragged follows it live, as the commit will', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await page.evaluate(() => window.__marque.store.getState().setCarveSettings({ snapping: false }))
+  const [circle] = await circleSlabs(page, [[250, 0, 40]])
+  await addSlab(page, 'Polygon')
+  const f = await frame(page)
+  const polygon = (await layers(page)).find((layer) => layer.carve?.kind === 'polygon')!
+  const radius = (polygon.carve as PolygonSpec).radius
+  expect(radius).toBeLessThan(140)
+  await page.evaluate(({ polygon, circle }) => {
+    const state = window.__marque.store.getState()
+    const carve = state.illustrator.layers.find((layer) => layer.id === polygon)!.carve!
+    state.commitLayerEdits({ label: 'Place', edits: [{ layerId: polygon, carve: { ...carve, center: { x: 0, y: 0 } } as CarveSpec }] })
+    window.__marque.store.getState().addConstructionGuides([polygon])
+    const around = window.__marque.store.getState().vectorDocument.guides.find((guide: { link?: { role: string } }) => guide.link?.role === 'circumcircle')
+    window.__marque.store.getState().addBand(around!.id, circle)
+    window.__marque.store.getState().setSelection([])
+  }, { polygon: polygon.id, circle })
+  expect((await bandsIn(page))[0].contours).toBe(1)
+  // Where the bar runs once the polygon is 60 higher: off it now. Its guides showing, the look is the construction look's pale fill.
+  const after = f.at(150, -24)
+  await pointerAway(page, f)
+  expect(await isEmpty(page, after)).toBe(true)
+  const from = f.at(0, 0)
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(from.x, from.y - 60 * f.unit, { steps: 8 })
+  await expect.poll(() => isEmpty(page, after)).toBe(false)
+  // It follows the polygon through its guide: nothing is let go of, and the HUD never says so.
+  await expect(hudLabel(page, 'detached')).toHaveCount(0)
+  await page.mouse.up()
+  expect((await bandsIn(page))[0].carve.a.c.y).toBeCloseTo(-60, 6)
+  await expect.poll(() => isEmpty(page, after)).toBe(false)
+
+  // Turned in one box with the polygon, it keeps following: still linked, and nothing says "detached".
+  const band = (await bandsIn(page))[0]
+  await page.evaluate((ids) => window.__marque.store.getState().setSelection(ids), [polygon.id, band.id])
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  await page.keyboard.press('Alt+ArrowRight')
+  expect((await bandsIn(page))[0].link).toEqual(band.link)
+  expect((await bandsIn(page))[0].contours).toBe(1)
+  await expect(hudLabel(page, 'detached')).toHaveCount(0)
+})
+
+test('the tool pill keeps its seven tools on one row, as icons on a phone, each named', async ({ page }) => {
+  await openVectorMaker(page)
+  const tools = page.getByRole('group', { name: 'Tools' }).getByRole('button')
+  await expect(tools).toHaveCount(7)
+  const tops = await tools.evaluateAll((buttons) => buttons.map((button) => Math.round(button.getBoundingClientRect().top)))
+  expect(new Set(tops).size).toBe(1)
+  for (const name of ['Select', 'Pen', 'Punch', 'Channel', 'Slice', 'Guide', 'Band']) {
+    await expect(page.getByRole('group', { name: 'Tools' }).getByRole('button', { name, exact: true })).toBeVisible()
+  }
 })

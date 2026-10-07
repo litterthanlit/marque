@@ -1,6 +1,7 @@
 import { add, distance, dot, length, normalize, rotate, scale, sub, type Vec } from '../path/bezier.ts'
 import { shapeAnchors, type EditableShape } from '../path/editPath.ts'
 import { carveOutline, polygonParts } from '../carve/outline.ts'
+import { bandParts, bandWidth } from '../carve/band.ts'
 import { polygonCornerRadius, type CarveSpec, type PolygonSpec, type PunchSpec, type SlabSpec } from '../carve/spec.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../illustrator/types.ts'
 import { asCircle, type Circle } from '../geometry/asCircle.ts'
@@ -473,7 +474,8 @@ export function snapRadiusTangent(index: SnapIndex, circle: Circle, pivot: Vec, 
 /**
  * Corners, side middles and centre of a recipe; a polygon's corners, side
  * middles and the tangent points of its rounded corners; a groove's ends and
- * middle; a circle's quadrants.
+ * middle; a circle's quadrants; a band's middle and the points where it
+ * touches its circles.
  */
 export function carveKeyPoints(spec: CarveSpec, owner?: string): SnapTarget[] {
   const own = owner === undefined ? {} : { owner }
@@ -490,6 +492,12 @@ export function carveKeyPoints(spec: CarveSpec, owner?: string): SnapTarget[] {
     case 'slab':
     case 'punch':
       return boxKeyPoints(spec, owner)
+    case 'band':
+      // The middle between its circles, and where it touches them; the circles offer their own centres.
+      return [
+        { p: scale(add(spec.a.c, spec.b.c), 0.5), kind: 'centre', ...own },
+        ...(bandParts(spec)?.touches ?? []).map((p): SnapTarget => ({ p, kind: 'point', ...own })),
+      ]
     default:
       return spec satisfies never
   }
@@ -742,7 +750,7 @@ export interface DocumentSizes {
   punchRadii: number[]
   /** Polygon radii: how far their sharp corners reach from the centre. */
   polygonRadii: number[]
-  /** Groove widths. */
+  /** Groove widths, and the widths of bars and strips. */
   widths: number[]
   /** The radius of everything read as a circle: circle slabs and punches, spark circles, circle guides. */
   circleRadii: number[]
@@ -791,6 +799,12 @@ export function documentSizes(
       case 'slice':
         sizes.widths.push(spec.width)
         break
+      case 'band': {
+        // A bar's or strip's width is a width like a groove's: a groove can take it, and it shows as the same size.
+        const width = spec.fit === 'bar' || spec.fit === 'strip' ? bandWidth(spec) : null
+        if (width !== null) sizes.widths.push(width)
+        break
+      }
       default:
         spec satisfies never
     }

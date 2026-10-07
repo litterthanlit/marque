@@ -73,8 +73,14 @@ export function syncCarve(spec: unknown, contour: ContourLike, transform: Illust
   return { carve, contour: segsToContour(outline.segs) }
 }
 
-/** Is a stored recipe consistent with its object's contours: exactly one, closed, its outline? */
+/**
+ * Is a stored recipe consistent with its object's contours: exactly one,
+ * closed, its outline? A band may have none: it waits, empty, for circles
+ * that allow it a fit.
+ */
 export function isObjectCarveValid(carve: unknown, contours: readonly ContourLike[]): carve is CarveSpec {
-  if (!isCarveSpec(carve) || contours.length !== 1) return false
+  if (!isCarveSpec(carve)) return false
+  if (carve.kind === 'band' && contours.length === 0) return true
+  if (contours.length !== 1) return false
   return segmentsMatch(carveOutline(roundCarveSpec(carve)).segs, contours[0])
 }

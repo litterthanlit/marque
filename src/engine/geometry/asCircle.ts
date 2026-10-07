@@ -13,8 +13,9 @@ export type CircleSource = Pick<PathObject, 'contours'> & { carve?: CarveSpec }
 
 /**
  * An object read as a circle, or null. A circle slab (an unbent slab, square,
- * whose corner radius is at least half its width) and an unbent circle punch
- * are circles by their recipe; a polygon never is. Any other object is one when it is a single
+ * whose corner radius is at least half its width, each within storage
+ * rounding of it) and an unbent circle punch
+ * are circles by their recipe; a polygon or a band never is. Any other object is one when it is a single
  * closed contour whose anchors and curve midpoints all lie within
  * max(0.05, 0.001·r) of one circle: that covers spark circles, which carry no
  * recipe.
@@ -26,12 +27,20 @@ export function asCircle(object: CircleSource): Circle | null {
   return contourCircle(object.contours[0])
 }
 
+/**
+ * How far apart a circle slab's stored sizes may be and still read as a
+ * circle: storage rounds its width, height and radius apart to hundredths,
+ * and a box scale rounds each of them again.
+ */
+const ROUNDING_SLACK = 0.02
+
 function recipeCircle(spec: CarveSpec): Circle | null {
   if (bentEdgeCount(spec) > 0) return null
   switch (spec.kind) {
     case 'slab':
-      return Math.abs(spec.width - spec.height) <= 1e-6 && spec.radius >= spec.width / 2 - 1e-6
-        ? { c: spec.center, r: spec.width / 2 }
+      // Its sides equal and its radius half of them, each within storage rounding of it.
+      return Math.abs(spec.width - spec.height) <= ROUNDING_SLACK + 1e-9 && spec.radius >= Math.min(spec.width, spec.height) / 2 - ROUNDING_SLACK - 1e-9
+        ? { c: spec.center, r: (spec.width + spec.height) / 4 }
         : null
     case 'punch':
       return spec.shape === 'circle' ? { c: spec.center, r: spec.radius } : null
@@ -40,6 +49,9 @@ function recipeCircle(spec: CarveSpec): Circle | null {
       return null
     case 'channel':
     case 'slice':
+      return null
+    case 'band':
+      // A band is never a circle, so no band is made between bands.
       return null
     default:
       return spec satisfies never

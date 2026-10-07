@@ -650,8 +650,8 @@ describe('polygons in stored documents', () => {
 })
 
 describe('every recipe kind', () => {
-  it('is one of five, so a dispatcher that forgets one does not compile', () => {
-    expectTypeOf<CarveSpec['kind']>().toEqualTypeOf<'slab' | 'punch' | 'polygon' | 'channel' | 'slice'>()
+  it('is one of six, so a dispatcher that forgets one does not compile', () => {
+    expectTypeOf<CarveSpec['kind']>().toEqualTypeOf<'slab' | 'punch' | 'polygon' | 'channel' | 'slice' | 'band'>()
   })
 
   it('goes through every dispatcher, a polygon never down another kind’s branch', () => {

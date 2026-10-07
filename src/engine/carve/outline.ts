@@ -4,9 +4,11 @@ import {
   clamp,
   cubicPoint,
   cubicTangent,
+  dot,
   emptyBounds,
   includeCubic,
   length,
+  lerp,
   normalize,
   rotate,
   scale,
@@ -18,7 +20,9 @@ import {
 } from '../path/bezier.ts'
 import { arcHandleRatio, arcToCubics, KAPPA } from '../path/arc.ts'
 import { FULL_ROUND_SLACK, polygonApothem, polygonCornerRadius } from './spec.ts'
+import { bandParts, partCubics, partEnds } from './band.ts'
 import type {
+  BandSpec,
   CarveBends,
   CarveSpec,
   CornerFullness,
@@ -55,6 +59,8 @@ export type SideRef =
   | { type: 'polygon-side'; index: number }
   /** A polygon's rounded corner `index`, counted clockwise from the top. */
   | { type: 'polygon-corner'; index: number }
+  /** Part `index` of a band's outline: an edge, an arc, a cap or a chord. */
+  | { type: 'band'; index: number }
 
 /** A circle in layer space. */
 export interface OutlineCircle {
@@ -89,7 +95,19 @@ export interface GrooveFrame {
   width: number
 }
 
-export type CarveFrame = BoxFrame | GrooveFrame
+/**
+ * A band's frame: where it touches its circles, and the circles the
+ * construction look draws, a neck's arcs whole. `valid` is false while its
+ * circles allow no fit: then its outline is empty.
+ */
+export interface BandFrame {
+  kind: 'band'
+  valid: boolean
+  touches: Vec[]
+  cornerCircles: OutlineCircle[]
+}
+
+export type CarveFrame = BoxFrame | GrooveFrame | BandFrame
 
 export interface CarveOutline {
   /** One closed ring of anchors. */
@@ -623,9 +641,90 @@ function buildOutline(spec: CarveSpec): CarveOutline {
       const frame: GrooveFrame = { kind: 'groove', spine, width: spec.width }
       return assemble(spec.bend ? grooveBentPieces(spec, spine) : grooveStraightPieces(spec), frame)
     }
+    case 'band':
+      return bandOutline(spec)
     default:
       return spec satisfies never
   }
+}
+
+/** A band's outline: its parts as cubics, each arc in pieces of at most 90°; empty while its circles allow no fit. */
+function bandOutline(spec: BandSpec): CarveOutline {
+  const parts = bandParts(spec)
+  if (!parts) return assemble([], { kind: 'band', valid: false, touches: [], cornerCircles: [] })
+  const ends = parts.parts.map(partEnds)
+  const pieces: Piece[] = parts.parts.flatMap((part, index) => {
+    // Each part starts exactly where the one before it ends, and the last closes on the first.
+    const from = index === 0 ? ends[0][0] : ends[index - 1][1]
+    const to = index === ends.length - 1 ? ends[0][0] : ends[index][1]
+    return partCubics(part, from, to).map((c): Piece => ({ c, side: { type: 'band', index }, line: part.kind === 'segment' }))
+  })
+  return assemble(pieces, { kind: 'band', valid: true, touches: parts.touches, cornerCircles: parts.circles })
+}
+
+/**
+ * A band's outline as the construction look strokes it: open path data of
+ * what lies outside its two circles, as the sheets draw it. A bar's caps, a
+ * strip's ends and a neck's chords lie inside them and go, and so do the
+ * runs of a bar's or strip's sides that pass inside a circle. Null when it
+ * strokes whole (a belt), or has no outline.
+ */
+export function bandOuterPathData(spec: BandSpec): string | null {
+  const parts = bandParts(spec)
+  if (!parts) return null
+  const outline = carveOutline(spec)
+  let pathData = ''
+  let clipped = false
+  let last = -1
+  outline.curves.forEach((curve, i) => {
+    const side = outline.curveSides[i]
+    if (side.type !== 'band') return
+    const part = parts.parts[side.index]
+    if (part.inside) {
+      clipped = true
+      last = -1
+      return
+    }
+    if (part.kind === 'segment') {
+      const runs = outsideCircles(curve[0], curve[3], [spec.a, spec.b])
+      if (runs.length !== 1 || runs[0][0] > 0 || runs[0][1] < 1) clipped = true
+      const at = (t: number) => lerp(curve[0], curve[3], t)
+      for (const [from, to] of runs) pathData += `M${fmtVec(at(from))}L${fmtVec(at(to))}`
+      last = -1
+      return
+    }
+    if (side.index !== last) pathData += `M${fmtVec(curve[0])}`
+    pathData += `C${fmtVec(curve[1])} ${fmtVec(curve[2])} ${fmtVec(curve[3])}`
+    last = side.index
+  })
+  return clipped ? pathData : null
+}
+
+/** The runs of the segment from `p` to `q`, as parameters from 0 to 1, that lie outside every circle; a run that only touches one stays. */
+function outsideCircles(p: Vec, q: Vec, circles: ReadonlyArray<{ c: Vec; r: number }>): Array<[number, number]> {
+  let runs: Array<[number, number]> = [[0, 1]]
+  const d = sub(q, p)
+  const dd = dot(d, d)
+  if (dd < 1e-18) return runs
+  for (const { c, r } of circles) {
+    // Where |p + t·d − c| = r: inside between the two roots.
+    const f = sub(p, c)
+    const b = dot(f, d) / dd
+    const disc = b * b - (dot(f, f) - r * r) / dd
+    if (disc <= 1e-12) continue
+    const root = Math.sqrt(disc)
+    const [enter, leave] = [-b - root, -b + root]
+    runs = runs.flatMap(([from, to]): Array<[number, number]> => {
+      if (leave <= from || enter >= to) return [[from, to]]
+      return [
+        ...(enter > from ? [[from, enter] as [number, number]] : []),
+        ...(leave < to ? [[leave, to] as [number, number]] : []),
+      ]
+    })
+  }
+  // Pieces under a hundredth of a unit are rounding, not lines.
+  const length = Math.sqrt(dd)
+  return runs.filter(([from, to]) => (to - from) * length > 0.01)
 }
 
 const CACHE_LIMIT = 64

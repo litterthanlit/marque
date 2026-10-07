@@ -15,7 +15,7 @@ import type { PathObject, VectorObject } from './types.ts'
  * centre can hold one.
  */
 
-/** The centre of a recipe: a slab's, punch's or polygon's own, a groove's middle. */
+/** The centre of a recipe: a slab's, punch's or polygon's own, a groove's middle, the middle between a band's circles. */
 export function recipeCentre(spec: CarveSpec): Vec {
   switch (spec.kind) {
     case 'slab':
@@ -25,6 +25,9 @@ export function recipeCentre(spec: CarveSpec): Vec {
     case 'channel':
     case 'slice':
       return scale(add(spec.from, spec.to), 0.5)
+    case 'band':
+      // The middle of the line between its circles' centres.
+      return scale(add(spec.a.c, spec.b.c), 0.5)
     default:
       return spec satisfies never
   }
@@ -59,10 +62,11 @@ export function shapeCentre(source: CircleSource & { frame?: { rotation: number 
 
 /**
  * Can an object take a pin: is it a recipe? A free shape stores no centre,
- * and an offset copy goes where its source puts it.
+ * an offset copy goes where its source puts it, and a band where its
+ * circles do.
  */
 export function takesPin(object: VectorObject | undefined): object is PathObject & { carve: CarveSpec } {
-  return object?.type === 'path' && object.carve !== undefined && object.link?.kind !== 'offset'
+  return object?.type === 'path' && object.carve !== undefined && object.carve.kind !== 'band' && object.link?.kind !== 'offset'
 }
 
 /** How far a pinned centre may sit from its target and still be on it: past the rounding of stored recipes. */

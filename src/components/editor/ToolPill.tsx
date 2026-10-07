@@ -7,6 +7,7 @@ import { cn } from '../../lib/utils.ts'
 import { SliderControl } from '../controls/SliderControl.tsx'
 import { Divider, EditorButton, FLOATING_SURFACE, Segmented, Stepper, SwitchButton } from './controls.tsx'
 import { EDITOR_TOOLS } from './tools.ts'
+import { BandFitControl, BandSettingControl } from './BandControls.tsx'
 
 const PUNCH_SHAPE_OPTIONS = PUNCH_SHAPES.map((shape) => ({ value: shape.id, label: shape.label }))
 
@@ -42,7 +43,8 @@ export function ToolPill() {
   return (
     <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center px-3">
       <div data-canvas-cover className={cn(FLOATING_SURFACE, 'pointer-events-auto flex max-w-full flex-col')}>
-        <div className="flex items-center justify-center gap-x-2 gap-y-1.5 p-1.5 max-md:flex-col">
+        {/* Seven tools and the slabs need about 880px in one row: narrower, they stack, and on a phone the tools are icons. */}
+        <div className="flex items-center justify-center gap-x-2 gap-y-1.5 p-1.5 max-[880px]:flex-col">
           <div className="flex flex-wrap justify-center gap-1" role="group" aria-label="Tools">
             {EDITOR_TOOLS.map((tool) => {
               const pressed = activeTool === tool.id
@@ -50,15 +52,19 @@ export function ToolPill() {
                 <EditorButton
                   key={tool.label}
                   pressed={pressed}
+                  aria-label={tool.label}
+                  className="max-md:px-2"
                   title={`${tool.label} (${tool.shortcut}). ${tool.hint}`}
                   onClick={() => setActiveTool(pressed ? null : tool.id)}
                 >
-                  {tool.label}
+                  {/* Narrower than a tablet, seven tools fit one row as icons; their names stay in the label and title. */}
+                  <ToolIcon tool={tool.id} />
+                  <span className="max-md:hidden">{tool.label}</span>
                 </EditorButton>
               )
             })}
           </div>
-          <Divider className="max-md:hidden" />
+          <Divider className="max-[880px]:hidden" />
           <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1.5">
             <SlabButtons />
             <Divider className="max-[379px]:hidden" />
@@ -118,6 +124,7 @@ export function ToolPill() {
             {activeTool === 'guide' && <AddAllGhosts />}
           </div>
         )}
+        {activeTool === 'band' && <BandOptions />}
         {(activeTool === 'channel' || activeTool === 'slice') && (
           <div className="flex justify-center border-t border-border px-3 py-2">
             <div className="w-56 max-w-full">
@@ -154,6 +161,77 @@ function AddAllGhosts() {
     >
       Add all {pinned?.count ?? ''}
     </EditorButton>
+  )
+}
+
+/**
+ * The next band's fit and the fit's setting, labelled so: the band just made
+ * is selected, and the bar below shows its own, alike. The tool's preview
+ * follows a slider as it moves.
+ */
+function BandOptions() {
+  const band = useLogoStore((s) => s.ui.band)
+  const setBandSettings = useLogoStore((s) => s.setBandSettings)
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 border-t border-border p-1.5" role="group" aria-label="Next band">
+      <div className="flex items-center gap-2">
+        <OptionLabel>Next band</OptionLabel>
+        <BandFitControl fit={band.fit} onChange={(fit) => setBandSettings({ fit })} />
+      </div>
+      <BandSettingControl
+        fit={band.fit}
+        values={band}
+        onInput={(update) => setBandSettings(update)}
+        onChange={(update) => setBandSettings(update)}
+        className="w-44 max-w-full px-1.5"
+      />
+    </div>
+  )
+}
+
+/** Each tool's icon, drawn on a 14-unit grid in the text colour, for the narrow pill. */
+const TOOL_ICONS: Record<string, React.ReactNode> = {
+  select: <path d="M3.5 2v9.5l2.6-2.4 1.8 3.9 1.6-.7-1.8-3.9h3.5z" fill="currentColor" stroke="none" />,
+  pen: (
+    <>
+      <path d="M2.5 11.5l1.2-4 5.5-5.5 2.8 2.8-5.5 5.5z" />
+      <circle cx="6.3" cy="7.7" r="0.9" fill="currentColor" stroke="none" />
+    </>
+  ),
+  punch: (
+    <>
+      <circle cx="7" cy="7" r="5" />
+      <circle cx="7" cy="7" r="1.8" fill="currentColor" stroke="none" />
+    </>
+  ),
+  channel: <path d="M2 5h10M2 9h10M2 5a2 2 0 0 0 0 4M12 5a2 2 0 0 1 0 4" />,
+  slice: <path d="M1.5 12.5l11-11M4 12.5l8.5-8.5" />,
+  guide: <path d="M1 7h12" strokeDasharray="2 1.6" />,
+  band: (
+    <>
+      <circle cx="3.8" cy="7" r="2.5" />
+      <circle cx="10.2" cy="7" r="2.5" />
+      <path d="M3.8 4.5h6.4M3.8 9.5h6.4" />
+    </>
+  ),
+}
+
+function ToolIcon({ tool }: { tool: string | null }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className="md:hidden"
+    >
+      {TOOL_ICONS[tool ?? 'select']}
+    </svg>
   )
 }
 

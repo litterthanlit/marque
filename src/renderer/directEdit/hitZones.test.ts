@@ -444,3 +444,26 @@ describe('guide hit zones', () => {
     expect(findZone({ ...withGuides(false), guideHandles: [handle] }, { x: 191, y: 41 })).toEqual({ kind: 'guide-handle', handle })
   })
 })
+
+describe('a band over its circles', () => {
+  const a = recipeLayer('A', slabSpec('circle', { x: -100, y: 0 }, 0.5), 'add')
+  const b = recipeLayer('B', slabSpec('circle', { x: 150, y: 0 }, 0.2), 'add')
+  const beltSpec: CarveSpec = { v: 1, kind: 'band', a: { c: { x: -100, y: 0 }, r: 100 }, b: { c: { x: 150, y: 0 }, r: 40 }, fit: 'belt' }
+  const belt: IllustratorLayer = { ...recipeLayer('belt', beltSpec, 'add'), link: { kind: 'band', a: 'A', b: 'B' } }
+
+  it('gives a press inside either circle to that circle, even the selected one, and the band only between them', () => {
+    expect(findZone(context([], [a, b, belt]), { x: 150, y: 0 })).toEqual({ kind: 'body', layerId: 'B' })
+    expect(findZone(context(['B'], [a, b, belt]), { x: 160, y: 10 })).toEqual({ kind: 'body', layerId: 'B' })
+    expect(findZone(context(['belt'], [a, b, belt]), { x: -100, y: 0 })).toEqual({ kind: 'body', layerId: 'A' })
+    expect(findZone(context([], [a, b, belt]), { x: 50, y: 50 })).toEqual({ kind: 'body', layerId: 'belt' })
+  })
+
+  it('keeps a press inside a locked circle for the band, which says why it stays', () => {
+    expect(findZone(context([], [a, { ...b, locked: true }, belt]), { x: 150, y: 0 })).toEqual({ kind: 'body', layerId: 'belt' })
+  })
+
+  it('leaves a detached band its whole body', () => {
+    const detached = { ...belt, link: undefined }
+    expect(findZone(context([], [a, b, detached]), { x: 150, y: 0 })).toEqual({ kind: 'body', layerId: 'belt' })
+  })
+})

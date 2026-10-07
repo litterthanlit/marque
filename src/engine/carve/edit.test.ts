@@ -329,7 +329,7 @@ describe('a recipe carried by a map', () => {
         expect(outline[i].p.x).toBeCloseTo(seg.p.x, 6)
         expect(outline[i].p.y).toBeCloseTo(seg.p.y, 6)
       })
-      if (!isGroove(next)) expect(next.rotation).toBe(60)
+      if (!isGroove(next) && next.kind !== 'band') expect(next.rotation).toBe(60)
       const rounded = roundCarveSpec(next)
       expect(isObjectCarveValid(rounded, [segsToContour(carveOutline(rounded).segs)])).toBe(true)
     }

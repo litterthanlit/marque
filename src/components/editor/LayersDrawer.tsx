@@ -4,29 +4,45 @@ import { cn } from '../../lib/utils.ts'
 import { EditorButton, FOCUS_RING, SwitchButton } from './controls.tsx'
 import { isBlankDocument } from '../../engine/vector/document.ts'
 import { guideRows } from '../../engine/vector/guides.ts'
-import { layerNumber } from './layerNumber.ts'
+import { bandEnds, layerNumber } from './layerNumber.ts'
 import { offsetName } from '../../engine/vector/offsets.ts'
-import type { IllustratorLayer } from '../../engine/illustrator/types.ts'
+import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
+import { bandsOf } from '../../engine/vector/bands.ts'
 
 /**
  * How a row names a layer. An offset copy is named for what it follows, by
  * that layer's number, "Inset −55 · 03", and says so when nothing is left of
- * it at its distance; anything else by its own name. `shown` is the name as
- * the row draws it, the dot between thin spaces so that a long distance
- * and the number it follows fit the desktop drawer whole. `copies` numbers
- * the copies that follow the layer, as the bar's "Copies 03" does; the row
- * draws them short, after a glyph, and they give way to the name.
+ * it at its distance; a band by its fit and its circles, "Band · belt · 02,
+ * 05", and says so while they allow it no fit; anything else by its own
+ * name. A band's row shows its fit alone, "Belt", after the link glyph,
+ * and its circles are `ends`, drawn in a column of their own that never
+ * gives way. `shown` is the name as the row draws it, the dot between thin spaces
+ * so that a long distance and the number it follows fit the desktop drawer
+ * whole. `copies` numbers the copies that follow the layer, as the bar's
+ * "Copies 03" does, and `bands` the bands; the row draws them short, after
+ * a glyph, and they give way to the name.
  */
 function rowName(
-  layers: readonly IllustratorLayer[],
+  doc: IllustratorDocument,
   layer: IllustratorLayer,
-): { name: string; shown: string; follows: string | null; empty: boolean; copies: string[] } {
+): { name: string; shown: string; follows: string | null; ends: string | null; endsShown: string | null; empty: boolean; copies: string[]; bands: string[] } {
+  const layers = doc.layers
   const copies = layers.flatMap((each, index) => (each.link?.kind === 'offset' && each.link.of === layer.id ? [String(index + 1).padStart(2, '0')] : []))
+  const bands = bandsOf(layers, layer.id).map((id) => layerNumber(layers, id)!)
+  if (layer.link?.kind === 'band' && layer.carve?.kind === 'band') {
+    // The circles' numbers take a column of their own, after the fit, which gives way first.
+    const ends = bandEnds(doc, layer.link).join(', ')
+    const what = `Band · ${layer.carve.fit}`
+    // Short on the row, where the link glyph says it follows: "Strip", the circles after it, a guide as "g11".
+    const fit = layer.carve.fit
+    const endsShown = bandEnds(doc, layer.link, true).join(', ')
+    return { name: `${what} · ${ends}`, shown: fit[0].toUpperCase() + fit.slice(1), follows: ends, ends, endsShown, empty: !layer.pathData, copies, bands }
+  }
   const link = layer.link?.kind === 'offset' ? layer.link : null
-  if (!link) return { name: layer.name, shown: layer.name, follows: null, empty: false, copies }
+  if (!link) return { name: layer.name, shown: layer.name, follows: null, ends: null, endsShown: null, empty: false, copies, bands }
   const number = layerNumber(layers, link.of) ?? '—'
   const what = offsetName(link.distance)
-  return { name: `${what} · ${number}`, shown: `${what}\u2009·\u2009${number}`, follows: number, empty: !layer.pathData, copies }
+  return { name: `${what} · ${number}`, shown: `${what}\u2009·\u2009${number}`, follows: number, ends: null, endsShown: null, empty: !layer.pathData, copies, bands }
 }
 
 /** A chain link: the row follows another layer. Broken, it follows one but nothing is left of it. */
@@ -46,6 +62,27 @@ function LinkGlyph({ broken }: { broken: boolean }) {
           <path d="M5.7 8.6l-1 1a2 2 0 0 1-2.8-2.8l1-1" />
         </>
       )}
+    </svg>
+  )
+}
+
+/** A band its circles allow no fit: a circle struck through. */
+function NoFitGlyph() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" aria-hidden="true" className="inline-block align-[-1px]">
+      <circle cx="6" cy="6" r="4.3" />
+      <path d="M3 9l6-6" />
+    </svg>
+  )
+}
+
+/** Bands follow the row: two circles joined. */
+function BandsGlyph() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" aria-hidden="true" className="mr-0.5 inline-block align-[-1px]">
+      <circle cx="3" cy="6" r="2.2" />
+      <circle cx="9" cy="6" r="2.2" />
+      <path d="M3 3.8h6M3 8.2h6" />
     </svg>
   )
 }
@@ -155,7 +192,7 @@ export function LayersDrawer() {
               const index = top - reverseIndex
               const selected = illustrator.selectedLayerIds.includes(layer.id)
               const number = String(index + 1).padStart(2, '0')
-              const row = rowName(layers, layer)
+              const row = rowName(illustrator, layer)
               // Slabs share a name: the position tells two rows apart.
               const name = `${number} ${row.name}`
               return (
@@ -181,17 +218,39 @@ export function LayersDrawer() {
                   <button
                     type="button"
                     aria-pressed={selected}
-                    aria-label={`${row.empty ? `${name}, empty` : name}${row.copies.length ? `, copies ${row.copies.join(', ')}` : ''}`}
+                    aria-label={`${row.empty ? `${name}, ${layer.link?.kind === 'band' ? 'no fit' : 'empty'}` : name}${row.copies.length ? `, copies ${row.copies.join(', ')}` : ''}${row.bands.length ? `, bands ${row.bands.join(', ')}` : ''}`}
                     onClick={(event) => selectIllustratorLayer(layer.id, event.shiftKey || event.metaKey)}
                     className={cn(
                       'flex h-7 min-w-0 flex-1 items-center rounded-md px-1.5 text-left text-xs text-sidebar-text transition-colors hover:bg-interactive-hover hover:text-fg',
                       FOCUS_RING,
                     )}
-                    title={row.empty ? 'Nothing is left of it at this distance: it comes back when its shape grows' : undefined}
+                    title={
+                      row.empty
+                        ? layer.link?.kind === 'band'
+                          ? 'No fit: its circles allow this band none, or one is not a circle. It comes back when they do'
+                          : 'Nothing is left of it at this distance: it comes back when its shape grows'
+                        : row.ends !== null
+                          ? name
+                          : undefined
+                    }
                   >
-                    {/* The name keeps its room; the copies after it give way first, whole in the title and label. */}
-                    <span className="min-w-0 max-w-full shrink-0 truncate">
-                      <span className="font-mono-tabular text-sidebar-muted">{number}</span>{' '}
+                    {/*
+                      The name keeps its room; the copies after it give way first, whole in the title and label. A band's
+                      fit gives way instead, before its own number, the circles' numbers and its "no fit" flag, which never
+                      do: a guide among its circles is written short, "g11", to leave them room.
+                    */}
+                    {row.ends !== null && (
+                      <span className="shrink-0 font-mono-tabular text-sidebar-muted">
+                        {number}
+                        {'\u00a0'}
+                      </span>
+                    )}
+                    <span className={cn('min-w-0 max-w-full truncate', row.ends === null && 'shrink-0')}>
+                      {row.ends === null && (
+                        <>
+                          <span className="font-mono-tabular text-sidebar-muted">{number}</span>{' '}
+                        </>
+                      )}
                       {row.follows && (
                         <span title={row.empty ? undefined : `Follows ${row.follows}`} className={cn(row.empty && 'text-rose-300')}>
                           <LinkGlyph broken={row.empty} />
@@ -199,10 +258,27 @@ export function LayersDrawer() {
                       )}
                       {row.shown}
                     </span>
+                    {row.endsShown !== null && (
+                      <span className="shrink-0 whitespace-nowrap">
+                        {'\u2009·\u2009'}
+                        <span className="font-mono-tabular">{row.endsShown}</span>
+                      </span>
+                    )}
+                    {row.ends !== null && row.empty && (
+                      <span className="ml-1 shrink-0 text-rose-300" title="No fit">
+                        <NoFitGlyph />
+                      </span>
+                    )}
                     {row.copies.length > 0 && (
                       <span className="ml-1.5 min-w-0 truncate text-sidebar-muted" title={`Copies ${row.copies.join(', ')} follow this shape`}>
                         <CopiesGlyph />
                         <span className="font-mono-tabular">{row.copies.join(', ')}</span>
+                      </span>
+                    )}
+                    {row.bands.length > 0 && (
+                      <span className="ml-1.5 min-w-0 truncate text-sidebar-muted" title={`Bands ${row.bands.join(', ')} follow this circle`}>
+                        <BandsGlyph />
+                        <span className="font-mono-tabular">{row.bands.join(', ')}</span>
                       </span>
                     )}
                   </button>

@@ -102,6 +102,11 @@ export type ConstructionRole =
   | 'circumcircle'
   | 'incircle'
   | `axis-${number}`
+  /** A band's line through its circles' centres. */
+  | 'centre-line'
+  /** A band's edges: a belt's tangents, a bar's or strip's sides, a neck's arc circles. */
+  | 'edge-1'
+  | 'edge-2'
 
 /** A construction line. Guides are never composed, exported or hit as material. */
 export interface Guide {

@@ -40,8 +40,8 @@ export function EditorButton({ pressed, danger, primary, className, children, ..
 
 interface SegmentedProps<T extends string | number> {
   label: string
-  /** Each option, with a tooltip when it has a shortcut or a note. */
-  options: ReadonlyArray<{ value: T; label: string; title?: string }>
+  /** Each option, with a tooltip when it has a shortcut or a note; a disabled one says why in its tooltip. */
+  options: ReadonlyArray<{ value: T; label: string; title?: string; disabled?: boolean }>
   value: T
   onChange: (value: T) => void
   className?: string
@@ -56,11 +56,12 @@ export function Segmented<T extends string | number>({ label, options, value, on
           type="button"
           aria-pressed={value === option.value}
           title={option.title}
+          disabled={option.disabled}
           onClick={() => onChange(option.value)}
           className={cn(
-            'h-7 flex-1 rounded-md px-2.5 text-xs transition-colors',
+            'h-7 flex-1 rounded-md px-2.5 text-xs transition-colors disabled:cursor-default disabled:opacity-40',
             FOCUS_RING,
-            value === option.value ? 'bg-interactive text-fg shadow-sm' : 'text-sidebar-text hover:text-fg',
+            value === option.value ? 'bg-interactive text-fg shadow-sm' : 'text-sidebar-text enabled:hover:text-fg',
           )}
         >
           {option.label}

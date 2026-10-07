@@ -84,7 +84,7 @@ function createDevHook() {
       const frame = canvasFrame()
       if (!spec || !frame || layer.link?.kind === 'offset') return []
       const outline = carveOutline(spec).frame
-      return outline.kind === 'box' ? outline.cornerCircles.map((circle) => ({ ...frame.toClient(circle.c), r: circle.r * frame.unit })) : []
+      return outline.kind !== 'groove' ? outline.cornerCircles.map((circle) => ({ ...frame.toClient(circle.c), r: circle.r * frame.unit })) : []
     },
 
     /** A point on a channel's or slice's spine and the unit normal there, in client space. */
