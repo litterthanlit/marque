@@ -2336,10 +2336,22 @@ describe('groups in the store', () => {
     expect(roots()).toEqual(['a', 'b'])
   })
 
+  it('ungroups a group selected beside one of its own members with each member in the selection once', () => {
+    open([group('g'), path('a', -100, 0, 50, { parentId: 'g' }), path('b', 100, 0, 50, { parentId: 'g' })])
+    useLogoStore.getState().setSelection(['g', 'a'])
+    useLogoStore.getState().ungroupSelection()
+    expect(order()).toEqual(['a', 'b'])
+    expect(useLogoStore.getState().selection.targets).toEqual([
+      { type: 'object', objectId: 'a' },
+      { type: 'object', objectId: 'b' },
+    ])
+    expect(roots()).toEqual(['a', 'b'])
+  })
+
   it('refuses Cmd+G with a cut between that gathering would let change the mark, and says which', () => {
     open([path('a', -100, 0, 50), path('cut', -100, 0, 20, { operation: 'subtract' }), path('b', 100, 0, 50)])
     useLogoStore.getState().setSelection(['a', 'b'])
-    expect(groupRefusalOf(useLogoStore.getState())).toEqual({ words: 'Cut 02 lies between them', blocker: 'cut' })
+    expect(groupRefusalOf(useLogoStore.getState())).toEqual({ words: 'Cut 02 lies between them — group and isolate it first, or move it', blocker: 'cut' })
     const before = objects()
     useLogoStore.getState().groupSelection()
     expect(objects()).toBe(before)

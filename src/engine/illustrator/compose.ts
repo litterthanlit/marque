@@ -98,6 +98,9 @@ export type StackUnit =
   | { kind: 'layer'; layer: IllustratorLayer }
   | { kind: 'group'; group: IllustratorGroup; units: StackUnit[]; layers: IllustratorLayer[] }
 
+/** An isolated group in the stack. */
+export type GroupUnit = Extract<StackUnit, { kind: 'group' }>
+
 export function stackUnits(doc: IllustratorDocument): StackUnit[] {
   const groups = doc.groups
   if (!groups?.some((group) => group.isolated)) return doc.layers.map((layer) => ({ kind: 'layer', layer }))
@@ -115,14 +118,14 @@ export function stackUnits(doc: IllustratorDocument): StackUnit[] {
     return chain
   }
   const root: StackUnit[] = []
-  const open: Array<Extract<StackUnit, { kind: 'group' }>> = []
+  const open: GroupUnit[] = []
   for (const layer of doc.layers) {
     const chain = isolatedChain(layer.parentId)
     let depth = 0
     while (depth < open.length && depth < chain.length && open[depth].group === chain[depth]) depth++
     open.length = depth
     for (let i = depth; i < chain.length; i++) {
-      const unit: Extract<StackUnit, { kind: 'group' }> = { kind: 'group', group: chain[i], units: [], layers: [] }
+      const unit: GroupUnit = { kind: 'group', group: chain[i], units: [], layers: [] }
       ;(open.at(-1)?.units ?? root).push(unit)
       open.push(unit)
     }
@@ -183,13 +186,15 @@ const RECENT_GROUPS = 32
  * null to leave it out. An isolated group's members compose alone, so a cut
  * among them reaches only the members below it, and the result enters as
  * one input with the group's operation. With `cached`, a group composed
- * from the very same layers before is not composed again. A boolean step
- * that fails inside a group is added to `warnings`, when given.
+ * from the very same layers before is not composed again; given as a
+ * test, only the groups it passes are, at any depth, and the others are
+ * composed afresh. A boolean step that fails inside a group is added to
+ * `warnings`, when given.
  */
 export function stackInputs(
   units: StackUnit[],
   pathOf: (layer: IllustratorLayer) => BooleanInput | null,
-  cached = true,
+  cached: boolean | ((unit: GroupUnit) => boolean) = true,
   warnings?: string[],
 ): BooleanInput[] {
   const inputs: BooleanInput[] = []
@@ -200,7 +205,8 @@ export function stackInputs(
       continue
     }
     if (!unit.group.visible) continue
-    const composed = cached ? cachedGroupPath(unit, pathOf) : composeGroup(unit, pathOf, false)
+    const fromCache = typeof cached === 'function' ? cached(unit) : cached
+    const composed = fromCache ? cachedGroupPath(unit, pathOf) : composeGroup(unit, pathOf, cached)
     warnings?.push(...composed.warnings)
     if (composed.pathData) inputs.push({ pathData: composed.pathData, operation: unit.group.operation })
   }
@@ -208,9 +214,9 @@ export function stackInputs(
 }
 
 function composeGroup(
-  unit: Extract<StackUnit, { kind: 'group' }>,
+  unit: GroupUnit,
   pathOf: (layer: IllustratorLayer) => BooleanInput | null,
-  cached: boolean,
+  cached: boolean | ((unit: GroupUnit) => boolean),
 ): { pathData: string; warnings: string[] } {
   const warnings: string[] = []
   const result = composeOrderedPaths(stackInputs(unit.units, pathOf, cached, warnings))
@@ -223,7 +229,7 @@ function groupKey(units: StackUnit[]): unknown[] {
 }
 
 function cachedGroupPath(
-  unit: Extract<StackUnit, { kind: 'group' }>,
+  unit: GroupUnit,
   pathOf: (layer: IllustratorLayer) => BooleanInput | null,
 ): { pathData: string; warnings: string[] } {
   const key = groupKey(unit.units)

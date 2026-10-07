@@ -4285,6 +4285,26 @@ async function barBetween(page: Page, f: Frame, one: [number, number, number], t
 }
 
 const hudStatus = (page: Page) => page.locator('main p[role="status"]')
+const hudRow = (page: Page) => page.locator('[data-hud-row]')
+
+/**
+ * How the HUD's row lies on the canvas: inside it, 12 px clear of every
+ * edge; on how many lines its words wrap; and whether they show whole,
+ * nothing of them clipped.
+ */
+async function hudRowFits(page: Page): Promise<{ inside: boolean; lines: number; whole: boolean }> {
+  return hudRow(page).evaluate((row) => {
+    const outer = row.parentElement!.getBoundingClientRect()
+    const inner = row.getBoundingClientRect()
+    const margin = 12 - 0.5
+    const inside =
+      inner.left >= outer.left + margin && inner.top >= outer.top + margin && inner.right <= outer.right - margin && inner.bottom <= outer.bottom - margin
+    const label = row.firstElementChild as HTMLElement
+    const style = getComputedStyle(label)
+    const lines = Math.round((label.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)) / parseFloat(style.lineHeight))
+    return { inside, lines, whole: label.scrollHeight <= label.clientHeight && label.scrollWidth <= label.clientWidth }
+  })
+}
 
 test("an offset copy of a band, dragged or nudged, moves the band's circles, the band still following them; a locked circle holds it, and a band between guides says to move them", async ({ page }) => {
   await openVectorMaker(page)
@@ -4570,9 +4590,9 @@ test("ref 3's upper half, built as two isolated groups, keeps the sheet points a
   expect(await selectedRoots(page)).toEqual([right, rightCut])
   const depth = await undoDepth(page)
   await page.keyboard.press('ControlOrMeta+g')
-  await expect(hudStatus(page)).toHaveText('Cut 03 lies between them')
+  await expect(hudStatus(page)).toHaveText('Cut 03 lies between them — group and isolate it first, or move it')
   expect(await undoDepth(page)).toBe(depth)
-  await expect(bar.getByRole('button', { name: 'Group: Cut 03 lies between them' })).toBeDisabled()
+  await expect(bar.getByRole('button', { name: 'Group: Cut 03 lies between them — group and isolate it first, or move it' })).toBeDisabled()
 
   // The left half with its own circle: nothing of the other operation lies between them.
   await click(page, f.at(-160, 70))
@@ -4646,7 +4666,7 @@ test('Cmd+G is refused while a cut lies between, groups once it does not, and Un
   expect(await selectedRoots(page)).toEqual([ids[0], ids[1]])
   const depth = await undoDepth(page)
   await page.keyboard.press('ControlOrMeta+g')
-  await expect(hudStatus(page)).toHaveText('Cut 02 lies between them')
+  await expect(hudStatus(page)).toHaveText('Cut 02 lies between them — group and isolate it first, or move it')
   expect(await groupsIn(page)).toEqual([])
   expect(await undoDepth(page)).toBe(depth)
   await expect(bar.getByRole('button', { name: /^Group: / })).toBeDisabled()
@@ -4725,6 +4745,15 @@ test('a dropped spark is one isolated group: a click selects it, a double-click 
   expect(await selectedRoots(page)).toEqual([probe!.id])
   expect(await enteredGroup(page)).toBe(group.id)
   await expect(selectionSummary(page)).not.toContainText('pieces')
+  // The group's name before the piece's in the bar is a button like the bar's others: one press back to the group.
+  const back = selectionBar(page).getByRole('button', { name: `Select group ${group.name}`, exact: true })
+  await expect(back).toContainText(group.name)
+  await back.click()
+  expect(await selectedRoots(page)).toEqual([group.id])
+  expect(await enteredGroup(page)).toBeNull()
+  await page.waitForTimeout(400)
+  await page.mouse.dblclick(f.at(probe!.x, probe!.y).x, f.at(probe!.x, probe!.y).y)
+  expect(await selectedRoots(page)).toEqual([probe!.id])
   // Inside the group, a click on another piece picks that piece.
   await page.keyboard.press('Escape')
   expect(await selectedRoots(page)).toEqual([group.id])
@@ -4825,16 +4854,11 @@ test('the layers drawer shows groups as a tree: a spark folded, a group of yours
   await expect(rows).toHaveCount(1)
 })
 
-/** How a group row's count shows on its one line: whole, gone to the line below that is never seen, or cut through. */
-async function countSeen(name: Locator): Promise<'whole' | 'gone' | 'cut'> {
-  const count = name.locator('[data-count]')
-  const [line, shown] = [(await count.locator('..').boundingBox())!, (await count.boundingBox())!]
-  if (shown.y >= line.y + line.height - 0.5) return 'gone'
-  const inside = shown.x >= line.x - 0.5 && shown.x + shown.width <= line.x + line.width + 0.5 && shown.y >= line.y - 0.5 && shown.y + shown.height <= line.y + line.height + 0.5
-  return inside ? 'whole' : 'cut'
-}
+/** Does the inner box lie inside the outer one? */
+const within = (inner: Box, outer: Box) =>
+  inner.x >= outer.x - 0.5 && inner.y >= outer.y - 0.5 && inner.x + inner.width <= outer.x + outer.width + 0.5 && inner.y + inner.height <= outer.y + outer.height + 0.5
 
-test("the drawer's group rows keep their isolation glyph, their count whole or not at all, and a band inside a group its fit", async ({ page }) => {
+test("the drawer's rows keep what tells them apart: a group's isolation glyph and count whole, its name giving way first, and a band's fit", async ({ page }) => {
   await openVectorMaker(page)
   await startOver(page)
   // Ref 3's upper half, as two isolated groups; then two circles grouped, with a band between them; then sparks, below.
@@ -4867,53 +4891,200 @@ test("the drawer's group rows keep their isolation glyph, their count whole or n
   })
   await dealSparks(page, 1)
   for (const n of [1, 2, 3, 4]) await sparkButton(page, n).click()
+  expect(await groupsIn(page)).toHaveLength(7)
+  // The two lowest sparks grouped together: a group holding groups, its sparks a level in.
+  await page.evaluate(() => {
+    const state = () => window.__marque.store.getState()
+    const roots = state().vectorDocument.objects.filter((object) => object.parentId === null)
+    state().setSelection(roots.slice(0, 2).map((object) => object.id))
+    state().groupSelection()
+    state().setSelection([])
+  })
   const groups = await groupsIn(page)
-  expect(groups).toHaveLength(7)
+  expect(groups).toHaveLength(8)
   const drawer = await openLayers(page)
   const rows = drawer.getByRole('listitem')
 
   const groupRows = rows.filter({ has: page.locator('button[aria-expanded]') })
-  await expect(groupRows).toHaveCount(7)
+  await expect(groupRows).toHaveCount(8)
   for (const row of await groupRows.all()) {
-    const name = row.getByRole('button', { name: /^\d\d .*, \d+ pieces?/ })
+    const name = row.getByRole('button', { name: /^\d\d(\.\d)? .*, \d+ pieces?/ })
     const label = (await name.getAttribute('aria-label'))!
-    // The name is whole: a spark's kind too, "Modular" and never "Modul…".
-    expect(await name.locator('.truncate').evaluate((span) => span.scrollWidth - span.clientWidth), label).toBeLessThanOrEqual(0)
-    // The count is whole beside it, or not seen at all: never cut through.
-    expect(await countSeen(name), `${label}: its count`).not.toBe('cut')
-    // An isolated group says so with a glyph that never gives way, in its Add or Cut column; a shared one leaves the column empty.
-    const operation = row.getByRole('button', { name: /material as one/ })
+    const group = groups.find((each) => label.startsWith(`${label.split(' ')[0]} ${each.name},`))!
+    const level = Number(await row.getAttribute('aria-level'))
+    // The name gives way first, with an ellipsis, whole in the row's title; at the first level it is whole, a spark's kind too, "Modular" and never "Modul…".
+    // Neither the name nor the count has a title of its own, which would hide the row's, with its way to a piece.
+    const shown = name.locator('.truncate')
+    const title = (await name.getAttribute('title'))!
+    expect(title.startsWith(`${label.split(' ')[0]} ${group.name}, `), title).toBe(true)
+    expect(title.endsWith('Double-click a piece on the canvas to work on it alone'), title).toBe(true)
+    expect(await name.evaluate((button) => button.querySelectorAll('[title]').length), label).toBe(0)
+    await expect(shown).toHaveCSS('text-overflow', 'ellipsis')
+    if (level === 1) expect(await shown.evaluate((span) => span.scrollWidth - span.clientWidth), label).toBeLessThanOrEqual(0)
+    // How many pieces it holds, every layer inside as the bar counts them, in a column of its own, always whole.
+    const count = name.locator('[data-count]')
+    await expect(count).toHaveText(label.match(/, (\d+) pieces?/)![1])
+    expect(await count.evaluate((span) => span.scrollWidth - span.clientWidth), `${label}: its count`).toBeLessThanOrEqual(0)
+    expect(within((await count.boundingBox())!, (await name.boundingBox())!), `${label}: its count`).toBe(true)
+    // An isolated group says so with a glyph in that column, which never gives way; a shared one has none.
+    const glyph = count.locator('svg')
     if (label.includes('isolates cuts')) {
-      const glyph = (await operation.locator('svg').boundingBox())!
-      const column = (await operation.boundingBox())!
-      expect(glyph.width, `${label}: its glyph`).toBeGreaterThan(5)
-      expect(glyph.x).toBeGreaterThanOrEqual(column.x - 0.5)
-      expect(glyph.x + glyph.width).toBeLessThanOrEqual(column.x + column.width + 0.5)
-    } else await expect(operation).toHaveCount(0)
+      const box = (await glyph.boundingBox())!
+      expect(box.width, `${label}: its glyph`).toBeGreaterThan(5)
+      expect(within(box, (await count.boundingBox())!)).toBe(true)
+      await expect(row.getByRole('button', { name: /material as one/ })).toHaveText(/^(Add|Cut)$/)
+    } else {
+      await expect(glyph).toHaveCount(0)
+      await expect(row.getByRole('button', { name: /material as one/ })).toHaveCount(0)
+    }
   }
-  // With room for it, the count shows: the two halves' groups read "· 2".
-  for (const n of ['1', '2']) expect(await countSeen(drawer.getByRole('button', { name: new RegExp(`^\\d\\d Group ${n}, 2 pieces`) }))).toBe('whole')
+  // The group of sparks counts every layer in them, as the bar does.
+  const sparkPieces = await page.evaluate(() => {
+    const objects = window.__marque.store.getState().vectorDocument.objects
+    const outer = objects.find((object) => object.type === 'group' && object.name.startsWith('Group 4'))!
+    const inner = new Set(objects.filter((object) => object.parentId === outer.id).map((object) => object.id))
+    return objects.filter((object) => object.type !== 'group' && object.parentId !== null && inner.has(object.parentId)).length
+  })
+  await expect(drawer.getByRole('button', { name: new RegExp(`^01 Group 4, ${sparkPieces} pieces`) })).toBeVisible()
 
-  // The band inside the circles' group shows its fit, and its circles by their places in the group, clear of ↑.
+  // The band inside the circles' group shows its link glyph and its fit whole, and its circles by their places in the group.
   const band = drawer.getByRole('button', { name: /^0\d\.3 Band · bar · 0\d\.1, 0\d\.2$/ })
   await expect(band).toBeVisible()
   await expect(band).toContainText('Bar')
   await expect(band).toContainText('.1, .2')
+  expect((await band.locator('svg').first().boundingBox())!.width).toBeGreaterThan(5)
   const fit = band.getByText('Bar', { exact: true })
   expect(await fit.evaluate((span) => span.scrollWidth - span.clientWidth)).toBeLessThanOrEqual(0)
-  // No row's name runs into its ↑.
+  await expectNamesClear(rows)
+  await closeLayers(page)
+})
+
+/** No row's name runs past its own button, and none into what follows it, its lock or its ↑. */
+async function expectNamesClear(rows: Locator) {
   for (const row of await rows.all()) {
-    const up = (await row.getByRole('button', { name: /^Move .* up$/ }).boundingBox())!
-    const ends = await row.evaluate((li) => {
-      const name = [...li.querySelectorAll('button')].find((button) => button.hasAttribute('aria-pressed') && !button.getAttribute('aria-label')!.startsWith('Add ') && !button.getAttribute('aria-label')!.startsWith('Take ') && !/^(Lock|Unlock) /.test(button.getAttribute('aria-label')!))!
-      return [...name.querySelectorAll(':scope > span')].map((span) => {
+    const past = await row.evaluate((li) => {
+      const name = [...li.querySelectorAll('button')].find((button) => button.hasAttribute('aria-pressed') && !/^(Add|Take|Lock|Unlock) /.test(button.getAttribute('aria-label')!))!
+      const area = name.parentElement === li ? name : name.parentElement!
+      const next = area.nextElementSibling!.getBoundingClientRect().left
+      const right = name.getBoundingClientRect().right
+      const ends = [...name.querySelectorAll(':scope > span')].map((span) => {
         const box = span.getBoundingClientRect()
         // What is clipped by its own box is not seen past it.
         return box.width > 0 ? box.right : -Infinity
       })
+      return { overButton: Math.max(...ends) - right, overNext: right - next }
     })
-    expect(Math.max(...ends), await row.innerText()).toBeLessThanOrEqual(up.x + 0.5)
+    expect(past.overButton, await row.innerText()).toBeLessThanOrEqual(0.5)
+    expect(past.overNext, await row.innerText()).toBeLessThanOrEqual(0.5)
   }
+}
+
+test("a band deep in groups keeps its number, link glyph and fit; its circles' numbers give way first, whole one group in on a desktop, and nothing runs into ↑", async ({ page }, testInfo) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  const ids = await circleSlabs(page, [
+    [-220, 0, 40],
+    [-120, 0, 40],
+    [60, 150, 25],
+    [140, 150, 25],
+  ])
+  // Two circles grouped with a strip between them, one level in.
+  await page.evaluate((list) => {
+    const state = () => window.__marque.store.getState()
+    state().setSelection([list[0], list[1]])
+    state().groupSelection()
+    state().addBand(list[0], list[1])
+    state().setBand(state().illustrator.layers.find((layer) => layer.link?.kind === 'band')!.id, { fit: 'strip' })
+    state().setSelection([])
+  }, ids)
+  const drawer = await openLayers(page)
+  const rows = drawer.getByRole('listitem')
+  const band = drawer.getByRole('button', { name: /^01\.3 Band · strip · 01\.1, 01\.2$/ })
+  const fit = band.getByText('Strip', { exact: true })
+  const ends = band.locator('[data-ends]')
+  expect(await ends.textContent()).toBe('\u2009·\u2009.1, .2')
+  await expect(ends).toHaveCSS('text-overflow', 'ellipsis')
+  expect(await fit.evaluate((span) => span.scrollWidth - span.clientWidth)).toBeLessThanOrEqual(0)
+  expect((await band.locator('svg').first().boundingBox())!.width).toBeGreaterThan(5)
+  // The desktop drawer has room for the circles' numbers whole one group in; so does the phone's sheet.
+  expect(await ends.evaluate((span) => span.scrollWidth - span.clientWidth), testInfo.project.name).toBeLessThanOrEqual(0)
+  await expectNamesClear(rows)
+
+  // Two groups further in, the circles' numbers give way, the fit still whole, and nothing runs into ↑.
+  await page.evaluate((list) => {
+    const state = () => window.__marque.store.getState()
+    for (const circle of list.slice(2)) {
+      const top = state().vectorDocument.objects.find((object) => object.type === 'group' && object.parentId === null)!
+      state().setSelection([top.id, circle])
+      state().groupSelection()
+    }
+    state().setSelection([])
+  }, ids)
+  const deep = drawer.getByRole('button', { name: /^01\.1\.1\.3 Band · strip · 01\.1\.1\.1, 01\.1\.1\.2$/ })
+  await expect(deep).toBeVisible()
+  expect(await deep.locator('xpath=ancestor::li[1]').getAttribute('aria-level')).toBe('4')
+  expect(await deep.getByText('Strip', { exact: true }).evaluate((span) => span.scrollWidth - span.clientWidth)).toBeLessThanOrEqual(0)
+  await expectNamesClear(rows)
+  await closeLayers(page)
+})
+
+test('members of a hidden or locked group show it in the drawer, and their own On / Off still sets their own', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  const ids = await circleSlabs(page, [
+    [-120, 0, 60],
+    [120, 0, 60],
+  ])
+  await page.evaluate((list) => {
+    const state = () => window.__marque.store.getState()
+    state().setSelection(list)
+    state().groupSelection()
+    state().setSelection([])
+  }, ids)
+  const drawer = await openLayers(page)
+  const members = drawer.getByRole('listitem').filter({ hasText: /^On\s*01\.\d/ })
+  await expect(members).toHaveCount(2)
+  await expect(drawer.getByRole('img', { name: /^Locked with its group/ })).toHaveCount(0)
+
+  await drawer.getByRole('button', { name: 'Hide 01 Group 1', exact: true }).click()
+  // Each member's On reads as its group's: dimmed, and saying which group hides it.
+  for (const n of [1, 2]) {
+    const own = drawer.getByRole('button', { name: new RegExp(`^Hide 01\\.${n} .*, hidden with its group 01$`) })
+    await expect(own).toHaveText('On')
+    await expect(own).toHaveAttribute('title', 'Hidden with its group 01')
+    await expect(own).toHaveClass(/text-sidebar-muted/)
+  }
+  await drawer.getByRole('button', { name: 'Show 01 Group 1', exact: true }).click()
+  await expect(drawer.getByRole('button', { name: /hidden with its group/ })).toHaveCount(0)
+  await expect(drawer.getByRole('button', { name: /^Hide 01\.1 / })).toHaveClass(/text-fg/)
+
+  // A member's label starts a step in from its group's, where the group's toggle puts it.
+  const labelX = (number: string) => drawer.getByText(number, { exact: true }).evaluate((span) => span.getBoundingClientRect().left)
+  const unlocked = { group: await labelX('01'), members: [await labelX('01.1'), await labelX('01.2')] }
+  for (const x of unlocked.members) {
+    expect(x - unlocked.group).toBeGreaterThan(4)
+    expect(x - unlocked.group).toBeLessThan(12)
+  }
+
+  // Locked, its members show a dimmed padlock saying so, in the group's lock column after the name, and their labels stay where they were.
+  await drawer.getByRole('button', { name: 'Lock 01 Group 1', exact: true }).click()
+  const padlocks = drawer.getByRole('img', { name: 'Locked with its group 01', exact: true })
+  await expect(padlocks).toHaveCount(2)
+  await expect(padlocks.first()).toHaveAttribute('title', 'Locked with its group 01')
+  await expect(padlocks.first()).toHaveClass(/text-sidebar-muted/)
+  const lockColumn = (await drawer.getByRole('button', { name: 'Unlock 01 Group 1', exact: true }).boundingBox())!
+  for (const padlock of await padlocks.all()) expect((await padlock.boundingBox())!.x).toBeCloseTo(lockColumn.x, 0)
+  expect(await labelX('01')).toBeCloseTo(unlocked.group, 0)
+  expect([await labelX('01.1'), await labelX('01.2')]).toEqual(unlocked.members)
+  await drawer.getByRole('button', { name: 'Unlock 01 Group 1', exact: true }).click()
+  await expect(padlocks).toHaveCount(0)
+
+  // A member's own On / Off, in a hidden group, sets its own.
+  await drawer.getByRole('button', { name: 'Hide 01 Group 1', exact: true }).click()
+  await drawer.getByRole('button', { name: /^Hide 01\.1 .*, hidden with its group 01$/ }).click()
+  const own = await page.evaluate((id) => window.__marque.store.getState().vectorDocument.objects.find((object) => object.id === id)!.visible, ids[0])
+  expect(own).toBe(false)
+  await expect(drawer.getByRole('button', { name: /^Show 01\.1 .*, hidden with its group 01$/ })).toHaveText('Off')
   await closeLayers(page)
 })
 
@@ -4966,38 +5137,45 @@ test.describe('groups on touch', () => {
   test.use({ hasTouch: true })
 
   test('the first tap that takes a whole group says how to reach a piece, inside the canvas and long enough to read', async ({ page }) => {
-    await openVectorMaker(page)
-    await startOver(page)
-    await page.evaluate(() => window.__marque.store.getState().setCarveSettings({ snapping: false }))
-    // A pair grouped in the middle of the canvas: the hint goes by the group's box, where neither side has room on a phone.
-    const ids = await circleSlabs(page, [
-      [-40, 0, 30],
-      [40, 0, 30],
-    ])
-    await page.evaluate((list) => {
-      const state = window.__marque.store.getState()
-      state.setSelection(list)
-      state.groupSelection()
-      window.__marque.store.getState().setSelection([])
-    }, ids)
-    const f = await frame(page)
-    await page.touchscreen.tap(f.at(-40, 0).x, f.at(-40, 0).y)
-    expect(await selectedRoots(page)).toEqual([(await groupsIn(page))[0].id])
-    const row = page.locator('[data-hud-row]')
-    const hint = row.getByText('Group selected: double-tap a piece to work on it alone', { exact: true })
-    await expect(hint).toBeVisible()
-    const inside = async () => {
-      const [outer, inner] = [(await row.locator('..').boundingBox())!, (await row.boundingBox())!]
-      return inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height
+    // Once going by itself after three seconds, once taken away sooner by the next press.
+    for (const ending of ['waits', 'pressed'] as const) {
+      await openVectorMaker(page)
+      await startOver(page)
+      await page.evaluate(() => window.__marque.store.getState().setCarveSettings({ snapping: false }))
+      // A pair grouped in the middle of the canvas: the hint goes by the group's box, where neither side has room on a phone.
+      const ids = await circleSlabs(page, [
+        [-40, 0, 30],
+        [40, 0, 30],
+      ])
+      await page.evaluate((list) => {
+        const state = window.__marque.store.getState()
+        state.setSelection(list)
+        state.groupSelection()
+        window.__marque.store.getState().setSelection([])
+      }, ids)
+      const f = await frame(page)
+      const tapped = Date.now()
+      await page.touchscreen.tap(f.at(-40, 0).x, f.at(-40, 0).y)
+      expect(await selectedRoots(page)).toEqual([(await groupsIn(page))[0].id])
+      const hint = hudRow(page).getByText('Group selected: double-tap a piece to work on it alone', { exact: true })
+      await expect(hint).toBeVisible()
+      const fits = await hudRowFits(page)
+      expect(fits).toMatchObject({ inside: true, whole: true })
+      expect(fits.lines).toBeLessThanOrEqual(2)
+      // Nine words take more than a moment to read: it is still there after two seconds.
+      await page.waitForTimeout(2000)
+      await expect(hint).toBeVisible()
+      expect((await hudRowFits(page)).inside).toBe(true)
+      if (ending === 'waits') {
+        // It goes by itself at three seconds.
+        await expect.poll(() => hint.isVisible(), { intervals: [100], timeout: 3000 }).toBe(false)
+        expect(Date.now() - tapped).toBeLessThan(3500)
+        continue
+      }
+      // The next press takes it away.
+      await page.touchscreen.tap(f.at(250, 250).x, f.at(250, 250).y)
+      await expect(hint).toBeHidden()
     }
-    expect(await inside()).toBe(true)
-    // Nine words take more than a moment to read: it is still there after two seconds.
-    await page.waitForTimeout(2000)
-    await expect(hint).toBeVisible()
-    expect(await inside()).toBe(true)
-    // The next press takes it away.
-    await page.touchscreen.tap(f.at(250, 250).x, f.at(250, 250).y)
-    await expect(hint).toBeHidden()
   })
 
   test('on a phone the sheet groups the rows picked in it, since it covers the bar, and says why when it cannot', async ({ page }) => {
@@ -5024,14 +5202,17 @@ test.describe('groups on touch', () => {
       return
     }
 
-    // The sheet says what is picked and why it cannot be grouped, and its Group says so too when tapped.
+    // The sheet says what is picked and why it cannot be grouped, in its footer, under the rows, and its Group says so too when tapped.
     await expect(picked).toContainText('2 selected')
-    await expect(picked).toContainText('Cut 02 lies between them')
-    const refused = picked.getByRole('button', { name: 'Group: Cut 02 lies between them' })
+    await expect(picked).toBeInViewport({ ratio: 1 })
+    const list = (await drawer.getByRole('list').first().boundingBox())!
+    expect((await picked.boundingBox())!.y).toBeGreaterThanOrEqual(list.y + list.height)
+    await expect(picked).toContainText('Cut 02 lies between them — group and isolate it first, or move it')
+    const refused = picked.getByRole('button', { name: 'Group: Cut 02 lies between them — group and isolate it first, or move it' })
     await expect(refused).toHaveAttribute('aria-disabled', 'true')
     const depth = await undoDepth(page)
     await refused.tap({ force: true })
-    await expect(hudStatus(page)).toHaveText('Cut 02 lies between them')
+    await expect(hudStatus(page)).toHaveText('Cut 02 lies between them — group and isolate it first, or move it')
     expect(await groupsIn(page)).toEqual([])
     expect(await undoDepth(page)).toBe(depth)
 
@@ -5050,9 +5231,16 @@ test.describe('groups on touch', () => {
     const [group] = await groupsIn(page)
     expect(await selectedRoots(page)).toEqual([group.id])
     expect(await undoDepth(page)).toBe(depth + 2)
-    // One group picked: nothing left to group.
-    await expect(picked).toBeHidden()
     await expect(drawer.getByRole('button', { name: 'Fold 02 Group 1' })).toBeVisible()
+    // One group picked: nothing left to group, and Ungroup in its place, there in the sheet's footer too.
+    await expect(picked).toContainText('1 selected')
+    await expect(picked.getByRole('button', { name: 'Group', exact: true })).toHaveCount(0)
+    await picked.getByRole('button', { name: 'Ungroup', exact: true }).tap()
+    expect(await groupsIn(page)).toEqual([])
+    expect(await selectedRoots(page)).toEqual(ids)
+    expect(await undoDepth(page)).toBe(depth + 3)
+    await expect(picked.getByRole('button', { name: 'Group', exact: true })).toBeVisible()
+    await expect(picked.getByRole('button', { name: 'Ungroup', exact: true })).toHaveCount(0)
   })
 
   test('the drawer adds layers to the selection, so two can be grouped and isolated, and Group says why when it cannot', async ({ page }) => {
@@ -5081,11 +5269,16 @@ test.describe('groups on touch', () => {
 
     // The cut between them stops Group, and a tap on it says why, as Cmd+G does.
     const depth = await undoDepth(page)
-    const refused = bar.getByRole('button', { name: 'Group: Cut 02 lies between them' })
+    const refused = bar.getByRole('button', { name: 'Group: Cut 02 lies between them — group and isolate it first, or move it' })
     await expect(refused).toHaveAttribute('aria-disabled', 'true')
     // Dimmed, it still takes a tap: forced past Playwright's own wait for an enabled button.
     await refused.tap({ force: true })
-    await expect(hudStatus(page)).toHaveText('Cut 02 lies between them')
+    await expect(hudStatus(page)).toHaveText('Cut 02 lies between them — group and isolate it first, or move it')
+    // Said on the canvas whole, inside it, on two lines at most.
+    await expect(hudRow(page)).toContainText('group and isolate it first, or move it')
+    const fits = await hudRowFits(page)
+    expect(fits).toMatchObject({ inside: true, whole: true })
+    expect(fits.lines).toBeLessThanOrEqual(2)
     expect(await groupsIn(page)).toEqual([])
     expect(await undoDepth(page)).toBe(depth)
 

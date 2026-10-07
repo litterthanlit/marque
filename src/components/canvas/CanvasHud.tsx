@@ -6,8 +6,9 @@ import { hudPlace } from './hudPlacement.ts'
  * Snap labels and measurements next to the pointer. Rendered in the DOM, not
  * on the canvas, so text stays crisp on high-density screens. The row is
  * measured, and goes to whichever side of the pointer has room, or as near
- * it as the canvas allows: it never runs past an edge, and a row wider
- * than the canvas wraps. Under a finger the row goes above the touch
+ * it as the canvas allows: it keeps 12 px clear of every edge, and a row
+ * wider than the canvas wraps, its words to two lines at most. Under a
+ * finger the row goes above the touch
  * point, below it only near the top edge. Keyboard edits are also read
  * out to screen readers.
  */
@@ -47,11 +48,11 @@ export function CanvasHud() {
           <div
             ref={rowRef}
             data-hud-row
-            className="absolute flex w-max max-w-[calc(100%-16px)] flex-wrap items-center gap-1"
+            className="absolute flex w-max max-w-[calc(100%-24px)] flex-wrap items-center gap-1"
             style={{ left, top }}
           >
             {state.label && (
-              <span className="rounded-md bg-pink-500 px-1.5 py-0.5 text-[10px] font-medium text-white shadow-sm">
+              <span className="line-clamp-2 rounded-md bg-pink-500 px-1.5 py-0.5 text-[10px] font-medium text-white shadow-sm">
                 {state.label}
               </span>
             )}

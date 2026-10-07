@@ -263,7 +263,13 @@ export function groupRefusal(objects: readonly VectorObject[], ids: readonly str
   return null
 }
 
-/** A refusal in words, with the drawer's numbers: "Cut 04 lies between them". */
+/**
+ * A refusal in words, with the drawer's numbers, and what to do about it:
+ * "Cut 04 lies between them — group and isolate it first, or move it". A
+ * cut in the way stops crossing once it is kept in an isolated group with
+ * what it cuts, which then goes into the stack as a shape; a shape or a
+ * group in the way has only to move.
+ */
 export function groupRefusalText(refusal: GroupRefusal, numbers: ReadonlyMap<string, string>): string {
   switch (refusal.kind) {
     case 'too-few':
@@ -272,7 +278,8 @@ export function groupRefusalText(refusal: GroupRefusal, numbers: ReadonlyMap<str
       return 'Only layers in the same group can be grouped'
     case 'between': {
       const what = refusal.group ? 'Group' : refusal.operation === 'subtract' ? 'Cut' : 'Shape'
-      return `${what} ${numbers.get(refusal.id) ?? ''} lies between them`.replace('  ', ' ')
+      const how = what === 'Cut' ? 'group and isolate it first, or move it' : 'move it first'
+      return `${what} ${numbers.get(refusal.id) ?? ''} lies between them — ${how}`.replace('  ', ' ')
     }
     default:
       return refusal satisfies never

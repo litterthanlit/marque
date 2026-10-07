@@ -6,7 +6,8 @@ import type { IllustratorDocument, IllustratorLayer } from './types.ts'
  * Live composition for a drag. Everything below the lowest edited layer is
  * composed once, up front; each frame then only re-applies the edited layers
  * and whatever sits above them. An isolated group counts as one input: one
- * with an edited member is composed again each frame, the others once.
+ * with an edited member is composed again each frame, the others once, the
+ * groups inside an edited one that the edit never reaches too.
  */
 export interface ComposeSession {
   /** Compose with these layers' paths replaced (null hides a layer). */
@@ -43,7 +44,7 @@ export function createComposeSession(doc: IllustratorDocument, editedIds: Iterab
       }
       const frame: BooleanInput[] = []
       if (prefix) frame.push({ pathData: prefix, operation: 'add' })
-      for (const unit of above) frame.push(...(settled.get(unit) ?? stackInputs([unit], replaced, false)))
+      for (const unit of above) frame.push(...(settled.get(unit) ?? stackInputs([unit], replaced, (group) => !touches(group))))
       return composeOrderedPaths(frame).compoundPathData
     },
   }

@@ -1,8 +1,8 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { groupRefusalOf, useLogoStore } from '../../store/logoStore.ts'
+import { groupRefusalOf, ungroupRefusalOf, useLogoStore } from '../../store/logoStore.ts'
 import { cn } from '../../lib/utils.ts'
 import { EditorButton, FOCUS_RING, SwitchButton } from './controls.tsx'
-import { GroupButton } from './SelectionBar.tsx'
+import { GroupButton, UngroupButton } from './SelectionBar.tsx'
 import { isBlankDocument } from '../../engine/vector/document.ts'
 import { guideRows } from '../../engine/vector/guides.ts'
 import { bandEnds, layerNumber, nearNumber } from './layerNumber.ts'
@@ -19,7 +19,9 @@ import { bandsOf } from '../../engine/vector/bands.ts'
  * 05", and says so while they allow it no fit; anything else by its own
  * name. A band's row shows its fit alone, "Belt", after the link glyph,
  * and its circles are `ends`, drawn in a column of their own that gives
- * way only after the fit. `shown` is the name as the row draws it, the dot
+ * way before the fit, never the other way: inside a group, two circles
+ * both in the band's own group are written by their places there alone,
+ * ".1, .2", and otherwise both whole. `shown` is the name as the row draws it, the dot
  * between thin spaces so that a long distance and the number it follows
  * fit the desktop drawer whole. `copies` numbers the copies that follow the
  * layer, as the bar's "Copies 03" does, and `bands` the bands; the row
@@ -56,7 +58,8 @@ function rowName(
     const what = `Band · ${layer.carve.fit}`
     // Short on the row, where the link glyph says it follows: "Strip", the circles after it, a guide as "g11".
     const fit = layer.carve.fit
-    const endsShown = bandEnds(doc, layer.link, true, layer.id).join(', ')
+    const placed = bandEnds(doc, layer.link, true, layer.id)
+    const endsShown = (placed.every((end) => end.startsWith('.')) ? placed : bandEnds(doc, layer.link, true)).join(', ')
     return { name: `${what} · ${ends}`, shown: fit[0].toUpperCase() + fit.slice(1), follows: ends, ends, endsShown, empty: !layer.pathData, ...lists }
   }
   const link = layer.link?.kind === 'offset' ? layer.link : null
@@ -119,6 +122,13 @@ function CopiesGlyph() {
 }
 
 const ROW_BUTTON = cn('h-7 shrink-0 rounded-md text-[10px] transition-colors hover:bg-interactive-hover', FOCUS_RING)
+/*
+ * A row's columns after its name, ↑ and ↓, a lock, Add or Cut: narrower for
+ * a mouse, which needs no finger's room, to leave the names theirs.
+ */
+const MOVE_BUTTON = cn(ROW_BUTTON, 'w-6 text-sidebar-text hover:text-fg disabled:cursor-default disabled:opacity-30 pointer-fine:w-5')
+const LOCK_WIDTH = 'w-5 pointer-fine:w-4'
+const OPERATION_WIDTH = 'w-8 pointer-fine:w-7'
 
 /** A list gives up its rows to the other only down to three of them, or all it has when fewer. */
 function leastRows(count: number): React.CSSProperties {
@@ -202,8 +212,6 @@ export function LayersDrawer() {
         </button>
       </div>
 
-      <SheetGroup />
-
       {/* On a phone the sheet is short: its body scrolls as one, rather than each list in a sliver. */}
       <div className="flex min-h-0 flex-1 flex-col gap-2 p-3 max-lg:overflow-y-auto">
         <p className="text-[11px] leading-snug text-sidebar-muted">
@@ -226,7 +234,6 @@ export function LayersDrawer() {
                 <GroupRow
                   key={row.group.id}
                   group={row.group}
-                  members={row.members}
                   pieces={row.pieces}
                   expanded={row.expanded}
                   onToggle={() => setExpanded((was) => ({ ...was, [row.group.id]: !row.expanded }))}
@@ -241,7 +248,8 @@ export function LayersDrawer() {
         <GuidesSection />
       </div>
 
-      <div className="border-t border-border p-3">
+      <div className="flex flex-col gap-2 border-t border-border p-3">
+        <SheetGroup />
         <EditorButton
           onClick={startOver}
           disabled={blank}
@@ -257,19 +265,26 @@ export function LayersDrawer() {
 
 /**
  * On the sheet, which covers the selection bar, the rows picked with the
- * squares group where they were picked: Group, as the bar's, dimmed and
- * saying why when gathering them would change the mark. The side drawer
- * leaves the bar in sight, and needs none.
+ * squares group where they were picked, in its footer: Group while two or
+ * more are, Ungroup while a group is, each as the bar's, dimmed and saying
+ * why when it would change the mark. The side drawer leaves the bar in
+ * sight, and needs none.
  */
 function SheetGroup() {
-  const picked = useLogoStore((s) => (s.illustrator.selectedRootIds ?? s.illustrator.selectedLayerIds).length)
-  const refusal = useLogoStore((s) => groupRefusalOf(s)?.words ?? null)
-  if (picked < 2) return null
+  const roots = useLogoStore((s) => s.illustrator.selectedRootIds ?? s.illustrator.selectedLayerIds)
+  const groupIds = useLogoStore((s) => s.illustrator.groups)
+  const groupRefusal = useLogoStore((s) => groupRefusalOf(s)?.words ?? null)
+  const ungroupRefusal = useLogoStore((s) => ungroupRefusalOf(s)?.words ?? null)
+  const canGroup = roots.length >= 2
+  const holdsGroup = roots.some((id) => groupIds?.some((group) => group.id === id))
+  if (!canGroup && !holdsGroup) return null
+  const refusal = canGroup && groupRefusal ? groupRefusal : holdsGroup ? ungroupRefusal : null
   return (
-    <div role="group" aria-label="Picked rows" className="flex items-center gap-2 border-b border-border py-1.5 pr-2 pl-3 lg:hidden">
-      <span className="shrink-0 text-[11px] text-sidebar-text">{picked} selected</span>
+    <div role="group" aria-label="Picked rows" className="flex items-center gap-2 lg:hidden">
+      <span className="shrink-0 text-[11px] text-sidebar-text">{roots.length} selected</span>
       <span className="min-w-0 flex-1 text-[11px] leading-snug text-rose-300">{refusal}</span>
-      <GroupButton />
+      {canGroup && <GroupButton />}
+      {holdsGroup && <UngroupButton />}
     </div>
   )
 }
@@ -284,6 +299,10 @@ interface RowPlace {
   selected: boolean
   /** Inside a group that is selected. */
   within: boolean
+  /** The number of the nearest group around it that is hidden, which hides it too, or null. */
+  hiddenWith: string | null
+  /** The number of the nearest group around it that is locked, which locks it too, or null. */
+  lockedWith: string | null
 }
 
 /** How far a group's label sits in from its row's toggle: the toggle and the gap after it. */
@@ -292,9 +311,10 @@ const TOGGLE_REM = 1.125
 const LEVEL_REM = 0.5
 
 /**
- * Where a row's label starts, in from the left of its name area: a layer
- * at the root at the area's own padding, a member a step in from its
- * group's label, so the tree reads at a glance.
+ * Where a row's label starts, in from its On / Off: a layer at the root at
+ * its name's own padding, a member a step in from its group's label, past
+ * that group's toggle, so the tree reads at a glance. A group's lock sits
+ * after its name, never before it, so no member's indent pays for it.
  */
 function labelInset(level: number): number {
   return level > 1 ? TOGGLE_REM + (level - 1) * LEVEL_REM : 0.375
@@ -338,14 +358,57 @@ function AddToSelection({ id, name, selected }: { id: string; name: string; sele
   )
 }
 
-/** A layer's row: its own On / Off, its name and links, ↑ and ↓ within its group, and Add or Cut. */
+/**
+ * A row's own On / Off. In a hidden group it still sets the row's own, but
+ * reads as the group's: dimmed, its title naming the group that hides it.
+ */
+function VisibilityButton({ id, name, visible, hiddenWith }: { id: string; name: string; visible: boolean; hiddenWith: string | null }) {
+  const toggleIllustratorLayerVisibility = useLogoStore((s) => s.toggleIllustratorLayerVisibility)
+  const inherited = hiddenWith === null ? '' : `Hidden with its group ${hiddenWith}`
+  return (
+    <button
+      type="button"
+      onClick={() => toggleIllustratorLayerVisibility(id)}
+      className={cn(ROW_BUTTON, 'w-7', visible && !inherited ? 'text-fg' : 'text-sidebar-muted/60 hover:text-sidebar-muted')}
+      aria-label={`${visible ? `Hide ${name}` : `Show ${name}`}${inherited ? `, ${inherited.toLowerCase()}` : ''}`}
+      title={inherited || undefined}
+    >
+      {visible ? 'On' : 'Off'}
+    </button>
+  )
+}
+
+/**
+ * A layer in a locked group takes no presses on the canvas: a dimmed
+ * padlock says so, in the column of a group row's lock, after the name,
+ * so locking a group never moves its members' labels.
+ */
+function LockedWith({ number }: { number: string }) {
+  const words = `Locked with its group ${number}`
+  return (
+    <span role="img" aria-label={words} title={words} className={cn('inline-flex h-7 shrink-0 items-center justify-center text-sidebar-muted/60', LOCK_WIDTH)}>
+      <LockGlyph locked />
+    </span>
+  )
+}
+
+/**
+ * What follows a layer row's name: it starts with no room and takes what
+ * the name leaves, up to its own width, so it gives way whole before the
+ * name gives any.
+ */
+const AFTER_NAME = 'min-w-0 max-w-max shrink-0 grow basis-0 truncate whitespace-nowrap'
+
+/**
+ * A layer's row: its own On / Off, its name and links, a dimmed padlock in
+ * a locked group, ↑ and ↓ within its group, and Add or Cut.
+ */
 function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible: boolean; place: RowPlace }) {
   const illustrator = useLogoStore((s) => s.illustrator)
   const selectIllustratorLayer = useLogoStore((s) => s.selectIllustratorLayer)
   const moveIllustratorLayer = useLogoStore((s) => s.moveIllustratorLayer)
-  const toggleIllustratorLayerVisibility = useLogoStore((s) => s.toggleIllustratorLayerVisibility)
   const setIllustratorLayerOperation = useLogoStore((s) => s.setIllustratorLayerOperation)
-  const { level, number, canUp, canDown, selected, within } = place
+  const { level, number, canUp, canDown, selected, within, hiddenWith, lockedWith } = place
   const row = rowName(illustrator, layer)
   // Slabs share a name: the position tells two rows apart.
   const name = `${number} ${row.name}`
@@ -358,18 +421,7 @@ function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible:
       )}
     >
       <AddToSelection id={layer.id} name={name} selected={selected} />
-      <button
-        type="button"
-        onClick={() => toggleIllustratorLayerVisibility(layer.id)}
-        className={cn(
-          ROW_BUTTON,
-          'w-7',
-          visible ? 'text-fg' : 'text-sidebar-muted/60 hover:text-sidebar-muted',
-        )}
-        aria-label={visible ? `Hide ${name}` : `Show ${name}`}
-      >
-        {visible ? 'On' : 'Off'}
-      </button>
+      <VisibilityButton id={layer.id} name={name} visible={visible} hiddenWith={hiddenWith} />
       <button
         type="button"
         aria-pressed={selected}
@@ -377,22 +429,23 @@ function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible:
         onClick={(event) => selectIllustratorLayer(layer.id, event.shiftKey || event.metaKey)}
         style={indent(level)}
         className={cn(
-          'flex h-7 min-w-0 flex-1 items-center rounded-md px-1.5 text-left text-xs text-sidebar-text transition-colors hover:bg-interactive-hover hover:text-fg',
+          'flex h-7 min-w-0 flex-1 items-center overflow-hidden rounded-md px-1.5 text-left text-xs text-sidebar-text transition-colors hover:bg-interactive-hover hover:text-fg',
           FOCUS_RING,
         )}
         title={
           row.empty
             ? layer.link?.kind === 'band'
-              ? 'No fit: its circles allow this band none, or one is not a circle. It comes back when they do'
-              : 'Nothing is left of it at this distance: it comes back when its shape grows'
+              ? `${name}. No fit: its circles allow this band none, or one is not a circle. It comes back when they do`
+              : `${name}. Nothing is left of it at this distance: it comes back when its shape grows`
             : name
         }
       >
         {/*
-          The name keeps its room; the copies after it give way first, whole in the title and label. A band's
-          fit gives way instead, down to its first letters, before the circles' numbers, which give way only
-          after it, and its own number and "no fit" flag, which never do: a guide among its circles is written
-          short, "g11", and a circle in the band's own group by its place there, ".1", to leave them room.
+          The name keeps its room; what follows it gives way first, whole in the title and label: the copies and
+          bands, and a band's circles' numbers, which take only the room its number, link glyph and fit leave
+          them, up to their own width. Only on a row with none left does the fit give way, with an ellipsis, and
+          the button clips whatever is left, so nothing paints past it. A guide among a band's circles is written
+          short, "g11", and two circles in the band's own group by their places there, ".1, .2", to leave them room.
         */}
         {row.ends !== null && (
           <span className="shrink-0 font-mono-tabular text-sidebar-muted">
@@ -400,7 +453,7 @@ function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible:
             {'\u00a0'}
           </span>
         )}
-        <span className={cn('max-w-full truncate', row.ends === null ? 'min-w-0 shrink-0' : 'min-w-[5ch] shrink-[1000]')}>
+        <span className={cn('min-w-0 max-w-full truncate', row.ends === null ? 'shrink-0' : 'shrink')}>
           {row.ends === null && (
             <>
               <span className="font-mono-tabular text-sidebar-muted">{number}</span>{' '}
@@ -414,7 +467,7 @@ function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible:
           {row.shown}
         </span>
         {row.endsShown !== null && (
-          <span className="min-w-0 truncate whitespace-nowrap">
+          <span data-ends className={AFTER_NAME}>
             {'\u2009·\u2009'}
             <span className="font-mono-tabular">{row.endsShown}</span>
           </span>
@@ -425,24 +478,25 @@ function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible:
           </span>
         )}
         {row.copies.length > 0 && (
-          <span className="ml-1.5 min-w-0 truncate text-sidebar-muted" title={`Copies ${row.copies.join(', ')} follow this shape`}>
+          <span className={cn(AFTER_NAME, 'ml-1.5 text-sidebar-muted')} title={`Copies ${row.copies.join(', ')} follow this shape`}>
             <CopiesGlyph />
             <span className="font-mono-tabular">{row.copiesShown.join(', ')}</span>
           </span>
         )}
         {row.bands.length > 0 && (
-          <span className="ml-1.5 min-w-0 truncate text-sidebar-muted" title={`Bands ${row.bands.join(', ')} follow this circle`}>
+          <span className={cn(AFTER_NAME, 'ml-1.5 text-sidebar-muted')} title={`Bands ${row.bands.join(', ')} follow this circle`}>
             <BandsGlyph />
             <span className="font-mono-tabular">{row.bandsShown.join(', ')}</span>
           </span>
         )}
       </button>
+      {lockedWith !== null && <LockedWith number={lockedWith} />}
       <div className="flex shrink-0 gap-0.5">
         <button
           type="button"
           onClick={() => moveIllustratorLayer(layer.id, 'up')}
           disabled={!canUp}
-          className={cn(ROW_BUTTON, 'w-6 text-sidebar-text hover:text-fg disabled:cursor-default disabled:opacity-30')}
+          className={MOVE_BUTTON}
           aria-label={`Move ${name} up`}
         >
           ↑
@@ -451,7 +505,7 @@ function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible:
           type="button"
           onClick={() => moveIllustratorLayer(layer.id, 'down')}
           disabled={!canDown}
-          className={cn(ROW_BUTTON, 'w-6 text-sidebar-text hover:text-fg disabled:cursor-default disabled:opacity-30')}
+          className={MOVE_BUTTON}
           aria-label={`Move ${name} down`}
         >
           ↓
@@ -460,7 +514,7 @@ function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible:
       <button
         type="button"
         onClick={() => setIllustratorLayerOperation(layer.id, layer.operation === 'add' ? 'subtract' : 'add')}
-        className={cn(ROW_BUTTON, 'w-8', layer.operation === 'add' ? 'text-emerald-300' : 'text-rose-300')}
+        className={cn(ROW_BUTTON, OPERATION_WIDTH, layer.operation === 'add' ? 'text-emerald-300' : 'text-rose-300')}
         aria-label={
           layer.operation === 'add'
             ? `${name} adds material. Make it a cut`
@@ -475,7 +529,7 @@ function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible:
 }
 type TreeRow =
   | { kind: 'layer'; layer: IllustratorLayer; visible: boolean; place: RowPlace }
-  | { kind: 'group'; group: GroupObject; members: number; pieces: number; expanded: boolean; place: RowPlace }
+  | { kind: 'group'; group: GroupObject; pieces: number; expanded: boolean; place: RowPlace }
 
 /**
  * The groups the selection lies inside, as one key, or '' for none: each
@@ -503,7 +557,9 @@ function treeRows(doc: IllustratorDocument, objects: VectorObject[], expanded: R
   const pieces = new Map<string, number>()
   for (const layer of doc.layers) for (const group of ancestorsOf(parents, layer.id)) pieces.set(group, (pieces.get(group) ?? 0) + 1)
   const rows: TreeRow[] = []
-  const walk = (parentId: string | null, level: number, within: boolean) => {
+  // What the groups around a row pass down to it: being selected, hidden or locked.
+  type Around = Pick<RowPlace, 'within' | 'hiddenWith' | 'lockedWith'>
+  const walk = (parentId: string | null, level: number, around: Around) => {
     const siblings = children.get(parentId) ?? []
     for (let i = siblings.length - 1; i >= 0; i--) {
       const object = siblings[i]
@@ -513,19 +569,25 @@ function treeRows(doc: IllustratorDocument, objects: VectorObject[], expanded: R
         canUp: i < siblings.length - 1,
         canDown: i > 0,
         selected: roots.has(object.id),
-        within,
+        ...around,
       }
       if (object.type === 'group') {
         const open = expanded[object.id] ?? !isSparkGroup(object)
-        rows.push({ kind: 'group', group: object, members: (children.get(object.id) ?? []).length, pieces: pieces.get(object.id) ?? 0, expanded: open, place })
-        if (open) walk(object.id, level + 1, within || place.selected)
+        rows.push({ kind: 'group', group: object, pieces: pieces.get(object.id) ?? 0, expanded: open, place })
+        if (open) {
+          walk(object.id, level + 1, {
+            within: around.within || place.selected,
+            hiddenWith: object.visible ? around.hiddenWith : place.number,
+            lockedWith: object.locked ? place.number : around.lockedWith,
+          })
+        }
         continue
       }
       const layer = layerById.get(object.id)
       if (layer) rows.push({ kind: 'layer', layer, visible: object.visible, place })
     }
   }
-  walk(null, 1, false)
+  walk(null, 1, { within: false, hiddenWith: null, lockedWith: null })
   return rows
 }
 
@@ -545,9 +607,9 @@ function SparkGlyph() {
 }
 
 /** A group keeps its cuts to itself: a cut inside a boundary. */
-function IsolatedGlyph({ size = 11 }: { size?: number }) {
+function IsolatedGlyph() {
   return (
-    <svg width={size} height={size} viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" aria-hidden="true" className="inline-block shrink-0 align-[-1px]">
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" aria-hidden="true" className="inline-block shrink-0 align-[-1px]">
       <rect x="1.5" y="1.5" width="9" height="9" rx="1.5" strokeDasharray="2 1.4" />
       <circle cx="6" cy="6" r="2" />
     </svg>
@@ -574,21 +636,22 @@ function Disclosure({ open }: { open: boolean }) {
 }
 
 /**
- * A group's row: its On / Off and its lock, a toggle that shows or folds
- * its members, its name with how many it holds, ↑ and ↓ that move its whole
- * run past the next row at its level, and, while it keeps its cuts to
- * itself, a glyph saying so and whether it adds or cuts as one.
+ * A group's row: its On / Off, a toggle that shows or folds its members,
+ * its name, then in a column that never gives way how many pieces it
+ * holds, every layer inside, as the bar counts them, after a glyph while it
+ * keeps its cuts to itself; its lock, after the name so that its members'
+ * labels need not clear it; ↑ and ↓ that move its whole run past the next
+ * row at its level, and, while it keeps its cuts to itself, whether it adds
+ * or cuts as one.
  */
 function GroupRow({
   group,
-  members,
   pieces,
   expanded,
   onToggle,
   place,
 }: {
   group: GroupObject
-  members: number
   pieces: number
   expanded: boolean
   onToggle: () => void
@@ -596,40 +659,24 @@ function GroupRow({
 }) {
   const selectIllustratorLayer = useLogoStore((s) => s.selectIllustratorLayer)
   const moveIllustratorLayer = useLogoStore((s) => s.moveIllustratorLayer)
-  const toggleIllustratorLayerVisibility = useLogoStore((s) => s.toggleIllustratorLayerVisibility)
   const toggleIllustratorLayerLock = useLogoStore((s) => s.toggleIllustratorLayerLock)
   const setGroupOperation = useLogoStore((s) => s.setGroupOperation)
-  const { level, number, canUp, canDown, selected, within } = place
+  const { level, number, canUp, canDown, selected, within, hiddenWith, lockedWith } = place
   const name = `${number} ${group.name}`
   const held = `${pieces} ${pieces === 1 ? 'piece' : 'pieces'}`
   // Only a group that isolates its cuts goes into the stack as one, adding or cutting: a shared one's pieces do, each.
   const cuts = group.isolated && group.operation === 'subtract'
   const kept = group.isolated ? (cuts ? ', isolates cuts, cuts as one' : ', isolates cuts') : ''
   const spark = isSparkGroup(group)
+  // Unlocked itself, it is locked all the same in a locked group: its padlock shows that, dimmed.
+  const lockedAround = !group.locked && lockedWith !== null ? `Locked with its group ${lockedWith}` : ''
   return (
     <li
       aria-level={level}
       className={cn('flex items-center gap-1 border-b border-border/60 px-1.5 py-1 last:border-b-0', selected ? 'bg-interactive' : within && 'bg-interactive/40')}
     >
       <AddToSelection id={group.id} name={name} selected={selected} />
-      <button
-        type="button"
-        onClick={() => toggleIllustratorLayerVisibility(group.id)}
-        className={cn(ROW_BUTTON, 'w-7', group.visible ? 'text-fg' : 'text-sidebar-muted/60 hover:text-sidebar-muted')}
-        aria-label={group.visible ? `Hide ${name}` : `Show ${name}`}
-      >
-        {group.visible ? 'On' : 'Off'}
-      </button>
-      <button
-        type="button"
-        aria-pressed={group.locked}
-        onClick={() => toggleIllustratorLayerLock(group.id)}
-        className={cn(ROW_BUTTON, 'inline-flex w-5 items-center justify-center', group.locked ? 'text-fg' : 'text-sidebar-muted/60 hover:text-fg')}
-        aria-label={group.locked ? `Unlock ${name}` : `Lock ${name}`}
-        title={group.locked ? 'Locked: its members take no presses on the canvas' : 'Lock it, so its members take no presses on the canvas'}
-      >
-        <LockGlyph locked={group.locked} />
-      </button>
+      <VisibilityButton id={group.id} name={name} visible={group.visible} hiddenWith={hiddenWith} />
       <div className="flex min-w-0 flex-1 items-center" style={groupIndent(level)}>
         <button
           type="button"
@@ -645,10 +692,10 @@ function GroupRow({
           type="button"
           aria-pressed={selected}
           aria-label={`${name}, ${held}${kept}`}
-          title={`${name}, ${members} in it${group.isolated ? `. Keeps its cuts to itself: they cut only what is in it${cuts ? '. Then it cuts as one' : ''}` : ''}. Double-click a piece on the canvas to work on it alone`}
+          title={`${name}, ${held}${group.isolated ? `. Keeps its cuts to itself: they cut only what is in it${cuts ? '. Then it cuts as one' : ''}` : ''}. Double-click a piece on the canvas to work on it alone`}
           onClick={(event) => selectIllustratorLayer(group.id, event.shiftKey || event.metaKey)}
           className={cn(
-            'flex h-7 min-w-0 flex-1 items-center gap-1 rounded-md pr-1 pl-0.5 text-left text-xs text-sidebar-text transition-colors hover:bg-interactive-hover hover:text-fg',
+            'flex h-7 min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-md pr-1 pl-0.5 text-left text-xs text-sidebar-text transition-colors hover:bg-interactive-hover hover:text-fg',
             FOCUS_RING,
           )}
         >
@@ -656,24 +703,38 @@ function GroupRow({
           {/* A spark is marked by a glyph, its kind shown alone: "Spark · " on every one would leave the kind no room. */}
           {spark && <SparkGlyph />}
           {/*
-            The name keeps its room. The count after it is whole or not there: one line high, where the count
-            that does not fit beside the name wraps to a second line that is never seen. Both are whole in the
-            title and label.
+            What tells two group rows apart never gives way: the name does, with an ellipsis, whole in the row's
+            title, before the column after it, the isolation glyph and how many pieces it holds. Neither has a
+            title of its own, which would hide the row's, with its way to a piece.
           */}
-          <span className="flex h-4 min-w-0 flex-1 flex-wrap items-center gap-x-1 overflow-hidden">
-            <span className="min-w-[4ch] max-w-full truncate leading-4">{spark ? sparkKind(group.name) : group.name}</span>
-            <span data-count className="whitespace-nowrap font-mono-tabular leading-4 text-sidebar-muted">
-              ·{'\u2009'}{members}
-            </span>
+          <span className="min-w-0 truncate">
+            {spark ? sparkKind(group.name) : group.name}
+          </span>
+          <span data-count className="ml-auto inline-flex shrink-0 items-center gap-1 font-mono-tabular text-sidebar-muted">
+            {group.isolated && <IsolatedGlyph />}
+            {pieces}
           </span>
         </button>
       </div>
+      <button
+        type="button"
+        aria-pressed={group.locked}
+        onClick={() => toggleIllustratorLayerLock(group.id)}
+        className={cn(ROW_BUTTON, 'inline-flex items-center justify-center', LOCK_WIDTH, group.locked ? 'text-fg' : 'text-sidebar-muted/60 hover:text-fg')}
+        aria-label={`${group.locked ? `Unlock ${name}` : `Lock ${name}`}${lockedAround ? `, ${lockedAround.toLowerCase()}` : ''}`}
+        title={
+          lockedAround ||
+          (group.locked ? 'Locked: its members take no presses on the canvas' : 'Lock it, so its members take no presses on the canvas')
+        }
+      >
+        <LockGlyph locked={group.locked || Boolean(lockedAround)} />
+      </button>
       <div className="flex shrink-0 gap-0.5">
         <button
           type="button"
           onClick={() => moveIllustratorLayer(group.id, 'up')}
           disabled={!canUp}
-          className={cn(ROW_BUTTON, 'w-6 text-sidebar-text hover:text-fg disabled:cursor-default disabled:opacity-30')}
+          className={MOVE_BUTTON}
           aria-label={`Move ${name} up`}
         >
           ↑
@@ -682,21 +743,18 @@ function GroupRow({
           type="button"
           onClick={() => moveIllustratorLayer(group.id, 'down')}
           disabled={!canDown}
-          className={cn(ROW_BUTTON, 'w-6 text-sidebar-text hover:text-fg disabled:cursor-default disabled:opacity-30')}
+          className={MOVE_BUTTON}
           aria-label={`Move ${name} down`}
         >
           ↓
         </button>
       </div>
-      {/*
-        Only an isolated group fills this column, so the glyph that says it keeps its cuts to itself goes here,
-        in a place of its own that never gives way, before whether it adds or cuts as one.
-      */}
+      {/* Only an isolated group fills this column: it goes into the stack as one, adding or cutting. */}
       {group.isolated ? (
         <button
           type="button"
           onClick={() => setGroupOperation(group.id, cuts ? 'add' : 'subtract')}
-          className={cn(ROW_BUTTON, 'inline-flex w-8 items-center justify-center gap-0.5', cuts ? 'text-rose-300' : 'text-emerald-300')}
+          className={cn(ROW_BUTTON, OPERATION_WIDTH, cuts ? 'text-rose-300' : 'text-emerald-300')}
           aria-label={cuts ? `${name} cuts material as one. Make it add` : `${name} adds material as one. Make it a cut`}
           title={
             cuts
@@ -704,12 +762,11 @@ function GroupRow({
               : 'Keeps its cuts to itself, and adds as one: its pieces make one shape, which adds'
           }
         >
-          <IsolatedGlyph size={9} />
           {cuts ? 'Cut' : 'Add'}
         </button>
       ) : (
         // A shared group neither adds nor cuts: each of its pieces does, in the stack around it.
-        <span aria-hidden="true" className="w-8 shrink-0" />
+        <span aria-hidden="true" className={cn('shrink-0', OPERATION_WIDTH)} />
       )}
     </li>
   )

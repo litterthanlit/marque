@@ -16,7 +16,7 @@ import { refusals } from '../../renderer/directEdit/refusal.ts'
 import { MAX_OFFSET, offsetGeometry, offsetIsQuick, offsetName, type OffsetGeometry } from '../../engine/vector/offsets.ts'
 import { cn } from '../../lib/utils.ts'
 import { SliderControl } from '../controls/SliderControl.tsx'
-import { Divider, EditorButton, FLOATING_SURFACE, FOCUS_RING, Segmented, Stepper, SwitchButton } from './controls.tsx'
+import { Divider, EditorButton, FLOATING_SURFACE, Segmented, Stepper, SwitchButton } from './controls.tsx'
 import { bandEnds, layerNumber } from './layerNumber.ts'
 import { steppedPolygonSides } from './tools.ts'
 import { Popover } from './Popover.tsx'
@@ -169,20 +169,17 @@ function LayerBar() {
           Only what is selected is read out as it changes: a burst of keys reads out its own numbers.
           The name is drawn afresh for each new selection, so moving from one slab to another is heard too.
         */}
+        {/* A button like the bar's others, so it reads as one on touch too, where nothing hovers: the one tap from a piece back to its group. */}
         {entered && (
-          <button
-            type="button"
+          <EditorButton
             onClick={() => setSelection([entered.id])}
-            title="Select the group, leaving it (Esc)"
-            aria-label={`Back to ${entered.name}`}
-            className={cn(
-              '-mr-2 inline-flex h-8 max-w-[40%] shrink items-center gap-1 rounded-lg px-1.5 text-xs text-sidebar-muted transition-colors hover:bg-interactive-hover hover:text-fg',
-              FOCUS_RING,
-            )}
+            title={`Select ${entered.name}, leaving it (Esc)`}
+            aria-label={`Select group ${entered.name}`}
+            className="-mr-1 max-w-[40%] shrink gap-1 pr-2"
           >
             <span className="truncate">{entered.name}</span>
             <span aria-hidden="true">›</span>
-          </button>
+          </EditorButton>
         )}
         <p
           className="max-w-full truncate px-1.5 text-xs text-sidebar-text"
@@ -296,8 +293,6 @@ function LayerBar() {
 function GroupControls({ group }: { group: IllustratorGroup }) {
   const setGroupIsolated = useLogoStore((s) => s.setGroupIsolated)
   const setGroupOperation = useLogoStore((s) => s.setGroupOperation)
-  const ungroupSelection = useLogoStore((s) => s.ungroupSelection)
-  const refusal = useLogoStore((s) => ungroupRefusalOf(s)?.words ?? null)
   return (
     <div className="flex items-center gap-x-2" role="group" aria-label="Group">
       <SwitchButton
@@ -314,14 +309,26 @@ function GroupControls({ group }: { group: IllustratorGroup }) {
           onChange={(operation) => setGroupOperation(group.id, operation)}
         />
       )}
-      <RefusableButton
-        label="Ungroup"
-        title="Ungroup (Cmd+Shift+G): its members stay where they are"
-        refusal={refusal}
-        refused={() => ungroupRefusalOf(useLogoStore.getState())}
-        onClick={ungroupSelection}
-      />
+      <UngroupButton />
     </div>
+  )
+}
+
+/**
+ * Ungroup, as Cmd+Shift+G does: for touch, which has no keyboard. Dimmed,
+ * saying why, when ungrouping would change the mark or the group is locked.
+ */
+export function UngroupButton() {
+  const ungroupSelection = useLogoStore((s) => s.ungroupSelection)
+  const refusal = useLogoStore((s) => ungroupRefusalOf(s)?.words ?? null)
+  return (
+    <RefusableButton
+      label="Ungroup"
+      title="Ungroup (Cmd+Shift+G): its members stay where they are"
+      refusal={refusal}
+      refused={() => ungroupRefusalOf(useLogoStore.getState())}
+      onClick={ungroupSelection}
+    />
   )
 }
 

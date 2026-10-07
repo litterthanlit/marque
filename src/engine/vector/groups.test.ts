@@ -137,14 +137,14 @@ describe('Cmd+G gathering', () => {
     const objects = [left, cut, right]
     const refusal = groupRefusal(objects, ['left', 'right'])
     expect(refusal).toEqual({ kind: 'between', id: 'cut', operation: 'subtract', group: false })
-    expect(groupRefusalText(refusal!, objectNumbers(objects))).toBe('Cut 02 lies between them')
+    expect(groupRefusalText(refusal!, objectNumbers(objects))).toBe('Cut 02 lies between them — group and isolate it first, or move it')
     expect(gatherIntoGroup(objects, ['left', 'right'], header('g'))).toBeNull()
   })
 
   it('is refused when a moved cut would pass over a shape it overlaps', () => {
     const cut = path('cut', [disc(0, 0, 30)], { operation: 'subtract' })
     const shape = path('shape', [box(0, 0, 40)])
-    expect(groupRefusalText(groupRefusal([cut, shape, right], ['cut', 'right'])!, objectNumbers([cut, shape, right]))).toBe('Shape 02 lies between them')
+    expect(groupRefusalText(groupRefusal([cut, shape, right], ['cut', 'right'])!, objectNumbers([cut, shape, right]))).toBe('Shape 02 lies between them — move it first')
   })
 
   it('is allowed past what does not overlap, past the same operation, and when nothing lies between', () => {

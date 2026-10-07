@@ -790,7 +790,8 @@ export const useLogoStore = create<LogoStore>()((set) => ({
       const ungrouped = ungroupObjects(state.vectorDocument.objects, objectIdsOf(state.selection))
       if (!ungrouped) return {}
       const kept = objectIdsOf(state.selection).filter((id) => ungrouped.objects.some((object) => object.id === id))
-      return commitObjects(state, 'Ungroup', ungrouped.objects, objectSelection([...kept, ...ungrouped.released]))
+      // A member selected beside its group is released too: it is in the selection once.
+      return commitObjects(state, 'Ungroup', ungrouped.objects, objectSelection([...new Set([...kept, ...ungrouped.released])]))
     }),
 
   setGroupIsolated: (id, isolated) =>

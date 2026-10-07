@@ -329,8 +329,8 @@ const ENTERED_GROUP_GAP_PX = 12
 
 /** What the HUD says the first time a tap takes a whole group. */
 const GROUP_TAP_HINT = 'Group selected: double-tap a piece to work on it alone'
-/** How long it stays, long enough to read its nine words: the next press takes it away sooner. */
-const GROUP_TAP_HINT_MS = 4000
+/** How long it stays, three seconds to read its nine words: the next press takes it away sooner. */
+const GROUP_TAP_HINT_MS = 3000
 
 /**
  * The frames of the selected groups, and of the groups inside them, after a
@@ -2106,7 +2106,8 @@ export class DirectEditController {
     ]
     if (!sentences.length) return
     const ids = [...unpinned, ...gone, ...edited]
-    const around = selectionBox({ ...doc, selectedLayerIds: ids }, (layer) => this.freePathOf(layer))
+    // Measured as layers of their own: a group selected now has no say in their box or its frame.
+    const around = selectionBox({ ...doc, selectedLayerIds: ids, selectedRootIds: ids }, (layer) => this.freePathOf(layer))
     if (around) {
       const corners = (['nw', 'ne', 'se', 'sw'] as const).map((id) => add(boxHandlePoint(around.box, id)!, this.center()))
       this.placeHud({ x: Math.max(...corners.map((c) => c.x)), y: Math.min(...corners.map((c) => c.y)) })
