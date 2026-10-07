@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { groupRefusalOf, ungroupRefusalOf, useLogoStore } from '../../store/logoStore.ts'
 import { cn } from '../../lib/utils.ts'
-import { EditorButton, FOCUS_RING, SwitchButton } from './controls.tsx'
+import { EditorButton, FOCUS_RING, PLATE_RULE, SwitchButton } from './controls.tsx'
 import { GroupButton, noRoomWords, UngroupButton } from './SelectionBar.tsx'
 import { isBlankDocument } from '../../engine/vector/document.ts'
 import { guideRows } from '../../engine/vector/guides.ts'
@@ -123,12 +123,20 @@ function CopiesGlyph() {
   )
 }
 
-const ROW_BUTTON = cn('h-7 shrink-0 rounded-md text-[10px] transition-colors hover:bg-interactive-hover', FOCUS_RING)
+const ROW_BUTTON = cn('h-7 shrink-0 rounded-md text-[10px] font-medium transition-colors duration-(--duration-exit) hover:duration-(--duration-enter) hover:bg-black/[0.045] dark:hover:bg-white/[0.06]', FOCUS_RING)
+
+/** A list set into the plate: a white sheet in a recess, so its rows read like the drawing they describe. */
+const LIST = 'rounded-[10px] bg-surface shadow-(--device-recess)'
+
+/** A selected row: the accent's tint, and its bar down the left edge. */
+const ROW_SELECTED = 'bg-accent/[0.09] shadow-[inset_2px_0_0_var(--accent)] dark:bg-accent/[0.18] dark:shadow-[inset_2px_0_0_var(--accent-strong)]'
+/** A row inside a selected group. */
+const ROW_WITHIN = 'bg-accent/[0.04] dark:bg-accent/[0.08]'
 /*
  * A row's columns after its name, ↑ and ↓, a lock, Add or Cut: narrower for
  * a mouse, which needs no finger's room, to leave the names theirs.
  */
-const MOVE_BUTTON = cn(ROW_BUTTON, 'w-6 text-sidebar-text hover:text-fg disabled:cursor-default disabled:opacity-30 pointer-fine:w-5')
+const MOVE_BUTTON = cn(ROW_BUTTON, 'w-6 text-muted hover:text-ink disabled:cursor-default disabled:opacity-30 pointer-fine:w-5')
 const LOCK_WIDTH = 'w-5 pointer-fine:w-4'
 const OPERATION_WIDTH = 'w-8 pointer-fine:w-7'
 
@@ -187,16 +195,19 @@ export function LayersDrawer() {
         setLayersOpen(false)
       }}
       className={cn(
-        'absolute z-30 flex flex-col border-border bg-sidebar shadow-2xl shadow-black/30',
-        'max-lg:inset-x-0 max-lg:bottom-0 max-lg:max-h-[55%] max-lg:rounded-t-2xl max-lg:border-t',
+        // A panel of the instrument's body: on a phone a sheet rising from the deck, on a desktop a column along the edge.
+        'plate absolute z-30 flex flex-col border-black/[0.07] dark:border-black/60',
+        'max-lg:inset-x-0 max-lg:bottom-0 max-lg:max-h-[55%] max-lg:rounded-t-2xl max-lg:border-t max-lg:shadow-[inset_0_1px_0_rgb(255_255_255/0.9),0_-12px_32px_-12px_rgb(0_0_0/0.25)] dark:max-lg:shadow-[inset_0_1px_0_rgb(255_255_255/0.07),0_-12px_32px_-12px_rgb(0_0_0/0.7)]',
+        'lg:shadow-[inset_1px_0_0_rgb(255_255_255/0.9),-12px_0_32px_-16px_rgb(0_0_0/0.2)] dark:lg:shadow-[inset_1px_0_0_rgb(255_255_255/0.06),-12px_0_32px_-16px_rgb(0_0_0/0.7)]',
         'lg:inset-y-0 lg:right-0 lg:w-80 lg:border-l',
       )}
     >
-      <div className="flex items-center gap-2 border-b border-border py-2 pr-2 pl-3">
-        <h2 id={titleId} className="text-[10px] uppercase tracking-widest text-sidebar-muted">
+      <div className="flex items-center gap-2 border-b border-black/[0.07] py-2 pr-2 pl-3 shadow-[0_1px_0_rgb(255_255_255/0.75)] dark:border-black/50 dark:shadow-[0_1px_0_rgb(255_255_255/0.05)]">
+        <h2 id={titleId} className="engraved">
           Layers
         </h2>
-        <span className="flex-1 text-[10px] text-sidebar-muted">{layers.length} total</span>
+        {/* The count on a small LCD beside the caption. */}
+        <span className="lcd mr-auto inline-flex h-5 items-center rounded-[5px] px-1.5 text-[10px]">{layers.length} total</span>
         <button
           ref={closeRef}
           type="button"
@@ -204,7 +215,7 @@ export function LayersDrawer() {
           aria-label="Close layers"
           title="Close layers (Esc)"
           className={cn(
-            'inline-flex size-7 items-center justify-center rounded-md text-sidebar-muted transition-colors hover:bg-interactive-hover hover:text-fg',
+            'flat-key inline-flex size-7 items-center justify-center rounded-[8px]',
             FOCUS_RING,
           )}
         >
@@ -216,19 +227,19 @@ export function LayersDrawer() {
 
       {/* On a phone the sheet is short: its body scrolls as one, rather than each list in a sliver. */}
       <div className="flex min-h-0 flex-1 flex-col gap-2 p-3 max-lg:overflow-y-auto">
-        <p className="text-[11px] leading-snug text-sidebar-muted">
+        <p className="text-[11px] leading-snug text-muted">
           Applied in order from 01. A cut removes only what is below it, and in a group that keeps its cuts to itself (
           <IsolatedGlyph />) only what is below it in that group. Point at a hole on the canvas to find its cut.
         </p>
         {layers.length === 0 ? (
-          <p className="rounded-lg border border-border bg-interactive-active/40 px-3 py-2 text-xs text-sidebar-muted">
+          <p className={cn(LIST, 'px-3 py-2 text-xs text-muted')}>
             No layers yet.
           </p>
         ) : (
           // Each list takes the space it needs. When the drawer is full the layers give up space first, down to
           // three rows, so the guides keep theirs; only then do the guides give some up too. Both scroll.
           <ul
-            className="shrink-0 rounded-lg border border-border bg-interactive-active/40 lg:min-h-(--least) lg:shrink-[1000] lg:overflow-y-auto"
+            className={cn(LIST, 'shrink-0 lg:min-h-(--least) lg:shrink-[1000] lg:overflow-y-auto')}
             style={leastRows(rows.length)}
           >
             {rows.map((row) =>
@@ -251,7 +262,7 @@ export function LayersDrawer() {
         <FilletsSection />
       </div>
 
-      <div className="flex flex-col gap-2 border-t border-border p-3">
+      <div className={cn(PLATE_RULE, 'flex flex-col gap-2 p-3')}>
         <SheetGroup />
         <EditorButton
           onClick={startOver}
@@ -284,8 +295,8 @@ function SheetGroup() {
   const refusal = canGroup && groupRefusal ? groupRefusal : holdsGroup ? ungroupRefusal : null
   return (
     <div role="group" aria-label="Picked rows" className="flex items-center gap-2 lg:hidden">
-      <span className="shrink-0 text-[11px] text-sidebar-text">{roots.length} selected</span>
-      <span className="min-w-0 flex-1 text-[11px] leading-snug text-rose-300">{refusal}</span>
+      <span className="shrink-0 text-[11px] text-muted">{roots.length} selected</span>
+      <span className="min-w-0 flex-1 text-[11px] leading-snug text-danger">{refusal}</span>
       {canGroup && <GroupButton />}
       {holdsGroup && <UngroupButton />}
     </div>
@@ -349,7 +360,7 @@ function AddToSelection({ id, name, selected }: { id: string; name: string; sele
     >
       <span
         aria-hidden="true"
-        className={cn('inline-flex size-3.5 items-center justify-center rounded-[3px] border', selected ? 'border-fg bg-fg text-sidebar' : 'border-sidebar-muted')}
+        className={cn('inline-flex size-3.5 items-center justify-center rounded-[3px] border', selected ? 'border-accent bg-accent text-accent-ink' : 'border-muted')}
       >
         {selected && (
           <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -372,7 +383,7 @@ function VisibilityButton({ id, name, visible, hiddenWith }: { id: string; name:
     <button
       type="button"
       onClick={() => toggleIllustratorLayerVisibility(id)}
-      className={cn(ROW_BUTTON, 'w-7', visible && !inherited ? 'text-fg' : 'text-sidebar-muted/60 hover:text-sidebar-muted')}
+      className={cn(ROW_BUTTON, 'w-7', visible && !inherited ? 'text-ink' : 'text-muted/60 hover:text-muted')}
       aria-label={`${visible ? `Hide ${name}` : `Show ${name}`}${inherited ? `, ${inherited.toLowerCase()}` : ''}`}
       title={inherited || undefined}
     >
@@ -389,7 +400,7 @@ function VisibilityButton({ id, name, visible, hiddenWith }: { id: string; name:
 function LockedWith({ number }: { number: string }) {
   const words = `Locked with its group ${number}`
   return (
-    <span role="img" aria-label={words} title={words} className={cn('inline-flex h-7 shrink-0 items-center justify-center text-sidebar-muted/60', LOCK_WIDTH)}>
+    <span role="img" aria-label={words} title={words} className={cn('inline-flex h-7 shrink-0 items-center justify-center text-muted/60', LOCK_WIDTH)}>
       <LockGlyph locked />
     </span>
   )
@@ -419,8 +430,8 @@ function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible:
     <li
       aria-level={level}
       className={cn(
-        'flex items-center gap-1 border-b border-border/60 px-1.5 py-1 last:border-b-0',
-        selected ? 'bg-interactive' : within && 'bg-interactive/40',
+        'flex items-center gap-1 border-b border-line/60 px-1.5 py-1 last:border-b-0',
+        selected ? ROW_SELECTED : within && ROW_WITHIN,
       )}
     >
       <AddToSelection id={layer.id} name={name} selected={selected} />
@@ -432,7 +443,7 @@ function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible:
         onClick={(event) => selectIllustratorLayer(layer.id, event.shiftKey || event.metaKey)}
         style={indent(level)}
         className={cn(
-          'flex h-7 min-w-0 flex-1 items-center overflow-hidden rounded-md px-1.5 text-left text-xs text-sidebar-text transition-colors hover:bg-interactive-hover hover:text-fg',
+          'flex h-7 min-w-0 flex-1 items-center overflow-hidden rounded-md px-1.5 text-left text-xs text-ink transition-colors duration-(--duration-exit) hover:duration-(--duration-enter) hover:bg-black/[0.045] dark:hover:bg-white/[0.06]',
           FOCUS_RING,
         )}
         title={
@@ -451,7 +462,7 @@ function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible:
           short, "g11", and two circles in the band's own group by their places there, ".1, .2", to leave them room.
         */}
         {row.ends !== null && (
-          <span className="shrink-0 font-mono-tabular text-sidebar-muted">
+          <span className="shrink-0 font-mono-tabular text-muted">
             {number}
             {'\u00a0'}
           </span>
@@ -459,11 +470,11 @@ function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible:
         <span className={cn('min-w-0 max-w-full truncate', row.ends === null ? 'shrink-0' : 'shrink')}>
           {row.ends === null && (
             <>
-              <span className="font-mono-tabular text-sidebar-muted">{number}</span>{' '}
+              <span className="font-mono-tabular text-muted">{number}</span>{' '}
             </>
           )}
           {row.follows && (
-            <span title={row.empty ? undefined : `Follows ${row.follows}`} className={cn(row.empty && 'text-rose-300')}>
+            <span title={row.empty ? undefined : `Follows ${row.follows}`} className={cn(row.empty && 'text-danger')}>
               <LinkGlyph broken={row.empty} />
             </span>
           )}
@@ -476,18 +487,18 @@ function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible:
           </span>
         )}
         {row.ends !== null && row.empty && (
-          <span className="ml-1 shrink-0 text-rose-300" title="No fit">
+          <span className="ml-1 shrink-0 text-danger" title="No fit">
             <NoFitGlyph />
           </span>
         )}
         {row.copies.length > 0 && (
-          <span className={cn(AFTER_NAME, 'ml-1.5 text-sidebar-muted')} title={`Copies ${row.copies.join(', ')} follow this shape`}>
+          <span className={cn(AFTER_NAME, 'ml-1.5 text-muted')} title={`Copies ${row.copies.join(', ')} follow this shape`}>
             <CopiesGlyph />
             <span className="font-mono-tabular">{row.copiesShown.join(', ')}</span>
           </span>
         )}
         {row.bands.length > 0 && (
-          <span className={cn(AFTER_NAME, 'ml-1.5 text-sidebar-muted')} title={`Bands ${row.bands.join(', ')} follow this circle`}>
+          <span className={cn(AFTER_NAME, 'ml-1.5 text-muted')} title={`Bands ${row.bands.join(', ')} follow this circle`}>
             <BandsGlyph />
             <span className="font-mono-tabular">{row.bandsShown.join(', ')}</span>
           </span>
@@ -517,7 +528,7 @@ function LayerRow({ layer, visible, place }: { layer: IllustratorLayer; visible:
       <button
         type="button"
         onClick={() => setIllustratorLayerOperation(layer.id, layer.operation === 'add' ? 'subtract' : 'add')}
-        className={cn(ROW_BUTTON, OPERATION_WIDTH, layer.operation === 'add' ? 'text-emerald-300' : 'text-rose-300')}
+        className={cn(ROW_BUTTON, OPERATION_WIDTH, layer.operation === 'add' ? 'text-ink' : 'text-danger')}
         aria-label={
           layer.operation === 'add'
             ? `${name} adds material. Make it a cut`
@@ -603,7 +614,7 @@ function sparkKind(name: string): string {
 /** A dropped spark: a four-pointed star. */
 function SparkGlyph() {
   return (
-    <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true" className="shrink-0 text-sidebar-muted">
+    <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true" className="shrink-0 text-muted">
       <path d="M6 .8l1.3 3.9L11.2 6 7.3 7.3 6 11.2 4.7 7.3.8 6l3.9-1.3z" />
     </svg>
   )
@@ -676,7 +687,7 @@ function GroupRow({
   return (
     <li
       aria-level={level}
-      className={cn('flex items-center gap-1 border-b border-border/60 px-1.5 py-1 last:border-b-0', selected ? 'bg-interactive' : within && 'bg-interactive/40')}
+      className={cn('flex items-center gap-1 border-b border-line/60 px-1.5 py-1 last:border-b-0', selected ? ROW_SELECTED : within && ROW_WITHIN)}
     >
       <AddToSelection id={group.id} name={name} selected={selected} />
       <VisibilityButton id={group.id} name={name} visible={group.visible} hiddenWith={hiddenWith} />
@@ -687,7 +698,7 @@ function GroupRow({
           aria-label={expanded ? `Fold ${name}` : `Unfold ${name}`}
           title={expanded ? 'Hide its members' : 'Show its members'}
           onClick={onToggle}
-          className={cn(ROW_BUTTON, 'inline-flex w-4 items-center justify-center text-sidebar-muted hover:text-fg')}
+          className={cn(ROW_BUTTON, 'inline-flex w-4 items-center justify-center text-muted hover:text-ink')}
         >
           <Disclosure open={expanded} />
         </button>
@@ -698,11 +709,11 @@ function GroupRow({
           title={`${name}, ${held}${group.isolated ? `. Keeps its cuts to itself: they cut only what is in it${cuts ? '. Then it cuts as one' : ''}` : ''}. Double-click a piece on the canvas to work on it alone`}
           onClick={(event) => selectIllustratorLayer(group.id, event.shiftKey || event.metaKey)}
           className={cn(
-            'flex h-7 min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-md pr-1 pl-0.5 text-left text-xs text-sidebar-text transition-colors hover:bg-interactive-hover hover:text-fg',
+            'flex h-7 min-w-0 flex-1 items-center gap-1 overflow-hidden rounded-md pr-1 pl-0.5 text-left text-xs text-ink transition-colors duration-(--duration-exit) hover:duration-(--duration-enter) hover:bg-black/[0.045] dark:hover:bg-white/[0.06]',
             FOCUS_RING,
           )}
         >
-          <span className="shrink-0 font-mono-tabular text-sidebar-muted">{number}</span>
+          <span className="shrink-0 font-mono-tabular text-muted">{number}</span>
           {/* A spark is marked by a glyph, its kind shown alone: "Spark · " on every one would leave the kind no room. */}
           {spark && <SparkGlyph />}
           {/*
@@ -713,7 +724,7 @@ function GroupRow({
           <span className="min-w-0 truncate">
             {spark ? sparkKind(group.name) : group.name}
           </span>
-          <span data-count className="ml-auto inline-flex shrink-0 items-center gap-1 font-mono-tabular text-sidebar-muted">
+          <span data-count className="ml-auto inline-flex shrink-0 items-center gap-1 font-mono-tabular text-muted">
             {group.isolated && <IsolatedGlyph />}
             {pieces}
           </span>
@@ -723,7 +734,7 @@ function GroupRow({
         type="button"
         aria-pressed={group.locked}
         onClick={() => toggleIllustratorLayerLock(group.id)}
-        className={cn(ROW_BUTTON, 'inline-flex items-center justify-center', LOCK_WIDTH, group.locked ? 'text-fg' : 'text-sidebar-muted/60 hover:text-fg')}
+        className={cn(ROW_BUTTON, 'inline-flex items-center justify-center', LOCK_WIDTH, group.locked ? 'text-ink' : 'text-muted/60 hover:text-ink')}
         aria-label={`${group.locked ? `Unlock ${name}` : `Lock ${name}`}${lockedAround ? `, ${lockedAround.toLowerCase()}` : ''}`}
         title={
           lockedAround ||
@@ -757,7 +768,7 @@ function GroupRow({
         <button
           type="button"
           onClick={() => setGroupOperation(group.id, cuts ? 'add' : 'subtract')}
-          className={cn(ROW_BUTTON, OPERATION_WIDTH, cuts ? 'text-rose-300' : 'text-emerald-300')}
+          className={cn(ROW_BUTTON, OPERATION_WIDTH, cuts ? 'text-danger' : 'text-ink')}
           aria-label={cuts ? `${name} cuts material as one. Make it add` : `${name} adds material as one. Make it a cut`}
           title={
             cuts
@@ -804,7 +815,7 @@ function GuidesSection() {
       style={leastRows(guides.length)}
     >
       <div className="flex items-center gap-1 pt-1">
-        <h3 id={titleId} className="flex-1 text-[10px] uppercase tracking-widest text-sidebar-muted">
+        <h3 id={titleId} className="flex-1 engraved">
           Guides <span className="font-mono-tabular">· {guides.length}</span>
         </h3>
         <SwitchButton
@@ -816,7 +827,7 @@ function GuidesSection() {
         />
       </div>
       <ul
-        className={cn('rounded-lg border border-border bg-interactive-active/40 lg:min-h-0 lg:overflow-y-auto', !onCanvas && 'opacity-60')}
+        className={cn(LIST, 'lg:min-h-0 lg:overflow-y-auto', !onCanvas && 'opacity-60')}
       >
         {guides.map((guide, index) => {
           const { label, tag, title } = rows[index]
@@ -826,14 +837,14 @@ function GuidesSection() {
             <li
               key={guide.id}
               className={cn(
-                'flex items-center gap-1 border-b border-border/60 px-1.5 py-1 last:border-b-0',
-                selected.has(guide.id) && 'bg-interactive',
+                'flex items-center gap-1 border-b border-line/60 px-1.5 py-1 last:border-b-0',
+                selected.has(guide.id) && ROW_SELECTED,
               )}
             >
               <button
                 type="button"
                 onClick={() => toggleGuideVisibility(guide.id)}
-                className={cn(ROW_BUTTON, 'w-7', guide.visible ? 'text-fg' : 'text-sidebar-muted/60 hover:text-sidebar-muted')}
+                className={cn(ROW_BUTTON, 'w-7', guide.visible ? 'text-ink' : 'text-muted/60 hover:text-muted')}
                 aria-label={guide.visible ? `Hide ${name}` : `Show ${name}`}
               >
                 {guide.visible ? 'On' : 'Off'}
@@ -846,18 +857,18 @@ function GuidesSection() {
                 title={pickable ? title : `${title}. Shown guides can be picked`}
                 onClick={(event) => selectGuides([guide.id], event.shiftKey || event.metaKey)}
                 className={cn(
-                  'flex h-7 min-w-0 flex-1 items-center rounded-md px-2 text-left text-xs text-sidebar-text transition-colors enabled:hover:bg-interactive-hover enabled:hover:text-fg disabled:cursor-default',
+                  'flex h-7 min-w-0 flex-1 items-center rounded-md px-2 text-left text-xs text-ink transition-colors duration-(--duration-exit) enabled:hover:bg-black/[0.045] enabled:hover:duration-(--duration-enter) disabled:cursor-default dark:enabled:hover:bg-white/[0.06]',
                   FOCUS_RING,
                 )}
               >
                 <span className="min-w-0 truncate">{label}</span>
-                {tag && <span className="shrink-0 whitespace-pre font-mono-tabular text-sidebar-muted"> · {tag}</span>}
+                {tag && <span className="shrink-0 whitespace-pre font-mono-tabular text-muted"> · {tag}</span>}
               </button>
               <button
                 type="button"
                 aria-pressed={guide.locked}
                 onClick={() => setGuidesLocked([guide.id], !guide.locked)}
-                className={cn(ROW_BUTTON, 'w-10', guide.locked ? 'text-fg' : 'text-sidebar-muted hover:text-fg')}
+                className={cn(ROW_BUTTON, 'w-10', guide.locked ? 'text-ink' : 'text-muted hover:text-ink')}
                 aria-label={guide.locked ? `Unlock ${name}` : `Lock ${name}`}
               >
                 {guide.locked ? 'Locked' : 'Lock'}
@@ -865,7 +876,7 @@ function GuidesSection() {
               <button
                 type="button"
                 onClick={() => deleteGuides([guide.id])}
-                className={cn(ROW_BUTTON, 'w-6 text-sidebar-muted hover:text-red-400')}
+                className={cn(ROW_BUTTON, 'w-6 text-muted hover:text-danger')}
                 aria-label={`Delete ${name}`}
                 title="Delete guide"
               >
@@ -908,11 +919,11 @@ function FilletsSection() {
       style={leastRows(fillets.length)}
     >
       <div className="flex items-center gap-1 pt-1">
-        <h3 id={titleId} className="flex-1 py-1.5 text-[10px] uppercase tracking-widest text-sidebar-muted">
+        <h3 id={titleId} className="flex-1 py-1.5 engraved">
           Fillets <span className="font-mono-tabular">· {fillets.length}</span>
         </h3>
       </div>
-      <ul className={cn('rounded-lg border border-border bg-interactive-active/40 lg:min-h-0 lg:overflow-y-auto', !construction && 'opacity-60')}>
+      <ul className={cn(LIST, 'lg:min-h-0 lg:overflow-y-auto', !construction && 'opacity-60')}>
         {fillets.map((fillet) => {
           const between = filletEnds(illustrator, fillet.between)
           const state = resolved.get(fillet.id)
@@ -929,12 +940,12 @@ function FilletsSection() {
               key={fillet.id}
               onPointerEnter={() => filletRowHover.set(fillet.id)}
               onPointerLeave={() => filletRowHover.set(null)}
-              className={cn('group/fillet flex items-center gap-1 border-b border-border/60 px-1.5 py-1 last:border-b-0', selected.has(fillet.id) && 'bg-interactive')}
+              className={cn('group/fillet flex items-center gap-1 border-b border-line/60 px-1.5 py-1 last:border-b-0', selected.has(fillet.id) && ROW_SELECTED)}
             >
               <button
                 type="button"
                 onClick={() => toggleFilletVisibility(fillet.id)}
-                className={cn(ROW_BUTTON, 'w-7', fillet.visible ? 'text-fg' : 'text-sidebar-muted/60 hover:text-sidebar-muted')}
+                className={cn(ROW_BUTTON, 'w-7', fillet.visible ? 'text-ink' : 'text-muted/60 hover:text-muted')}
                 aria-label={fillet.visible ? `Hide fillet ${name}` : `Show fillet ${name}`}
               >
                 {fillet.visible ? 'On' : 'Off'}
@@ -947,15 +958,15 @@ function FilletsSection() {
                 title={pickable ? `Fillet ${name}` : `Fillet ${name}. ${why}`}
                 onClick={(event) => selectFillets([fillet.id], event.shiftKey || event.metaKey)}
                 className={cn(
-                  'flex h-7 min-w-0 flex-1 items-center rounded-md px-2 text-left text-xs text-sidebar-text transition-colors enabled:hover:bg-interactive-hover enabled:hover:text-fg disabled:cursor-default',
+                  'flex h-7 min-w-0 flex-1 items-center rounded-md px-2 text-left text-xs text-ink transition-colors duration-(--duration-exit) enabled:hover:bg-black/[0.045] enabled:hover:duration-(--duration-enter) disabled:cursor-default dark:enabled:hover:bg-white/[0.06]',
                   FOCUS_RING,
                 )}
               >
                 <span className="min-w-0 truncate font-mono-tabular">{label}</span>
-                <span className="shrink-0 whitespace-pre font-mono-tabular text-sidebar-muted group-hover/fillet:text-sidebar-text"> · {between}</span>
+                <span className="shrink-0 whitespace-pre font-mono-tabular text-muted group-hover/fillet:text-muted"> · {between}</span>
                 {lost && (
                   <span
-                    className="ml-auto shrink-0 pl-1 text-[10px] text-rose-600"
+                    className="ml-auto shrink-0 pl-1 text-[10px] text-danger"
                     title={noRoomWords(noRoom) ?? 'Its corner is gone: it comes back when the corner does'}
                   >
                     {noRoom ? 'no room' : 'lost'}
@@ -965,7 +976,7 @@ function FilletsSection() {
               <button
                 type="button"
                 onClick={() => deleteFillets([fillet.id])}
-                className={cn(ROW_BUTTON, 'w-6 text-sidebar-muted hover:text-red-400')}
+                className={cn(ROW_BUTTON, 'w-6 text-muted hover:text-danger')}
                 aria-label={`Delete fillet ${name}`}
                 title="Delete fillet"
               >

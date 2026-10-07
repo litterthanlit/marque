@@ -259,7 +259,7 @@ export class RoundTool {
     layer.bringToFront()
     const u = unitsPerCssPixel(this.scope)
     const center = new this.scope.Point(this.scope.view.center.x, this.scope.view.center.y)
-    const pink = new this.scope.Color(HINT_COLOR)
+    const red = new this.scope.Color(HINT_COLOR)
     const corner = this.press?.corner ?? this.hot
     if (corner) {
       const radius = this.dragRadius ?? this.clickRadius(this.alt)
@@ -270,19 +270,19 @@ export class RoundTool {
         const outline = new this.scope.Path({ pathData: cornerSpan(corner, fillet.touches, LEAD_PX * u), insert: false })
         outline.translate(center)
         outline.fillColor = null
-        outline.strokeColor = pink
+        outline.strokeColor = red
         outline.strokeWidth = 1.5 * u
         outline.locked = true
         layer.addChild(outline)
         const circle = new this.scope.Path.Circle({ center: new this.scope.Point(fillet.centre.x, fillet.centre.y).add(center), radius: fillet.used, insert: false })
-        circle.strokeColor = pink
+        circle.strokeColor = red
         circle.strokeWidth = u
         circle.dashArray = fillet.convex ? [4 * u, 3 * u] : []
         circle.locked = true
         layer.addChild(circle)
       }
       const dot = new this.scope.Path.Circle({ center: new this.scope.Point(corner.p.x, corner.p.y).add(center), radius: 4 * u, insert: false })
-      dot.fillColor = pink
+      dot.fillColor = red
       dot.strokeColor = new this.scope.Color('#ffffff')
       dot.strokeWidth = 1.5 * u
       dot.locked = true

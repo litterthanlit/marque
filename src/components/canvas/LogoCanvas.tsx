@@ -795,12 +795,13 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
 
   return (
     <div className="relative size-full">
-      <div className="absolute inset-0 rounded-2xl bg-white shadow-2xl shadow-black/20">
+      {/* The sheet: white paper in both themes, as the mark prints, lifted off the page by a hairline ring and a soft shadow. */}
+      <div className="absolute inset-0 rounded-2xl bg-white shadow-lg">
         <canvas
           ref={canvasRef}
           width={600}
           height={600}
-          className="size-full rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)]"
+          className="size-full rounded-2xl outline-offset-[3px]"
           // The editor sets the cursor itself, per hover zone.
           style={{ imageRendering: 'auto', touchAction: 'none' }}
           tabIndex={0}
@@ -818,8 +819,10 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
           // A failed boolean step is never a silent gap.
           <p
             role="status"
-            className="pointer-events-none absolute bottom-3 left-3 z-10 max-w-[calc(100%-1.5rem)] rounded-md bg-amber-100 px-2 py-1 text-[11px] font-medium text-amber-900 shadow-sm"
+            className="lcd pointer-events-none absolute bottom-3 left-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-[8px] px-2.5 py-1.5 text-[11px] font-medium"
           >
+            {/* A fault: a red square, the stop's shape. */}
+            <span aria-hidden="true" className="size-[7px] shrink-0 rounded-[1px] bg-(--device-rec)" />
             {activeMark.warnings.length === 1
               ? 'One shape could not be combined and is left out of the mark.'
               : `${activeMark.warnings.length} shapes could not be combined and are left out of the mark.`}

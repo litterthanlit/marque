@@ -5,19 +5,14 @@ import { groupRefusalOf, ungroupRefusalOf, useLogoStore } from './store/logoStor
 import { dispatchEditorKey, isBareKey, isEditorInteracting } from './renderer/directEdit/keyboard.ts'
 import { hud } from './renderer/directEdit/hud.ts'
 import { refusals } from './renderer/directEdit/refusal.ts'
-import { isShuffleKey, sidesKeyStep, steppedPolygonSides, toolForKey } from './components/editor/tools.ts'
+import { isMuteKey, isShuffleKey, sidesKeyStep, steppedPolygonSides, toolForKey } from './components/editor/tools.ts'
+import { isMuted, play, setMuted } from './lib/sound.ts'
 
 /** How long the HUD shows the next polygon's sides after [ or ]. */
 const NEXT_SIDES_MS = 1500
 
 function App() {
   useUrlState()
-
-  // Apply saved theme on mount
-  useEffect(() => {
-    const theme = useLogoStore.getState().ui.theme
-    document.documentElement.classList.toggle('light', theme === 'light')
-  }, [])
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -102,6 +97,15 @@ function App() {
         if (tool) {
           e.preventDefault()
           useLogoStore.getState().setActiveTool(tool.id)
+          return
+        }
+        // M is the HOLD switch: it mutes every sound, and says so once.
+        if (isMuteKey(e)) {
+          e.preventDefault()
+          const muted = !isMuted()
+          setMuted(muted)
+          if (!muted) play('toggle')
+          hud.announce(muted ? 'Sound off' : 'Sound on')
           return
         }
         if (isShuffleKey(e)) {

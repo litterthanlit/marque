@@ -5,6 +5,19 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Marque</title>
+    <!-- The theme before the first paint, so it never flashes: the viewer's choice, else their system's, else light. -->
+    <script>
+      (function () {
+        var d = document.documentElement
+        try {
+          var s = localStorage.getItem('marque.theme')
+          var t = s === 'light' || s === 'dark' ? s : matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+          d.dataset.theme = t
+        } catch (e) {
+          d.dataset.theme = 'light'
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

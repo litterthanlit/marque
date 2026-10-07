@@ -3,10 +3,12 @@ import type { EditableShape } from '../../engine/path/editPath.ts'
 import type { CarveHandle } from '../../engine/carve/edit.ts'
 import type { SnapHint } from '../../engine/snap/snapping.ts'
 
-export const SELECTION_COLOR = '#3b82f6'
-export const HINT_COLOR = '#ec4899'
-/** Where a band its circles allow no fit would be: the red of a lost fillet. */
-export const NO_FIT_COLOR = '#e11d48'
+/** The one blue on the canvas: what is selected, and what a tool is about to make (the accent, 6.5:1 on the sheet). */
+export const SELECTION_COLOR = '#384ecb'
+/** A snap as it catches: the red of a light that fires, told from the selection's blue by its lightness too. */
+export const HINT_COLOR = '#e5484d'
+/** Where a band its circles allow no fit would be: the red of a lost fillet, and of every fault. */
+export const NO_FIT_COLOR = '#d93036'
 
 // Layer units per CSS pixel: overlay marks keep a constant on-screen size
 // whatever the view zoom.
@@ -124,17 +126,17 @@ export function drawGhostPoint(scope: paper.PaperScope, layer: paper.Layer, poin
 }
 
 /**
- * Snap hints: pink alignment lines; a cross where the geometry landed; a
+ * Snap hints: red alignment lines; a cross where the geometry landed; a
  * short stroke along the line a circle touches, ringed at the touch; a
  * ringed cross where a centre is pinned.
  */
 export function drawSnapHints(scope: paper.PaperScope, layer: paper.Layer, hints: SnapHint[], center: Vec) {
-  const pink = new scope.Color(HINT_COLOR)
+  const red = new scope.Color(HINT_COLOR)
   const at = (v: Vec) => new scope.Point(v.x + center.x, v.y + center.y)
   for (const hint of hints) {
     if (hint.kind === 'line') {
       const line = new scope.Path.Line({ from: at(hint.a), to: at(hint.b), insert: false })
-      line.strokeColor = pink
+      line.strokeColor = red
       line.strokeWidth = u
       line.dashArray = [3 * u, 3 * u]
       line.locked = true
@@ -148,13 +150,13 @@ export function drawSnapHints(scope: paper.PaperScope, layer: paper.Layer, hints
         to: at({ x: hint.p.x + hint.dir.x * reach, y: hint.p.y + hint.dir.y * reach }),
         insert: false,
       })
-      stroke.strokeColor = pink
+      stroke.strokeColor = red
       stroke.strokeWidth = 1.5 * u
       stroke.locked = true
       layer.addChild(stroke)
       // An open ring, as large as the cross of a point snap, reads against the outline it sits on.
       const ring = new scope.Path.Circle({ center: at(hint.p), radius: 4.5 * u, insert: false })
-      ring.strokeColor = pink
+      ring.strokeColor = red
       ring.strokeWidth = 2 * u
       ring.locked = true
       layer.addChild(ring)
@@ -162,7 +164,7 @@ export function drawSnapHints(scope: paper.PaperScope, layer: paper.Layer, hints
     }
     if (hint.kind === 'pin') {
       const ring = new scope.Path.Circle({ center: at(hint.p), radius: 6 * u, insert: false })
-      ring.strokeColor = pink
+      ring.strokeColor = red
       ring.strokeWidth = 1.5 * u
       ring.locked = true
       layer.addChild(ring)
@@ -171,7 +173,7 @@ export function drawSnapHints(scope: paper.PaperScope, layer: paper.Layer, hints
         [0, 1],
       ]) {
         const arm = new scope.Path.Line({ from: at({ x: hint.p.x - dx * 9 * u, y: hint.p.y - dy * 9 * u }), to: at({ x: hint.p.x + dx * 9 * u, y: hint.p.y + dy * 9 * u }), insert: false })
-        arm.strokeColor = pink
+        arm.strokeColor = red
         arm.strokeWidth = 1.25 * u
         arm.locked = true
         layer.addChild(arm)
@@ -189,7 +191,7 @@ export function drawSnapHints(scope: paper.PaperScope, layer: paper.Layer, hints
         to: p.add(new scope.Point(r * dx, r * dy)),
         insert: false,
       })
-      arm.strokeColor = pink
+      arm.strokeColor = red
       arm.strokeWidth = 1.5 * u
       arm.locked = true
       layer.addChild(arm)

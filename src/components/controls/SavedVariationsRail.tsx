@@ -1,6 +1,7 @@
 import { useLogoStore } from '../../store/logoStore.ts'
 import { useSavedVariations } from '../../hooks/useSavedVariations.ts'
 import { isBlankDocument } from '../../engine/vector/document.ts'
+import { EditorButton } from '../editor/controls.tsx'
 
 interface SavedVariationsRailProps {
   /** A saved mark was put on the canvas. */
@@ -15,25 +16,21 @@ export function SavedVariationsRail({ onOpened }: SavedVariationsRailProps) {
 
   return (
     <div className="flex flex-col gap-2">
-      <button
-        type="button"
-        onClick={() => saveVariation(vectorDocument, params)}
-        disabled={isBlankDocument(vectorDocument)}
-        className="h-7 px-2.5 rounded-md text-xs text-sidebar-text bg-interactive-active hover:bg-interactive-hover hover:text-fg disabled:opacity-40 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
-      >
+      <EditorButton onClick={() => saveVariation(vectorDocument, params)} disabled={isBlankDocument(vectorDocument)} className="w-full">
         Save current
-      </button>
+      </EditorButton>
 
       {variations.length === 0 ? (
-        <p className="text-xs text-sidebar-muted text-pretty px-1">
+        <p className="px-1 text-xs text-pretty text-muted">
           Save a mark to come back to it later.
         </p>
       ) : (
-        <div className="flex flex-col gap-0.5">
+        // A list set into the plate, as the drawer's are.
+        <div className="flex flex-col rounded-[10px] bg-surface p-0.5 shadow-(--device-recess)">
           {variations.map((v) => (
             <div
               key={v.id}
-              className="flex items-center justify-between h-8 px-2.5 rounded-md text-xs group hover:bg-interactive-hover"
+              className="group flex h-8 items-center justify-between rounded-[8px] px-2.5 text-xs transition-colors duration-(--duration-exit) hover:bg-black/[0.045] hover:duration-(--duration-enter) dark:hover:bg-white/[0.06]"
             >
               <button
                 type="button"
@@ -42,14 +39,16 @@ export function SavedVariationsRail({ onOpened }: SavedVariationsRailProps) {
                   onOpened?.()
                 }}
                 title="Open this mark. Undo brings the current one back."
-                className="text-sidebar-text hover:text-fg truncate text-left flex-1 min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised rounded-sm"
+                data-sound="soft"
+                className="min-w-0 flex-1 truncate rounded-sm text-left text-ink outline-offset-2"
               >
                 {v.name}
               </button>
               <button
                 type="button"
                 onClick={() => removeVariation(v.id)}
-                className="text-sidebar-muted hover:text-red-400 ml-2 px-1 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised rounded-sm"
+                data-sound="soft"
+                className="ml-2 shrink-0 rounded-sm px-1 text-muted outline-offset-2 transition-colors duration-(--duration-exit) hover:text-danger hover:duration-(--duration-enter)"
                 aria-label={`Delete ${v.name}`}
               >
                 &times;

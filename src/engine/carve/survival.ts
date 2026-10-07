@@ -16,7 +16,7 @@ export interface SurvivalResult {
 
 const RES = 360
 const PAD = 0.06
-const WEAK_RGB: [number, number, number] = [225, 29, 72]
+const WEAK_RGB: [number, number, number] = [217, 48, 54]
 
 /**
  * Chamfer (3-4) distance transform: for every pixel, the approximate distance

@@ -4,11 +4,13 @@ import { CONSTRUCTION } from '../../renderer/IllustratorRenderer.ts'
 import { useLogoStore } from '../../store/logoStore.ts'
 import { cn } from '../../lib/utils.ts'
 import { EditorButton, FOCUS_RING } from './controls.tsx'
+import { HoldSwitch } from './HoldSwitch.tsx'
+import { play } from '../../lib/sound.ts'
 import { SHUFFLE_SHORTCUT } from './tools.ts'
 
 const TRAY_SIZE = 8
 const SLOTS = Array.from({ length: TRAY_SIZE }, (_, slot) => slot)
-const TILE = 'size-10 shrink-0 rounded-lg sm:size-12'
+const TILE = 'size-10 shrink-0 rounded-[8px] sm:size-12'
 
 interface Deal {
   seed: number
@@ -45,11 +47,12 @@ export function SparkTray() {
 
   return (
     <div className="flex h-12 items-center gap-2 px-3 sm:h-16 sm:justify-center sm:gap-3 sm:px-5">
-      <span aria-hidden="true" className="text-[10px] uppercase tracking-widest text-sidebar-text max-sm:hidden">
+      <span aria-hidden="true" className="engraved max-sm:hidden">
         Sparks
       </span>
       {/* The padding keeps a focus ring inside the scrolling box, which would clip it. On a phone the row
-          scrolls: its end fades out to say there is more, and the last tile scrolls clear of the fade. */}
+          scrolls: its end fades out to say there is more, and the last tile scrolls clear of the fade.
+          From a tablet up, the tiles sit in a well pressed into the deck; a phone's deck has no room for one. */}
       <div
         role="group"
         aria-label="Sparks"
@@ -57,20 +60,26 @@ export function SparkTray() {
         className={cn(
           'flex min-w-0 items-center gap-1.5 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
           'max-sm:flex-1 max-sm:pr-6 max-sm:mask-r-from-[calc(100%-1.5rem)]',
+          'sm:rounded-[12px] sm:bg-(--device-well) sm:p-1.5 sm:shadow-(--device-recess)',
         )}
       >
         {shown
           ? shown.sparks.map((spark, slot) => <SparkButton key={spark.id} spark={spark} slot={slot} />)
-          : SLOTS.map((slot) => <span key={slot} aria-hidden="true" className={cn(TILE, 'bg-interactive')} />)}
+          : SLOTS.map((slot) => <span key={slot} aria-hidden="true" className={cn(TILE, 'bg-(--device-meter-off) opacity-50')} />)}
       </div>
       <EditorButton onClick={shuffleSparks} title={`Deal eight new sparks (${SHUFFLE_SHORTCUT})`}>
         Shuffle
       </EditorButton>
+      <HoldSwitch />
     </div>
   )
 }
 
-/** A small sheet in the construction look: what the canvas will show once the spark is dropped. */
+/**
+ * A small sheet in the construction look, as a key: what the canvas will
+ * show once the spark is dropped. It sinks onto its base under the finger,
+ * and a drop confirms with a click.
+ */
 function SparkButton({ spark, slot }: { spark: Spark; slot: number }) {
   const dropSpark = useLogoStore((s) => s.dropSpark)
   const { viewBox, compoundPathData, fillRule } = spark.mark
@@ -80,13 +89,12 @@ function SparkButton({ spark, slot }: { spark: Spark; slot: number }) {
       type="button"
       aria-label={`Add spark ${slot + 1}`}
       title="Add this spark to the canvas"
-      onClick={() => dropSpark(spark)}
-      className={cn(
-        TILE,
-        'border border-border bg-white p-1.5 transition-transform hover:-translate-y-px active:translate-y-0 active:scale-95',
-        'motion-reduce:transform-none motion-reduce:transition-none',
-        FOCUS_RING,
-      )}
+      data-sound="off"
+      onClick={() => {
+        play('select')
+        dropSpark(spark)
+      }}
+      className={cn(TILE, 'device-key p-1.5 [background:#ffffff] motion-reduce:transform-none', FOCUS_RING)}
     >
       <svg
         viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`}

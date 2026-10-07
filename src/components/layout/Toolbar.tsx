@@ -7,6 +7,8 @@ import { SurvivalPopover } from '../editor/SurvivalPopover.tsx'
 import { ToolbarButton } from './ToolbarButton.tsx'
 import { cn } from '../../lib/utils.ts'
 import { hud } from '../../renderer/directEdit/hud.ts'
+import { play } from '../../lib/sound.ts'
+import { setTheme, useTheme } from '../../lib/theme.ts'
 
 type ShareState = 'idle' | 'copied' | 'failed'
 
@@ -58,8 +60,8 @@ export function Toolbar() {
   // On a phone every control stays in the one row: labels give way to icons, and the wordmark goes last.
   return (
     <>
-      <header className="flex items-center justify-between h-12 gap-2 px-3 sm:px-5 border-b border-border bg-surface-raised">
-        <span className="font-display text-[18px] leading-none font-medium tracking-tight text-fg max-[379px]:hidden">marque</span>
+      <header className="flex h-12 items-center justify-between gap-2 bg-canvas px-3 sm:px-5">
+        <span className="text-[15px] font-semibold leading-none tracking-[-0.035em] text-ink max-[379px]:hidden">marque</span>
         <div className="flex min-w-0 shrink-0 items-center gap-0.5 sm:gap-1 max-[379px]:flex-1 max-[379px]:justify-between">
           <ToolbarButton onClick={undo} disabled={!canUndo} aria-label="Undo" title="Undo (Cmd+Z)">
             <UndoIcon />
@@ -67,14 +69,13 @@ export function Toolbar() {
           <ToolbarButton onClick={redo} disabled={!canRedo} aria-label="Redo" title="Redo (Cmd+Shift+Z)">
             <RedoIcon />
           </ToolbarButton>
-          <div className="max-sm:hidden w-px h-3.5 bg-border mx-1" />
+          <div className="mx-1 h-3.5 w-px bg-line max-sm:hidden" />
           <InkSwatch />
           <ToolbarButton
             onClick={toggleLook}
             aria-label="Show construction lines"
             aria-pressed={look === 'construction'}
             title="Show construction lines (F)"
-            className="aria-pressed:bg-interactive-hover aria-pressed:text-fg"
           >
             <ConstructionIcon />
           </ToolbarButton>
@@ -84,7 +85,7 @@ export function Toolbar() {
             aria-label="Show guides"
             aria-pressed={showGuides}
             title={look === 'construction' ? 'Show guides (Cmd+;)' : 'Show guides (Cmd+;). Guides show in the construction look (F)'}
-            className={cn('aria-pressed:bg-interactive-hover aria-pressed:text-fg', look !== 'construction' && 'opacity-50')}
+            className={cn(look !== 'construction' && 'opacity-50')}
           >
             <GuidesIcon />
           </ToolbarButton>
@@ -103,15 +104,20 @@ export function Toolbar() {
             <span className="max-sm:hidden" aria-live="polite">{SHARE[shareState].label}</span>
           </ToolbarButton>
           <SurvivalPopover />
+          <ThemeToggle />
+          {/* The one key the page is for: it sinks onto its base, its lettering cut into the face. */}
           <button
             type="button"
+            data-sound="key"
             onClick={() => setExportOpen(true)}
             disabled={!canExport}
             className={cn(
-              'ml-1 h-7 px-2 sm:px-3 text-xs font-medium rounded-md transition-colors',
-              'bg-fg text-surface hover:opacity-80',
-              'disabled:opacity-30 disabled:cursor-default',
-              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised',
+              'ml-1 h-7 shrink-0 rounded-key px-2.5 text-xs font-medium sm:px-3',
+              'text-(--key-primary-ink) [background:var(--key-primary-face)] [text-shadow:var(--key-primary-engrave)] shadow-(--key-primary-shadow)',
+              'transition-[transform,box-shadow,filter,opacity] duration-(--duration-exit) ease-out',
+              'enabled:hover:brightness-[1.12] dark:enabled:hover:brightness-[1.04] enabled:active:translate-y-[2px] enabled:active:shadow-(--key-primary-shadow-pressed) enabled:active:duration-75',
+              'disabled:cursor-default disabled:opacity-30',
+              'outline-offset-2',
             )}
           >
             Export
@@ -123,20 +129,47 @@ export function Toolbar() {
   )
 }
 
+/** Light or dark, remembered on this device. The sun and the moon trade places as it flips. */
+function ThemeToggle() {
+  const theme = useTheme()
+  const next = theme === 'dark' ? 'light' : 'dark'
+  return (
+    <ToolbarButton
+      data-sound="off"
+      onClick={() => {
+        setTheme(next)
+        play('toggle')
+      }}
+      aria-label={`Switch to the ${next} theme`}
+      title={`Switch to the ${next} theme`}
+      // A phone's bar has no room for it: there the theme follows the system's.
+      className="relative w-7 px-0 max-sm:hidden sm:w-7 sm:px-0"
+    >
+      <svg {...ICON} className="absolute transition-[transform,opacity] duration-(--duration-move) ease-out" style={{ opacity: theme === 'light' ? 1 : 0, transform: theme === 'light' ? 'none' : 'rotate(-90deg) scale(0.5)' }}>
+        <circle cx="8" cy="8" r="2.75" />
+        <path d="M8 1.5v1.25M8 13.25v1.25M1.5 8h1.25M13.25 8h1.25M3.4 3.4l.9.9M11.7 11.7l.9.9M3.4 12.6l.9-.9M11.7 4.3l.9-.9" />
+      </svg>
+      <svg {...ICON} className="absolute transition-[transform,opacity] duration-(--duration-move) ease-out" style={{ opacity: theme === 'dark' ? 1 : 0, transform: theme === 'dark' ? 'none' : 'rotate(90deg) scale(0.5)' }}>
+        <path d="M13.5 9.6A5.75 5.75 0 0 1 6.4 2.5a5.75 5.75 0 1 0 7.1 7.1Z" />
+      </svg>
+    </ToolbarButton>
+  )
+}
+
 function InkSwatch() {
   const fillColor = useLogoStore((s) => s.params.fillColor)
   const setParam = useLogoStore((s) => s.setParam)
 
+  // The ink in a black bezel, as a colour chip set into the body.
   return (
     <span
       title={`Ink colour ${fillColor.toLowerCase()}`}
       className={cn(
-        'relative mx-1 size-5 shrink-0 rounded-md border border-sidebar-muted',
-        'focus-within:ring-2 focus-within:ring-[color:var(--color-selection)]',
-        'focus-within:ring-offset-2 focus-within:ring-offset-surface-raised',
+        'relative mx-1 size-5 shrink-0 rounded-[5px] bg-(--device-rim) p-[2px] shadow-(--device-rim-edge)',
+        'outline-offset-2 outline-(--focus) has-[:focus-visible]:outline-2',
       )}
-      style={{ backgroundColor: fillColor }}
     >
+      <span aria-hidden="true" className="block size-full rounded-[3px] shadow-[inset_0_0_0_0.5px_rgb(255_255_255/0.18)]" style={{ backgroundColor: fillColor }} />
       <input
         type="color"
         value={fillColor}

@@ -635,7 +635,7 @@ export class DirectEditController {
   private pendingPoint: PendingPoint | null = null
   /** A handle's number is showing by the resting pointer. */
   private readoutShown = false
-  /** Pink hints of the snap in effect, drawn on top of everything. */
+  /** Red hints of the snap in effect, drawn on top of everything. */
   private snapHints: SnapHint[] = []
   /** While a tool places something: its snap index (for one document), where it started, the modifiers held. */
   private toolIndex: { doc: IllustratorDocument; guides: boolean; index: SnapIndex } | null = null

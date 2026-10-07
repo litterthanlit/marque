@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { hud } from '../../renderer/directEdit/hud.ts'
 import { hudPlace } from './hudPlacement.ts'
+import { isEditorInteracting } from '../../renderer/directEdit/keyboard.ts'
+import { play } from '../../lib/sound.ts'
 
 /**
  * Snap labels and measurements next to the pointer. Rendered in the DOM, not
@@ -11,6 +13,11 @@ import { hudPlace } from './hudPlacement.ts'
  * finger the row goes above the touch
  * point, below it only near the top edge. Keyboard edits are also read
  * out to screen readers.
+ *
+ * The row is a strip of LCD glass, so it reads on the sheet in either
+ * theme: the label with a red light that fires as a snap catches, the
+ * measurement in the glass's light figures. A snap caught under a drag
+ * clicks like a detent.
  */
 export function CanvasHud() {
   const state = useSyncExternalStore(hud.subscribe, hud.get, hud.get)
@@ -36,6 +43,13 @@ export function CanvasHud() {
     const next = { width: element.offsetWidth, height: element.offsetHeight }
     setRow((was) => (was.width === next.width && was.height === next.height ? was : next))
   }, [visible, state.label, state.chip, frame.width])
+  // A new snap under the hand is a detent passing: one quiet click. A held label (a refusal, "unpinned") has its own say.
+  const lastLabel = useRef<string | null>(null)
+  useEffect(() => {
+    const label = state.label
+    if (label && label !== lastLabel.current && !hud.holding() && isEditorInteracting()) play('tick', { gain: 0.6 })
+    lastLabel.current = label
+  }, [state.label])
   const { left, top } = hudPlace(state, row, frame)
   return (
     <>
@@ -52,12 +66,15 @@ export function CanvasHud() {
             style={{ left, top }}
           >
             {state.label && (
-              <span className="line-clamp-2 rounded-md bg-pink-500 px-1.5 py-0.5 text-[10px] font-medium text-white shadow-sm">
+              <span
+                data-hud-label
+                className="lcd line-clamp-2 rounded-[6px] px-1.5 py-0.5 text-[10px] font-medium before:mr-1 before:inline-block before:size-[5px] before:rounded-full before:bg-(--device-rec) before:align-[1px] before:shadow-[0_0_4px_var(--device-rec)]"
+              >
                 {state.label}
               </span>
             )}
             {state.chip && (
-              <span className="whitespace-nowrap rounded-md bg-neutral-900/90 px-1.5 py-0.5 font-mono-tabular text-[10px] text-white shadow-sm ring-1 ring-white/15">
+              <span className="lcd whitespace-nowrap rounded-[6px] px-1.5 py-0.5 font-mono-tabular text-[10px]">
                 {state.chip}
               </span>
             )}

@@ -44,11 +44,11 @@ export const CONSTRUCTION = {
   /** A corner's circle: the faintest line on the sheet, lighter than any guide. */
   cornerCircle: { color: '#c8c8c8', width: 0.75 },
   /** A band its circles allow no fit: a dashed red line between their centres, where it would be. */
-  noFit: { color: '#e11d48', width: 1, dash: [4, 3] },
+  noFit: { color: '#d93036', width: 1, dash: [4, 3] },
   /** A centre: a ring that knocks out the lines under it, around a dot, in widths across. */
   centre: { color: '#444444', ring: 7, knockOut: 5, dot: 2 },
   /** A fillet's circle: whole, solid at a concave corner and dashed at a convex one; red and dashed while it has lost its corner. */
-  fillet: { color: '#a3a3a3', width: 0.75, dash: [4, 3], lost: '#e11d48' },
+  fillet: { color: '#a3a3a3', width: 0.75, dash: [4, 3], lost: '#d93036' },
   /** An open circle where a band or a fillet touches, and a small square at a sharp corner of the ink or where guides cross, in widths across. */
   point: { color: '#8a8a8a', outer: 6, inner: 4.25 },
 }
