@@ -14,17 +14,20 @@ export function AppShell() {
   const layersOpen = useLogoStore((s) => s.ui.layersOpen)
 
   return (
-    <div className="h-dvh flex flex-col bg-surface">
+    <div className="flex h-dvh flex-col bg-canvas text-ink">
       <Toolbar />
       <div className="relative flex min-h-0 flex-1 flex-col">
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 bg-paper p-3 text-paper-ink sm:p-4">
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 bg-canvas p-3 sm:p-4">
           {error && (
-            <div role="alert" className="flex items-center gap-3 self-center rounded-lg border border-amber-500/30 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            // A fault: a red square, the stop's shape, so it never reads as something running.
+            <div role="alert" className="flex animate-enter items-center gap-2.5 self-center rounded-lg bg-surface px-3 py-2 text-xs text-ink shadow-md">
+              <span aria-hidden="true" className="size-2 shrink-0 rounded-[1px] bg-danger" />
               <span>{error}</span>
               <button
                 type="button"
+                data-sound="soft"
                 onClick={() => setError(null)}
-                className="shrink-0 rounded-sm font-medium underline underline-offset-2 hover:text-amber-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-amber-50"
+                className="shrink-0 rounded-sm font-medium text-muted underline decoration-line-strong underline-offset-2 transition-colors duration-(--duration-exit) hover:text-ink hover:duration-(--duration-enter)"
               >
                 Dismiss
               </button>
@@ -44,7 +47,8 @@ export function AppShell() {
         <LayersDrawer />
       </div>
       {/* Kept out of main, which holds only the drawing: the dev hook and the e2e checks look for the canvas there. */}
-      <footer className="shrink-0 border-t border-border bg-surface-raised">
+      {/* The deck: a strip of the instrument's body along the bottom edge, its top edge catching the light. */}
+      <footer className="plate shrink-0 border-t border-black/[0.06] shadow-[inset_0_1px_0_rgb(255_255_255/0.9)] dark:border-black/60 dark:shadow-[inset_0_1px_0_rgb(255_255_255/0.07)]">
         <SparkTray />
       </footer>
     </div>

@@ -52,7 +52,6 @@ describe('a fresh store', () => {
     expect(state.vectorDocument?.objects).toEqual([])
     expect(state.illustrator?.layers).toEqual([])
     expect(state.vectorUndoStack).toHaveLength(0)
-    expect(state.ui.theme).toBe('dark')
   })
 
   it('takes a pen shape, and undo empties it again', () => {

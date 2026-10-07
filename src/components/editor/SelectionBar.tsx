@@ -20,7 +20,7 @@ import { refusals } from '../../renderer/directEdit/refusal.ts'
 import { MAX_OFFSET, offsetGeometry, offsetIsQuick, offsetName, type OffsetGeometry } from '../../engine/vector/offsets.ts'
 import { cn } from '../../lib/utils.ts'
 import { SliderControl } from '../controls/SliderControl.tsx'
-import { Divider, EditorButton, FLOATING_SURFACE, Segmented, StepButtons, Stepper, SwitchButton } from './controls.tsx'
+import { Divider, EditorButton, FLOATING_SURFACE, Segmented, StepButtons, Stepper, SUMMARY_LCD, SwitchButton } from './controls.tsx'
 import { RadiusSteps } from './RadiusSteps.tsx'
 import { bandEnds, filletEnds, layerNumber } from './layerNumber.ts'
 import { steppedPolygonSides } from './tools.ts'
@@ -195,13 +195,13 @@ function FilletBar() {
         )}
       >
         <p
-          className="max-w-full truncate px-1.5 text-xs text-sidebar-text"
+          className={SUMMARY_LCD}
           title={`Drag its dot on the canvas to change its radius. It rounds the corner between ${between ?? 'its shapes'} and follows it as they move.`}
         >
           <span aria-live="polite">
             <span key={selectedIds.join(' ')}>{name}</span>
           </span>
-          {numbers && <span className={resolved?.lost ? 'text-rose-600' : undefined}> · {numbers}</span>}
+          {numbers && <span className={resolved?.lost ? 'text-(--device-rec)' : undefined}> · {numbers}</span>}
           {between && <span> · {between}</span>}
         </p>
         <div
@@ -241,7 +241,7 @@ function FilletBar() {
               Round all {like} like this
             </EditorButton>
           )}
-          {alone && like > 0 && skipped > 0 && <span className="self-center px-1 text-[11px] text-sidebar-muted">{skippedWords(skipped)}</span>}
+          {alone && like > 0 && skipped > 0 && <span className="self-center px-1 text-[11px] text-muted">{skippedWords(skipped)}</span>}
           <EditorButton danger onClick={() => deleteFillets(selectedIds)}>
             Delete
           </EditorButton>
@@ -323,7 +323,7 @@ function LayerBar() {
           </EditorButton>
         )}
         <p
-          className="max-w-full truncate px-1.5 text-xs text-sidebar-text"
+          className={SUMMARY_LCD}
           title={selectedLayer ? (selectedLayer.carve ? RECIPE_HINT : FREE_SHAPE_HINT) : group ? GROUP_HINT : undefined}
         >
           <span aria-live="polite">
@@ -363,7 +363,7 @@ function LayerBar() {
           <>
             <Divider className="max-sm:hidden" />
             <div className="flex items-center gap-1" role="group" aria-label={pointLabel}>
-              <span aria-hidden="true" className="px-1 text-[10px] uppercase tracking-widest text-sidebar-text">
+              <span aria-hidden="true" className="px-1 engraved">
                 {pointLabel}
               </span>
               <EditorButton
@@ -606,7 +606,7 @@ function PinnedTo({ target }: { target: string }) {
   const number = layerNumber(illustrator, target)
   return (
     <div className="flex items-center gap-1" role="group" aria-label="Pin">
-      <span className="px-1 text-xs text-sidebar-text" title="Its centre stays on that shape's centre when the shape moves or resizes">
+      <span className="px-1 text-xs text-muted" title="Its centre stays on that shape's centre when the shape moves or resizes">
         Pinned to {number ?? '—'}
       </span>
       <EditorButton
@@ -630,7 +630,7 @@ function Holds({ id }: { id: string }) {
   if (!numbers.length) return null
   return (
     <div className="flex items-center gap-1" role="group" aria-label="Pins held">
-      <span className="px-1 text-xs text-sidebar-text" title="Their centres stay on this shape's centre when it moves or resizes">
+      <span className="px-1 text-xs text-muted" title="Their centres stay on this shape's centre when it moves or resizes">
         Holds {numbers.join(', ')}
       </span>
       <EditorButton
@@ -652,7 +652,7 @@ function Copies({ id }: { id: string }) {
   const numbers = illustrator.layers.flatMap((layer) => (layer.link?.kind === 'offset' && layer.link.of === id ? [layerNumber(illustrator, layer.id)!] : []))
   if (!numbers.length) return null
   return (
-    <span className="px-1 text-xs text-sidebar-text" title="Offset copies that follow this shape as it changes">
+    <span className="px-1 text-xs text-muted" title="Offset copies that follow this shape as it changes">
       Copies {numbers.join(', ')}
     </span>
   )
@@ -664,7 +664,7 @@ function Bands({ id }: { id: string }) {
   const numbers = bandsOf(illustrator.layers, id).map((band) => layerNumber(illustrator, band)!)
   if (!numbers.length) return null
   return (
-    <span className="px-1 text-xs text-sidebar-text" title="Bands that follow this circle as it moves and resizes">
+    <span className="px-1 text-xs text-muted" title="Bands that follow this circle as it moves and resizes">
       Bands {numbers.join(', ')}
     </span>
   )
@@ -732,7 +732,7 @@ function BandSettings({ layer, carve }: { layer: IllustratorLayer; carve: BandSp
   }
   return (
     <>
-      <span aria-hidden="true" className="text-[10px] uppercase tracking-widest text-sidebar-text">
+      <span aria-hidden="true" className="engraved">
         This band
       </span>
       <BandFitControl fit={carve.fit} refused={refused} onChange={(fit) => change({ fit })} />
@@ -910,14 +910,14 @@ function OffsetPanel({ layer, close }: { layer: IllustratorLayer; close: () => v
         <DistanceSteps value={distance} onStep={setDistance} />
       </div>
       {cutSource ? (
-        <p className="text-xs text-sidebar-text">Cuts, as its shape does.</p>
+        <p className="text-xs text-muted">Cuts, as its shape does.</p>
       ) : (
         <SwitchButton label="As cut" checked={asCut} onChange={setChosen} title="Place the copy as a cut: an inset then makes a ring" />
       )}
-      {!cutSource && asCut && distance > 0 && <p className="text-xs text-sidebar-text">{CUTS_ALL_AWAY}</p>}
-      {!asCut && distance < 0 && layer.operation === 'add' && <p className="text-xs text-sidebar-text">{INSIDE_ITS_SOURCE}</p>}
+      {!cutSource && asCut && distance > 0 && <p className="text-xs text-muted">{CUTS_ALL_AWAY}</p>}
+      {!asCut && distance < 0 && layer.operation === 'add' && <p className="text-xs text-muted">{INSIDE_ITS_SOURCE}</p>}
       {empty && (
-        <p className="text-xs text-sidebar-text" role="status">
+        <p className="text-xs text-muted" role="status">
           Nothing is left at this distance.
         </p>
       )}
@@ -1003,7 +1003,7 @@ function OffsetDistance({ layer }: { layer: IllustratorLayer }) {
       <DistanceSteps value={link.distance} onStep={(next) => setOffsetDistance(layer.id, next, 'offset-distance')} />
       {/* On a phone the note takes a line of its own under the slider, which keeps its width. */}
       {cutsAll && (
-        <p className="max-w-32 px-1 text-xs text-sidebar-text max-sm:order-last max-sm:max-w-none max-sm:basis-full">{CUTS_ALL_AWAY}</p>
+        <p className="max-w-32 px-1 text-xs text-muted max-sm:order-last max-sm:max-w-none max-sm:basis-full">{CUTS_ALL_AWAY}</p>
       )}
       <EditorButton
         title={empty ? 'Nothing is left of it to keep: it comes back when its shape grows' : 'Stop following the shape: the copy stays as it is'}
@@ -1099,7 +1099,7 @@ function GuideBar() {
           'pointer-events-auto relative flex max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1.5 p-1.5',
         )}
       >
-        <p className="max-w-full truncate px-1.5 text-xs text-sidebar-text" title="Drag a guide to move it, or nudge it with the arrow keys. Guides show in the construction look and never print.">
+        <p className={SUMMARY_LCD} title="Drag a guide to move it, or nudge it with the arrow keys. Guides show in the construction look and never print.">
           <span aria-live="polite">
             <span key={selectedIds.join(' ')}>{name}</span>
           </span>

@@ -3099,7 +3099,7 @@ test("a pinned channel's end turns it about its middle: Shift keeps 15° steps, 
     if (shift) await page.keyboard.down('Shift')
     await page.mouse.down()
     await page.mouse.move(f.at(54, 50).x, f.at(54, 50).y, { steps: 10 })
-    const label = (await page.locator('main span.bg-pink-500').allTextContents()).join(' ')
+    const label = (await page.locator('main [data-hud-label]').allTextContents()).join(' ')
     await page.mouse.up()
     if (shift) await page.keyboard.up('Shift')
     const groove = (await layers(page)).find((layer) => layer.id === channel)!.carve as GrooveSpec
@@ -3138,7 +3138,7 @@ test('ref 4: B sitting on the bottom line grows from its top corner without snap
   for (let i = 1; i <= 16; i++) {
     // Out along its diagonal, to a radius of about 60 + 2.5 i.
     await page.mouse.move(corner.x + 5 * i * f.unit, corner.y - 5 * i * f.unit)
-    labels.push((await page.locator('main span.bg-pink-500').allTextContents()).join(' '))
+    labels.push((await page.locator('main [data-hud-label]').allTextContents()).join(' '))
   }
   expect(labels.filter((label) => label.includes('tangent'))).toEqual([])
   await page.mouse.up()
@@ -3288,7 +3288,7 @@ test('under the Guide tool, a short drag adds no line, and a far circle never dr
   for (let px = 2; px <= 40; px += 2) {
     const at = towards(px)
     await page.mouse.move(at.x, at.y)
-    labels.push((await page.locator('main span.bg-pink-500').allTextContents()).join(' '))
+    labels.push((await page.locator('main [data-hud-label]').allTextContents()).join(' '))
   }
   await page.mouse.up()
   expect(labels.filter((label) => label.includes('tangent'))).toEqual([])
@@ -5085,11 +5085,11 @@ test('members of a hidden or locked group show it in the drawer, and their own O
     const own = drawer.getByRole('button', { name: new RegExp(`^Hide 01\\.${n} .*, hidden with its group 01$`) })
     await expect(own).toHaveText('On')
     await expect(own).toHaveAttribute('title', 'Hidden with its group 01')
-    await expect(own).toHaveClass(/text-sidebar-muted/)
+    await expect(own).toHaveClass(/text-muted/)
   }
   await drawer.getByRole('button', { name: 'Show 01 Group 1', exact: true }).click()
   await expect(drawer.getByRole('button', { name: /hidden with its group/ })).toHaveCount(0)
-  await expect(drawer.getByRole('button', { name: /^Hide 01\.1 / })).toHaveClass(/text-fg/)
+  await expect(drawer.getByRole('button', { name: /^Hide 01\.1 / })).toHaveClass(/text-ink/)
 
   // A member's label starts a step in from its group's, where the group's toggle puts it.
   const labelX = (number: string) => drawer.getByText(number, { exact: true }).evaluate((span) => span.getBoundingClientRect().left)
@@ -5104,7 +5104,7 @@ test('members of a hidden or locked group show it in the drawer, and their own O
   const padlocks = drawer.getByRole('img', { name: 'Locked with its group 01', exact: true })
   await expect(padlocks).toHaveCount(2)
   await expect(padlocks.first()).toHaveAttribute('title', 'Locked with its group 01')
-  await expect(padlocks.first()).toHaveClass(/text-sidebar-muted/)
+  await expect(padlocks.first()).toHaveClass(/text-muted/)
   const lockColumn = (await drawer.getByRole('button', { name: 'Unlock 01 Group 1', exact: true }).boundingBox())!
   for (const padlock of await padlocks.all()) expect((await padlock.boundingBox())!.x).toBeCloseTo(lockColumn.x, 0)
   expect(await labelX('01')).toBeCloseTo(unlocked.group, 0)
@@ -5713,7 +5713,7 @@ test('a fillet whose corner goes is drawn red and dashed, says it is lost, and r
   // The bar pulled clear of the circle: no corner between them.
   await drag(page, f.at(180, 0), f.at(180, 200))
   await expect.poll(async () => (await filletsOf(page))[0].lost).toBe(true)
-  expect(await filletMarks(page)).toEqual([{ id: made.id, line: 'lost', color: '#e11d48' }])
+  expect(await filletMarks(page)).toEqual([{ id: made.id, line: 'lost', color: '#d93036' }])
   const drawer = await openLayers(page)
   await expect(drawer.getByRole('button', { name: /^Fillet r 15 · 01, 02, lost its corner$/ })).toBeVisible()
   await drawer.getByRole('button', { name: /^Fillet r 15/ }).click()

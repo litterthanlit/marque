@@ -1,5 +1,6 @@
 import type { Refused } from '../../store/logoStore.ts'
 import { hud } from './hud.ts'
+import { play } from '../../lib/sound.ts'
 
 /*
  * Why a command did nothing, such as a refused Cmd+G. The canvas says the
@@ -15,6 +16,8 @@ const listeners = new Set<(refused: Refused) => void>()
 export const refusals = {
   /** Say a refusal: on the canvas when there is one, else in the HUD where it last was. Read out to screen readers either way. */
   say(refused: Refused): void {
+    // A refusal is travel hitting its stop: the dull detent.
+    play('bump')
     if (listeners.size) {
       for (const listener of listeners) listener(refused)
       return

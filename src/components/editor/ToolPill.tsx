@@ -5,7 +5,7 @@ import { PUNCH_SHAPES, SLAB_KINDS, type SlabEntry } from '../../engine/carve/geo
 import { clampSides, MAX_SIDES, MIN_SIDES } from '../../engine/carve/spec.ts'
 import { cn } from '../../lib/utils.ts'
 import { SliderControl } from '../controls/SliderControl.tsx'
-import { Divider, EditorButton, FLOATING_SURFACE, Segmented, Stepper, SwitchButton } from './controls.tsx'
+import { Divider, EditorButton, FLOATING_SURFACE, PLATE_RULE, Segmented, Stepper, SwitchButton, WELL } from './controls.tsx'
 import { EDITOR_TOOLS } from './tools.ts'
 import { BandFitControl, BandSettingControl } from './BandControls.tsx'
 import { RadiusSteps } from './RadiusSteps.tsx'
@@ -45,9 +45,9 @@ export function ToolPill() {
     <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center px-3">
       <div data-canvas-cover className={cn(FLOATING_SURFACE, 'pointer-events-auto flex max-w-full flex-col')}>
         {/* Eight tools and the slabs need about 940px in one row: narrower, they stack, and on a phone the tools are icons. */}
-        <div className="flex items-center justify-center gap-x-2 gap-y-1.5 p-1.5 max-[940px]:flex-col">
-          {/* Below 360px the icons' buttons narrow, so the eight still fit one row at 320. */}
-          <div className="flex flex-wrap justify-center gap-1 max-[359px]:gap-0.5" role="group" aria-label="Tools">
+        <div className="flex items-center justify-center gap-x-2 gap-y-1.5 p-1 max-[940px]:flex-col">
+          {/* Below 360px the icons' buttons narrow, so the eight still fit one row at 320. The tools latch: the one in use stays down, its light on. */}
+          <div className={cn(WELL, 'flex flex-wrap justify-center gap-1 max-[359px]:gap-0.5')} role="group" aria-label="Tools">
             {EDITOR_TOOLS.map((tool) => {
               const pressed = activeTool === tool.id
               return (
@@ -75,7 +75,7 @@ export function ToolPill() {
         </div>
 
         {activeTool === 'punch' && (
-          <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 border-t border-border p-1.5">
+          <div className={`flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 ${PLATE_RULE} p-1.5`}>
             <Segmented
               label="Punch shape"
               options={PUNCH_SHAPE_OPTIONS}
@@ -103,7 +103,7 @@ export function ToolPill() {
         )}
         {(activeTool === 'guide' || activeTool === 'pen') && (
           // One row, so the pill stays short over the canvas; it wraps on a phone.
-          <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 border-t border-border p-1.5">
+          <div className={`flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 ${PLATE_RULE} p-1.5`}>
             {activeTool === 'pen' && (
               <div className="flex items-center gap-2">
                 <OptionLabel>Draws</OptionLabel>
@@ -129,7 +129,7 @@ export function ToolPill() {
         {activeTool === 'band' && <BandOptions />}
         {activeTool === 'round' && <RoundOptions />}
         {(activeTool === 'channel' || activeTool === 'slice') && (
-          <div className="flex justify-center border-t border-border px-3 py-2">
+          <div className={`flex justify-center ${PLATE_RULE} px-3 py-2`}>
             <div className="w-56 max-w-full">
               <SliderControl
                 label="Width"
@@ -176,7 +176,7 @@ function BandOptions() {
   const band = useLogoStore((s) => s.ui.band)
   const setBandSettings = useLogoStore((s) => s.setBandSettings)
   return (
-    <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 border-t border-border p-1.5" role="group" aria-label="Next band">
+    <div className={`flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 ${PLATE_RULE} p-1.5`} role="group" aria-label="Next band">
       <div className="flex items-center gap-2">
         <OptionLabel>Next band</OptionLabel>
         <BandFitControl fit={band.fit} onChange={(fit) => setBandSettings({ fit })} />
@@ -201,7 +201,7 @@ function RoundOptions() {
   const radius = useLogoStore((s) => s.ui.round.radius)
   const setRoundRadius = useLogoStore((s) => s.setRoundRadius)
   return (
-    <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 border-t border-border p-1.5" role="group" aria-label="Next fillet">
+    <div className={`flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 ${PLATE_RULE} p-1.5`} role="group" aria-label="Next fillet">
       <OptionLabel>Next fillet</OptionLabel>
       <div className="flex items-center gap-1">
         <div className="w-44 max-w-full px-1.5">
@@ -267,7 +267,7 @@ function ToolIcon({ tool }: { tool: string | null }) {
 
 function OptionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <span aria-hidden="true" className="px-1 text-[10px] uppercase tracking-widest text-sidebar-text">
+    <span aria-hidden="true" className="engraved px-1">
       {children}
     </span>
   )
@@ -278,9 +278,10 @@ function SlabButtons() {
   const sides = useLogoStore((s) => s.ui.carve.polygonSides)
   return (
     <div className="flex items-center gap-1" role="group" aria-label="Add a slab">
-      <span aria-hidden="true" className="px-1 text-[10px] uppercase tracking-widest text-sidebar-text">
+      <span aria-hidden="true" className="engraved px-1">
         Slab
       </span>
+      <div className={cn(WELL, 'flex gap-1')}>
       {SLAB_KINDS.map((slab) => (
         <EditorButton
           key={slab.id}
@@ -292,6 +293,7 @@ function SlabButtons() {
           <SlabGlyph kind={slab.id} sides={sides} />
         </EditorButton>
       ))}
+      </div>
     </div>
   )
 }

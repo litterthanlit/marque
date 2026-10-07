@@ -69,7 +69,7 @@ export interface SnapIndex {
 }
 
 /**
- * What a snap shows on the canvas, in pink: an alignment line, a cross where
+ * What a snap shows on the canvas, in red: an alignment line, a cross where
  * the geometry landed, a short stroke along the line a circle touches, or a
  * ringed centre where a pin holds.
  */

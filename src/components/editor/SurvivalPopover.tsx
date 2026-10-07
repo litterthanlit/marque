@@ -13,10 +13,11 @@ interface Verdict {
   text: string
 }
 
-const DOT: Record<Verdict['tone'], string> = {
-  empty: 'bg-neutral-600',
-  holds: 'bg-emerald-400',
-  weak: 'bg-rose-500',
+/** The verdict as a light: unlit with nothing to check, lit while every wall holds, red where one is too thin. */
+const LIGHT: Record<Verdict['tone'], 'on' | 'rec' | undefined> = {
+  empty: undefined,
+  holds: 'on',
+  weak: 'rec',
 }
 
 const SIZE_OPTIONS = SURVIVAL_SIZES.map((size) => ({ value: size, label: `${size}px` }))
@@ -27,7 +28,7 @@ function verdictOf(survival: SurvivalResult | null, size: SurvivalSize): Verdict
     const percent = Math.max(1, Math.round(survival.weakRatio * 100))
     return {
       tone: 'weak',
-      text: `About ${percent}% of the ink is too thin to show at ${size}px. Widen the walls marked in pink.`,
+      text: `About ${percent}% of the ink is too thin to show at ${size}px. Widen the walls marked in red.`,
     }
   }
   return { tone: 'holds', text: `Every wall holds up at ${size}px.` }
@@ -48,22 +49,22 @@ export function SurvivalPopover() {
       panelClassName={cn(TOOLBAR_PANEL, 'flex flex-col gap-2.5')}
       trigger={(props) => (
         <ToolbarButton {...props} aria-label={`Survival check. ${verdict.text}`} title={`Survival check. ${verdict.text}`}>
-          <span aria-hidden="true" className={cn('size-2 rounded-full', DOT[verdict.tone])} />
-          <span className="ml-1.5 max-sm:hidden">Survival</span>
+          <span aria-hidden="true" className="lamp size-2" data-light={LIGHT[verdict.tone]} />
+          <span className="max-sm:hidden">Survival</span>
         </ToolbarButton>
       )}
     >
-      <div className="text-[10px] uppercase tracking-widest text-sidebar-muted">Survival check</div>
+      <div className="engraved">Survival check</div>
       <div className="flex items-end gap-3" role="group" aria-label="Mark at actual size">
         {SURVIVAL_SIZES.map((size) => (
           <figure key={size} className="m-0 flex flex-col items-center gap-1">
             <SizePreview mark={mark} size={size} color={fillColor} />
-            <figcaption className="text-[10px] font-mono-tabular text-sidebar-muted">{size}px</figcaption>
+            <figcaption className="font-mono-tabular text-[10px] text-(--device-label)">{size}px</figcaption>
           </figure>
         ))}
       </div>
       <div>
-        <div className="mb-1.5 text-xs text-sidebar-text">Smallest size it must hold up at</div>
+        <div className="mb-1.5 text-xs font-medium text-(--device-label)">Smallest size it must hold up at</div>
         <Segmented
           label="Smallest size in pixels"
           options={SIZE_OPTIONS}
@@ -77,8 +78,8 @@ export function SurvivalPopover() {
         checked={carve.showWeakSpots}
         onChange={(showWeakSpots) => setCarveSettings({ showWeakSpots })}
       />
-      <p className="flex items-start gap-2 text-xs text-sidebar-text" aria-live="polite">
-        <span aria-hidden="true" className={cn('mt-1 size-2 shrink-0 rounded-full', DOT[verdict.tone])} />
+      <p className="flex items-start gap-2 text-xs text-muted" aria-live="polite">
+        <span aria-hidden="true" className="lamp mt-1 size-2" data-light={LIGHT[verdict.tone]} />
         {verdict.text}
       </p>
     </Popover>
@@ -113,7 +114,7 @@ function SizePreview({ mark, size, color }: { mark: MarkData | null; size: numbe
       ref={canvasRef}
       role="img"
       aria-label={`Mark at ${size} pixels`}
-      className="rounded-[3px] bg-white"
+      className="rounded-[3px] bg-white shadow-[0_0_0_1px_rgb(0_0_0/0.08),0_1px_2px_rgb(0_0_0/0.08)]"
       style={{ width: size, height: size }}
     />
   )

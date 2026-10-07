@@ -52,7 +52,7 @@ export function Popover({ label, className, panelClassName, trigger, children }:
         onClick: () => setOpen((current) => !current),
       })}
       {open && (
-        <div id={panelId} role="group" aria-label={label} className={cn(FLOATING_SURFACE, 'z-40 p-3', panelClassName)}>
+        <div id={panelId} role="group" aria-label={label} className={cn(FLOATING_SURFACE, 'z-40 animate-drop p-3', panelClassName)}>
           {typeof children === 'function' ? children(() => setOpen(false)) : children}
         </div>
       )}

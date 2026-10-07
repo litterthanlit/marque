@@ -51,6 +51,13 @@ export function isShuffleKey(event: KeyboardEvent): boolean {
   return isBareKey(event) && event.key.toUpperCase() === SHUFFLE_SHORTCUT
 }
 
+/** Mutes and unmutes every sound, as the HOLD switch does. */
+export const MUTE_SHORTCUT = 'M'
+
+export function isMuteKey(event: KeyboardEvent): boolean {
+  return isBareKey(event) && event.key.toUpperCase() === MUTE_SHORTCUT
+}
+
 /** [ takes a side off the selected polygons and ] adds one: −1, 1, or 0 for any other key. */
 export function sidesKeyStep(event: KeyboardEvent): -1 | 0 | 1 {
   if (!isBareKey(event)) return 0

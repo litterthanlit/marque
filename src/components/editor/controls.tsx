@@ -1,38 +1,46 @@
 import { useEffect, useRef } from 'react'
 import { cn } from '../../lib/utils.ts'
+import { play } from '../../lib/sound.ts'
 
-export const FOCUS_RING =
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised'
+/** Focus shows as the one ring every control shares (index.css), for the keyboard only. */
+export const FOCUS_RING = 'outline-offset-2'
 
-export const FLOATING_SURFACE = 'rounded-xl border border-border bg-surface-raised shadow-lg shadow-black/20'
+/**
+ * A panel of the instrument: a plate of the body's finish lifted off the
+ * sheet, its lit edge and grain. Wells are pressed into it; keys sit in them.
+ */
+export const FLOATING_SURFACE = 'plate plate-raised rounded-[14px]'
+
+/** A rule across a plate between two of its rows: a fine groove, lit on its lower lip. */
+export const PLATE_RULE = 'border-t border-black/[0.07] shadow-[inset_0_1px_0_rgb(255_255_255/0.75)] dark:border-black/50 dark:shadow-[inset_0_1px_0_rgb(255_255_255/0.05)]'
+
+/** A well pressed into a plate, for a row of keys: its corners nest inside the plate's. */
+export const WELL = 'well rounded-[10px] p-0.5'
+
+/** The selection's words and numbers, on a strip of LCD glass as tall as a key. */
+export const SUMMARY_LCD = 'lcd h-8 max-w-full truncate rounded-[8px] px-2.5 text-xs leading-8'
+
+/** Lettering on a key: small capitals set by CSS, so the accessible name keeps its case. */
+export const KEY_LETTERING = 'text-[10px] font-medium uppercase leading-none tracking-[0.03em]'
 
 interface EditorButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  /** A toggle or one choice of several: sets `aria-pressed` and lights the button. */
+  /** A toggle or one choice of several: sets `aria-pressed`, latches the key down and lights its window. */
   pressed?: boolean
   danger?: boolean
   /** The one action a panel is for, such as making what it sets. */
   primary?: boolean
 }
 
+/** A raised key on a 2px base that sinks under the finger, and clicks down and up. */
 export function EditorButton({ pressed, danger, primary, className, children, ...props }: EditorButtonProps) {
   return (
     <button
       type="button"
       aria-pressed={pressed}
+      data-sound="key"
+      data-tone={primary ? 'primary' : danger ? 'danger' : undefined}
       {...props}
-      className={cn(
-        'inline-flex h-8 shrink-0 items-center justify-center rounded-lg px-2.5 text-xs transition-colors',
-        'disabled:opacity-40 disabled:cursor-default aria-disabled:opacity-40 aria-disabled:cursor-default aria-expanded:bg-interactive aria-expanded:text-fg',
-        FOCUS_RING,
-        pressed
-          ? 'bg-interactive text-fg ring-1 ring-interactive-ring'
-          : primary
-            ? 'bg-pink-500 font-medium text-white hover:bg-pink-400'
-            : danger
-            ? 'bg-interactive-active text-red-400 hover:bg-interactive-hover'
-            : 'bg-interactive-active text-sidebar-text hover:bg-interactive-hover hover:text-fg',
-        className,
-      )}
+      className={cn('device-key inline-flex h-8 shrink-0 select-none items-center justify-center gap-1.5 rounded-[8px] px-2.5', KEY_LETTERING, FOCUS_RING, className)}
     >
       {children}
     </button>
@@ -48,26 +56,36 @@ interface SegmentedProps<T extends string | number> {
   className?: string
 }
 
+/**
+ * One choice of several, as a row of interlocked keys in a well: the chosen
+ * one is a key face, latched down; the others are lettering printed on the
+ * well, a press away.
+ */
 export function Segmented<T extends string | number>({ label, options, value, onChange, className }: SegmentedProps<T>) {
   return (
-    <div className={cn('flex gap-1 rounded-lg bg-interactive-active p-0.5', className)} role="group" aria-label={label}>
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          aria-pressed={value === option.value}
-          title={option.title}
-          disabled={option.disabled}
-          onClick={() => onChange(option.value)}
-          className={cn(
-            'h-7 flex-1 rounded-md px-2.5 text-xs transition-colors disabled:cursor-default disabled:opacity-40',
-            FOCUS_RING,
-            value === option.value ? 'bg-interactive text-fg shadow-sm' : 'text-sidebar-text enabled:hover:text-fg',
-          )}
-        >
-          {option.label}
-        </button>
-      ))}
+    <div className={cn('flex gap-1 rounded-[10px] p-0.5 well', className)} role="group" aria-label={label}>
+      {options.map((option) => {
+        const chosen = value === option.value
+        return (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={chosen}
+            data-sound="key"
+            title={option.title}
+            disabled={option.disabled}
+            onClick={() => onChange(option.value)}
+            className={cn(
+              'h-7 flex-1 rounded-[8px] px-2.5 select-none',
+              KEY_LETTERING,
+              FOCUS_RING,
+              chosen ? 'device-key before:hidden' : 'flat-key',
+            )}
+          >
+            {option.label}
+          </button>
+        )
+      })}
     </div>
   )
 }
@@ -80,7 +98,11 @@ interface SwitchButtonProps {
   className?: string
 }
 
-/** Pink like the snap hints and the weak-spot marks it turns on: the switch reads as part of the same system. */
+/**
+ * A switch with its own light: a cap that snaps across a recessed slot,
+ * showing the orange of a switch that is on, as the snap hints it turns on
+ * show the hand is on something. Two tiny clicks as it flips.
+ */
 export function SwitchButton({ label, checked, onChange, title, className }: SwitchButtonProps) {
   return (
     <button
@@ -88,34 +110,30 @@ export function SwitchButton({ label, checked, onChange, title, className }: Swi
       role="switch"
       aria-checked={checked}
       title={title}
-      onClick={() => onChange(!checked)}
+      onClick={() => {
+        play('toggle')
+        onChange(!checked)
+      }}
       className={cn(
-        'flex h-8 shrink-0 items-center justify-between gap-2 rounded-lg bg-interactive-active px-2.5 text-xs text-sidebar-text transition-colors hover:bg-interactive-hover hover:text-fg',
+        'flat-key group/switch flex h-8 shrink-0 items-center justify-between gap-2 rounded-[8px] px-2.5 text-xs font-medium',
         FOCUS_RING,
         className,
       )}
     >
       <span>{label}</span>
-      <span
-        aria-hidden="true"
-        className={cn(
-          'relative h-4 w-7 rounded-full transition-colors duration-150',
-          checked ? 'bg-pink-500' : 'bg-neutral-700',
-        )}
-      >
+      <span aria-hidden="true" className="relative h-3.5 w-7 shrink-0 overflow-hidden rounded-full bg-black/10 shadow-(--device-recess) dark:bg-black/40">
         <span
-          className={cn(
-            'absolute top-0.5 left-0.5 size-3 rounded-full bg-white shadow-sm transition-transform duration-150 motion-reduce:transition-none',
-            checked ? 'translate-x-3' : 'translate-x-0',
-          )}
+          className="absolute inset-y-0 left-0 w-1/2 bg-(--device-hold) opacity-0 shadow-[inset_0_1px_2px_rgb(0_0_0/0.25)] transition-opacity duration-(--duration-exit) group-aria-checked/switch:opacity-100 group-aria-checked/switch:duration-(--duration-enter)"
         />
+        <span className="absolute inset-y-[2px] left-[2px] w-[13px] rounded-full [background:var(--device-key-face)] shadow-[0_0_0_0.5px_rgb(0_0_0/0.25),0_1px_1px_rgb(0_0_0/0.2),inset_0_1px_0_rgb(255_255_255/0.8)] transition-transform duration-(--duration-enter) ease-spring group-aria-checked/switch:translate-x-[11px] dark:shadow-[0_0_0_0.5px_rgb(0_0_0/0.8),0_1px_1px_rgb(0_0_0/0.5),inset_0_1px_0_rgb(255_255_255/0.12)]" />
       </span>
     </button>
   )
 }
 
+/** A groove cut into the plate between two groups: a shadow and the lit lip below it. */
 export function Divider({ className }: { className?: string }) {
-  return <span aria-hidden="true" className={cn('h-4 w-px shrink-0 bg-border', className)} />
+  return <span aria-hidden="true" className={cn('h-5 w-px shrink-0 bg-black/10 shadow-[1px_0_0_rgb(255_255_255/0.8)] dark:bg-black/50 dark:shadow-[1px_0_0_rgb(255_255_255/0.06)]', className)} />
 }
 
 interface StepperProps {
@@ -137,13 +155,14 @@ interface StepperProps {
 export function Stepper({ label, name, value, min, max, onStep, lessLabel, moreLabel, title }: StepperProps) {
   return (
     <div className="flex items-center gap-1" role="group" aria-label={name ?? label} title={title}>
-      <span aria-hidden="true" className="px-1 text-[10px] uppercase tracking-widest text-sidebar-text">
+      <span aria-hidden="true" className="engraved px-1">
         {label}
       </span>
       <EditorButton aria-label={lessLabel} title={lessLabel} disabled={value !== null && value <= min} onClick={() => onStep(-1)} className="w-8 px-0">
         −
       </EditorButton>
-      <output aria-live="polite" className="w-6 text-center text-xs tabular-nums text-fg">
+      {/* The value on a small LCD between its keys. */}
+      <output aria-live="polite" className="lcd h-6 min-w-7 rounded-[5px] px-1 text-center text-xs font-light leading-6">
         {value ?? '–'}
       </output>
       <EditorButton aria-label={moreLabel} title={moreLabel} disabled={value !== null && value >= max} onClick={() => onStep(1)} className="w-8 px-0">

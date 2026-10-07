@@ -74,13 +74,10 @@ import {
   writeRecipe,
 } from './objectEdits.ts'
 
-type ThemeMode = 'dark' | 'light'
-
 /** How the canvas draws the mark: as a construction sheet, or as the finished ink. */
 export type CanvasLook = 'construction' | 'final'
 
 interface UIState {
-  theme: ThemeMode
   /** `null` is plain selecting. */
   activeTool: EditorTool | null
   carve: CarveSettings
@@ -395,7 +392,6 @@ export const useLogoStore = create<LogoStore>()((set, get) => ({
   },
   error: null,
   ui: {
-    theme: readStoredTheme(),
     activeTool: null,
     carve: { ...DEFAULT_CARVE_SETTINGS },
     viewport: { width: 600, height: 600 },
@@ -1741,16 +1737,6 @@ function duplicateLayer(layer: IllustratorLayer): IllustratorLayer {
       dx: layer.transform.dx + DUPLICATE_OFFSET,
       dy: layer.transform.dy + DUPLICATE_OFFSET,
     },
-  }
-}
-
-// Storage can be missing (tests, server rendering) or throw (blocked site data).
-function readStoredTheme(): ThemeMode {
-  try {
-    if (typeof window === 'undefined') return 'dark'
-    return (window.localStorage.getItem('dalat.theme') as ThemeMode) || 'dark'
-  } catch {
-    return 'dark'
   }
 }
 

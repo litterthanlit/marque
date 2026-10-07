@@ -27,7 +27,7 @@ const roundVec = (v: Vec): Vec => ({ x: round2(v.x), y: round2(v.y) })
 
 // A click without a drag stamps a punch of this radius.
 const DEFAULT_PUNCH_RADIUS = 36
-const PREVIEW_COLOR = '#3b82f6'
+const PREVIEW_COLOR = '#384ecb'
 
 /**
  * Punch, Channel and Slice. Press to start, drag to size, release to cut.
