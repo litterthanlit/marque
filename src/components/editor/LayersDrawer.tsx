@@ -2,15 +2,17 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { groupRefusalOf, ungroupRefusalOf, useLogoStore } from '../../store/logoStore.ts'
 import { cn } from '../../lib/utils.ts'
 import { EditorButton, FOCUS_RING, SwitchButton } from './controls.tsx'
-import { GroupButton, UngroupButton } from './SelectionBar.tsx'
+import { GroupButton, noRoomWords, UngroupButton } from './SelectionBar.tsx'
 import { isBlankDocument } from '../../engine/vector/document.ts'
 import { guideRows } from '../../engine/vector/guides.ts'
-import { bandEnds, layerNumber, nearNumber } from './layerNumber.ts'
+import { bandEnds, filletEnds, layerNumber, nearNumber } from './layerNumber.ts'
+import { filletRowHover } from '../../renderer/directEdit/filletPreview.ts'
 import { offsetName } from '../../engine/vector/offsets.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
 import type { GroupObject, VectorObject } from '../../engine/vector/types.ts'
 import { ancestorsOf, isSparkGroup, parentsOf, SPARK_GROUP_PREFIX } from '../../engine/vector/groups.ts'
 import { bandsOf } from '../../engine/vector/bands.ts'
+import { useActiveMark } from '../../hooks/useActiveMark.ts'
 
 /**
  * How a row names a layer. An offset copy is named for what it follows, by
@@ -246,6 +248,7 @@ export function LayersDrawer() {
           </ul>
         )}
         <GuidesSection />
+        <FilletsSection />
       </div>
 
       <div className="flex flex-col gap-2 border-t border-border p-3">
@@ -865,6 +868,106 @@ function GuidesSection() {
                 className={cn(ROW_BUTTON, 'w-6 text-sidebar-muted hover:text-red-400')}
                 aria-label={`Delete ${name}`}
                 title="Delete guide"
+              >
+                ×
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+    </section>
+  )
+}
+
+/**
+ * The fillets, under the guides: only when there are any. Each row reads
+ * "r 25 · 03, 05", its radius and the shapes whose corner it rounds by
+ * their numbers above, with its own On / Off and delete; one that has lost
+ * its corner, or has no room on it, says so. A row picks its fillet only while fillets are on the
+ * canvas, in the construction look, and lights its circle there while the
+ * pointer is over it.
+ */
+function FilletsSection() {
+  const fillets = useLogoStore((s) => s.vectorDocument.fillets)
+  const illustrator = useLogoStore((s) => s.illustrator)
+  const selectFillets = useLogoStore((s) => s.selectFillets)
+  const toggleFilletVisibility = useLogoStore((s) => s.toggleFilletVisibility)
+  const deleteFillets = useLogoStore((s) => s.deleteFillets)
+  const construction = useLogoStore((s) => s.ui.look === 'construction')
+  const mark = useActiveMark()
+  const titleId = useId()
+  // A row taken away under the pointer leaves no fillet lit.
+  useEffect(() => () => filletRowHover.set(null), [])
+  if (fillets.length === 0) return null
+  const selected = new Set(illustrator.selectedFilletIds ?? [])
+  const resolved = new Map((mark.fillets ?? []).map((fillet) => [fillet.id, fillet]))
+  return (
+    <section
+      aria-labelledby={titleId}
+      className="flex shrink-0 flex-col gap-1.5 lg:min-h-[calc(var(--least)+2.5rem)] lg:shrink"
+      style={leastRows(fillets.length)}
+    >
+      <div className="flex items-center gap-1 pt-1">
+        <h3 id={titleId} className="flex-1 py-1.5 text-[10px] uppercase tracking-widest text-sidebar-muted">
+          Fillets <span className="font-mono-tabular">· {fillets.length}</span>
+        </h3>
+      </div>
+      <ul className={cn('rounded-lg border border-border bg-interactive-active/40 lg:min-h-0 lg:overflow-y-auto', !construction && 'opacity-60')}>
+        {fillets.map((fillet) => {
+          const between = filletEnds(illustrator, fillet.between)
+          const state = resolved.get(fillet.id)
+          const lost = state?.lost === true
+          const noRoom = state?.lost ? state.noRoom : undefined
+          const clamped = state && !state.lost && state.used < fillet.radius - 0.5 ? Math.floor(state.used) : null
+          const label = `r ${fillet.radius}`
+          const name = `${label} · ${between}${lost ? `, ${noRoom ? 'no room' : 'lost its corner'}` : ''}${clamped !== null ? `, clamped to ${clamped}` : ''}`
+          const pickable = construction && fillet.visible
+          // Why a row cannot pick its fillet: hidden, or the fillets are off the canvas in the final look.
+          const why = !fillet.visible ? 'Show it to pick it' : 'Fillets can be picked in the construction look (F)'
+          return (
+            <li
+              key={fillet.id}
+              onPointerEnter={() => filletRowHover.set(fillet.id)}
+              onPointerLeave={() => filletRowHover.set(null)}
+              className={cn('group/fillet flex items-center gap-1 border-b border-border/60 px-1.5 py-1 last:border-b-0', selected.has(fillet.id) && 'bg-interactive')}
+            >
+              <button
+                type="button"
+                onClick={() => toggleFilletVisibility(fillet.id)}
+                className={cn(ROW_BUTTON, 'w-7', fillet.visible ? 'text-fg' : 'text-sidebar-muted/60 hover:text-sidebar-muted')}
+                aria-label={fillet.visible ? `Hide fillet ${name}` : `Show fillet ${name}`}
+              >
+                {fillet.visible ? 'On' : 'Off'}
+              </button>
+              <button
+                type="button"
+                aria-pressed={selected.has(fillet.id)}
+                aria-label={`Fillet ${name}`}
+                disabled={!pickable}
+                title={pickable ? `Fillet ${name}` : `Fillet ${name}. ${why}`}
+                onClick={(event) => selectFillets([fillet.id], event.shiftKey || event.metaKey)}
+                className={cn(
+                  'flex h-7 min-w-0 flex-1 items-center rounded-md px-2 text-left text-xs text-sidebar-text transition-colors enabled:hover:bg-interactive-hover enabled:hover:text-fg disabled:cursor-default',
+                  FOCUS_RING,
+                )}
+              >
+                <span className="min-w-0 truncate font-mono-tabular">{label}</span>
+                <span className="shrink-0 whitespace-pre font-mono-tabular text-sidebar-muted group-hover/fillet:text-sidebar-text"> · {between}</span>
+                {lost && (
+                  <span
+                    className="ml-auto shrink-0 pl-1 text-[10px] text-rose-600"
+                    title={noRoomWords(noRoom) ?? 'Its corner is gone: it comes back when the corner does'}
+                  >
+                    {noRoom ? 'no room' : 'lost'}
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteFillets([fillet.id])}
+                className={cn(ROW_BUTTON, 'w-6 text-sidebar-muted hover:text-red-400')}
+                aria-label={`Delete fillet ${name}`}
+                title="Delete fillet"
               >
                 ×
               </button>

@@ -44,3 +44,9 @@ export function bandEnds(doc: Pick<IllustratorDocument, 'layers' | 'groups' | 'g
     return guide < 0 ? '—' : `${short ? 'g' : 'guide '}${guide + 1}`
   })
 }
+
+/** The shapes a fillet rounds the corner between, by their numbers in order: "02, 03", or one number for a corner of one shape. */
+export function filletEnds(doc: Pick<IllustratorDocument, 'layers' | 'groups'>, between: readonly [string, string]): string {
+  const numbers = [...new Set(between)].map((id) => layerNumber(doc, id) ?? '—')
+  return numbers.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).join(', ')
+}

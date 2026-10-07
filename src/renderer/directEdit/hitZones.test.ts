@@ -536,3 +536,25 @@ describe('cuts a move carries, with isolated groups', () => {
     expect(carriedCuts(doc(true), ['right'], items)).toEqual(['cut'])
   })
 })
+
+describe('fillets', () => {
+  const inside = { id: 'inside', c: { x: 120, y: 0 }, r: 20 }
+  const apart = { id: 'apart', c: { x: -250, y: 262 }, r: 10 }
+  const withFillets = (filletsFirst: boolean): HitContext => ({ ...context([]), fillets: [inside, apart], filletsFirst })
+
+  it('under Select, come after every material zone: a fillet circle on a shape leaves the press to the shape', () => {
+    const zone = findZone(withFillets(false), { x: 140, y: 0 })
+    expect(zone).toEqual({ kind: 'body', layerId: 'slab' })
+    expect(findZone(withFillets(false), { x: -240, y: 262 })).toEqual({ kind: 'fillet', filletId: 'apart' })
+  })
+
+  it('under the Round tool, come first, by their circle or the dot at their centre', () => {
+    expect(findZone(withFillets(true), { x: 140, y: 1 })).toEqual({ kind: 'fillet', filletId: 'inside' })
+    expect(findZone(withFillets(true), { x: 121, y: 1 })).toEqual({ kind: 'fillet', filletId: 'inside' })
+    expect(findZone(withFillets(true), { x: 130, y: 0 }).kind).not.toBe('fillet')
+  })
+
+  it("put the selected fillet's radius dot before everything", () => {
+    expect(findZone({ ...withFillets(false), filletDot: { filletId: 'inside', p: { x: 134, y: 14 } } }, { x: 135, y: 15 })).toEqual({ kind: 'fillet-dot', filletId: 'inside' })
+  })
+})

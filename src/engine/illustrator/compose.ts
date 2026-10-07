@@ -101,7 +101,7 @@ export type StackUnit =
 /** An isolated group in the stack. */
 export type GroupUnit = Extract<StackUnit, { kind: 'group' }>
 
-export function stackUnits(doc: IllustratorDocument): StackUnit[] {
+export function stackUnits(doc: Pick<IllustratorDocument, 'layers' | 'groups'>): StackUnit[] {
   const groups = doc.groups
   if (!groups?.some((group) => group.isolated)) return doc.layers.map((layer) => ({ kind: 'layer', layer }))
   const byId = new Map(groups.map((group) => [group.id, group]))
@@ -241,7 +241,7 @@ function cachedGroupPath(
 }
 
 /** The mark, with the boolean steps that failed (in a group or the stack) as its warnings. */
-export function composeIllustratorMark(doc: IllustratorDocument): MarkData {
+export function composeIllustratorMark(doc: Pick<IllustratorDocument, 'layers' | 'groups'>): MarkData {
   const warnings: string[] = []
   const inputs = stackInputs(stackUnits(doc), (layer) => (layer.pathData ? layerInput(layer) : null), true, warnings)
 

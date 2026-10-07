@@ -39,6 +39,10 @@ export type Zone =
   | { kind: 'guide-handle'; handle: GuideHandle }
   /** A guide, at `point` (layer space): the point of it nearest the pointer. */
   | { kind: 'guide'; guideId: string; point: Vec }
+  /** The selected fillet's radius dot. */
+  | { kind: 'fillet-dot'; filletId: string }
+  /** A fillet's circle, or the dot at its centre. */
+  | { kind: 'fillet'; filletId: string }
   | { kind: 'empty' }
 
 export const EMPTY_ZONE: Zone = { kind: 'empty' }
@@ -76,6 +80,19 @@ export interface HitContext {
   guideHandles?: readonly GuideHandle[]
   /** Under the Guide tool, guides are the first zone; under Select, the last. */
   guidesFirst?: boolean
+  /** The fillets' circles a press can reach, layer space: a lost one where it sat, at its radius. Missing is none. */
+  fillets?: readonly FilletCircle[]
+  /** The selected fillet's radius dot, layer space. */
+  filletDot?: { filletId: string; p: Vec } | null
+  /** Under the Round tool, fillets are the first zone; under Select, they come after every material zone. */
+  filletsFirst?: boolean
+}
+
+/** A fillet's circle as a press finds it. */
+export interface FilletCircle {
+  id: string
+  c: Vec
+  r: number
 }
 
 function px(ctx: HitContext, value: number): number {
@@ -444,6 +461,29 @@ function findGuide(ctx: HitContext, p: Vec): Zone | null {
   return hit ? { kind: 'guide', guideId: hit.guide.id, point: hit.point } : null
 }
 
+/** How near a fillet's circle a press must be, in CSS pixels (doubled on touch); its centre dot and radius dot take a little more. */
+export const FILLET_PX = 4
+const FILLET_DOT_PX = 7
+
+/** The selected fillet's radius dot under the pointer. */
+function findFilletDot(ctx: HitContext, p: Vec): Zone | null {
+  const dot = ctx.filletDot
+  return dot && distance(toLayer(ctx, p), dot.p) <= px(ctx, FILLET_DOT_PX) ? { kind: 'fillet-dot', filletId: dot.filletId } : null
+}
+
+/** The fillet whose circle or centre is under the pointer: the nearest within reach. */
+function findFillet(ctx: HitContext, p: Vec): Zone | null {
+  if (!ctx.fillets?.length) return null
+  const q = toLayer(ctx, p)
+  let best: { id: string; d: number } | null = null
+  for (const fillet of ctx.fillets) {
+    const fromCentre = distance(q, fillet.c)
+    const d = Math.min(Math.abs(fromCentre - fillet.r), fromCentre <= px(ctx, FILLET_DOT_PX) ? 0 : Infinity)
+    if (d <= px(ctx, FILLET_PX) && (!best || d < best.d)) best = { id: fillet.id, d }
+  }
+  return best ? { kind: 'fillet', filletId: best.id } : null
+}
+
 /** A resize handle in the middle of a side: it sits right where that side's edge is pressed to bend it. */
 function isSideHandle(zone: Zone): boolean {
   return zone.kind === 'handle' && isSideId(zone.handle)
@@ -464,6 +504,13 @@ export function findZone(ctx: HitContext, p: Vec): Zone {
   // A selected guide's handles are only there while no layer is selected, so they come first either way.
   const guideHandle = findGuideHandle(ctx, p)
   if (guideHandle) return guideHandle
+  // So is a selected fillet's radius dot, and under the Round tool every fillet.
+  const filletDot = findFilletDot(ctx, p)
+  if (filletDot) return filletDot
+  if (ctx.filletsFirst) {
+    const fillet = findFillet(ctx, p)
+    if (fillet) return fillet
+  }
   if (ctx.guidesFirst) {
     const guide = findGuide(ctx, p)
     if (guide) return guide
@@ -490,8 +537,8 @@ export function findZone(ctx: HitContext, p: Vec): Zone {
   if (set?.kind === 'box' && set.box && boxContains(set.box, toLayer(ctx, p), framePad(ctx))) {
     return { kind: 'frame', set }
   }
-  // Under Select a guide is the last thing a press can reach: one lying along an edge never takes the edge's drag.
-  return (!ctx.guidesFirst && findGuide(ctx, p)) || EMPTY_ZONE
+  // Under Select fillets and guides are the last things a press can reach: one lying along an edge never takes the edge's drag.
+  return (!ctx.filletsFirst && findFillet(ctx, p)) || (!ctx.guidesFirst && findGuide(ctx, p)) || EMPTY_ZONE
 }
 
 export function zoneKey(zone: Zone): string {
@@ -512,6 +559,10 @@ export function zoneKey(zone: Zone): string {
       return `guide-handle:${zone.handle.guideId}:${zone.handle.id}`
     case 'guide':
       return `guide:${zone.guideId}`
+    case 'fillet-dot':
+      return `fillet-dot:${zone.filletId}`
+    case 'fillet':
+      return `fillet:${zone.filletId}`
     default:
       return 'empty'
   }

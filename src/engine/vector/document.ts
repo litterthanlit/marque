@@ -81,7 +81,7 @@ export function isBlankDocument(document: Pick<VectorDocument, 'objects' | 'guid
  *   than a band or a group, or a guide; a band waiting empty for its circles
  *   keeps its recipe, and one empty that follows nothing goes;
  * - a guide of a shape it does not know is dropped, and so is a fillet
- *   between objects that are not there;
+ *   between objects that are not there or are not paths;
  * - a construction guide is rebuilt from the shape it follows, or detached
  *   when that shape no longer has the line it was made from;
  * - an object whose group is missing moves to the root, a group's members
@@ -128,7 +128,9 @@ export function repairVectorDocument(value: unknown): VectorDocument | null {
   const guideIds = new Set(readGuides.map((guide) => guide.id))
   // An empty band that the repairs leave following nothing goes: what referred to it is repaired again.
   const referenced = breakPinLoops(breakOffsetLoops(repairReferences(breakBandLinks(repairReferences(structured, guideIds), guideIds), guideIds)))
-  const fillets = readList(value.fillets, (raw) => readFillet(raw, ids))
+  // A fillet sits between paths: one naming a group, or anything not there, goes.
+  const paths = new Set(referenced.flatMap((object) => (object.type === 'path' ? [object.id] : [])))
+  const fillets = readList(value.fillets, (raw) => readFillet(raw, paths))
   // What follows an object is brought up to date with it once, as the document opens. Pins are only checked: a pinned recipe stays where it was stored.
   const { objects, guides } = follow(null, { objects: referenced, guides: readGuides, fillets })
   if (objects !== read) changed = true
@@ -591,7 +593,7 @@ function readGuideShape(value: unknown): Guide['shape'] | null {
   return null
 }
 
-/** A fillet, or null when it cannot be read or either object it sits between is not there. */
+/** A fillet, or null when it cannot be read or either object it sits between is not one of `ids`. */
 function readFillet(value: unknown, ids: Set<string>): Fillet | null {
   if (
     !isRecord(value) ||

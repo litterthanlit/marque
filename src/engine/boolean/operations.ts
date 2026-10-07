@@ -389,10 +389,48 @@ function isPlausible(result: paper.PathItem, target: paper.PathItem, operand: pa
 }
 
 /**
+ * `target` with `operand` added or cut, and whether the answer is plausible;
+ * neither item is used up. Paper now and then answers wrongly for a shape
+ * one of its own booleans just made, such as filling a hole in it when
+ * something far from the hole is cut, and rightly for the same shapes read
+ * again from their path data. So an answer that is not plausible is tried
+ * once more on the two read again, and the better of the two is kept.
+ * Throws when paper does.
+ */
+function checkedStep(
+  scope: paper.PaperScope,
+  target: paper.PathItem,
+  operand: paper.PathItem,
+  operation: BooleanInput['operation'],
+): { item: paper.PathItem; plausible: boolean } {
+  const first = operation === 'add' ? target.unite(operand) : target.subtract(operand)
+  if (isPlausible(first, target, operand, operation)) return { item: first, plausible: true }
+  const again = pathItemFromSVG(scope, target.pathData)
+  const other = pathItemFromSVG(scope, operand.pathData)
+  try {
+    if (!again || !other) return { item: first, plausible: false }
+    const second = operation === 'add' ? again.unite(other) : again.subtract(other)
+    if (isPlausible(second, again, other, operation)) {
+      first.remove()
+      return { item: second, plausible: true }
+    }
+    second.remove()
+    return { item: first, plausible: false }
+  } catch {
+    return { item: first, plausible: false }
+  } finally {
+    again?.remove()
+    other?.remove()
+  }
+}
+
+/**
  * `target` with `operand` added or cut; both items are used up. When the
  * operand was made from several inputs and paper's answer fails, or is not
- * plausible, its inputs are applied one at a time instead. A single input
- * that fails is left out, with a warning.
+ * plausible even read again, its inputs are applied one at a time instead.
+ * A single input that fails is left out, with a warning; one whose answer is
+ * not plausible either way keeps paper's answer, as an input whose lobes
+ * cancel can look implausible when it is not.
  */
 function applyStep(
   scope: paper.PaperScope,
@@ -403,13 +441,13 @@ function applyStep(
 ): paper.PathItem {
   const single = operand.inputs.length === 1
   try {
-    const next = operation === 'add' ? target.unite(operand.item) : target.subtract(operand.item)
-    if (single || isPlausible(next, target, operand.item, operation)) {
+    const next = checkedStep(scope, target, operand.item, operation)
+    if (single || next.plausible) {
       target.remove()
       operand.item.remove()
-      return next
+      return next.item
     }
-    next.remove()
+    next.item.remove()
   } catch (e) {
     if (single) {
       warnings.push(`Boolean ${operation} failed: ${e}`)
@@ -423,8 +461,9 @@ function applyStep(
 
 /**
  * `target` with each input added or cut in turn, the way the mark was always
- * composed. Cuts with no material yet are dropped, and an input whose boolean
- * fails is left out with a warning.
+ * composed, each step checked as a single input is. Cuts with no material
+ * yet are dropped, and an input whose boolean fails is left out with a
+ * warning.
  */
 function foldInputs(
   scope: paper.PaperScope,
@@ -457,7 +496,7 @@ function foldInputs(
       continue
     }
     try {
-      const next = operation === 'add' ? result.unite(path) : result.subtract(path)
+      const next = checkedStep(scope, result, path, operation).item
       result.remove()
       result = next
     } catch (e) {

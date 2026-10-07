@@ -1,5 +1,6 @@
 import type { CarveSpec } from '../carve/spec.ts'
-import type { Guide, ObjectLink } from '../vector/types.ts'
+import type { Fillet, Guide, ObjectLink } from '../vector/types.ts'
+import type { ResolvedFillet } from '../fillet/apply.ts'
 
 export type IllustratorMode = 'object' | 'points'
 
@@ -86,6 +87,10 @@ export interface IllustratorDocument {
   guides?: Guide[]
   /** The selected guides. A selection holds guides or layers, never both. */
   selectedGuideIds?: string[]
+  /** The document's fillets, the very same array. Missing reads as none. */
+  fillets?: Fillet[]
+  /** The selected fillets. A selection holds fillets alone. */
+  selectedFilletIds?: string[]
 }
 
 export interface MarkData {
@@ -94,6 +99,8 @@ export interface MarkData {
   viewBox: { x: number; y: number; width: number; height: number }
   /** Boolean steps that failed, each input left out of the mark. Missing when none did. */
   warnings?: string[]
+  /** How each fillet that shows resolved on the ink, when the document has any. */
+  fillets?: ResolvedFillet[]
 }
 
 export const DEFAULT_ILLUSTRATOR_TRANSFORM: IllustratorTransform = {

@@ -389,3 +389,15 @@ export function drawGuideHandles(
     layer.addChild(shape)
   }
 }
+
+/** A fillet's radius dot: a round handle on its circle, larger under the pointer. */
+export function drawFilletDot(scope: paper.PaperScope, layer: paper.Layer, p: Vec, center: Vec, hot: boolean) {
+  const dot = new scope.Path.Circle(new scope.Point(p.x + center.x, p.y + center.y), (hot ? 5 : 4) * u)
+  dot.fillColor = new scope.Color('#ffffff')
+  dot.strokeColor = new scope.Color(SELECTION_COLOR)
+  dot.strokeWidth = 1.5 * u
+  dot.shadowColor = new scope.Color(0, 0, 0, 0.28)
+  dot.shadowBlur = 3 * scope.view.pixelRatio
+  dot.locked = true
+  layer.addChild(dot)
+}

@@ -8,11 +8,16 @@ import { bakedEditablePath, bakedEditableShape } from './engine/illustrator/laye
 import { carveOutline, grooveSpine } from './engine/carve/outline.ts'
 import { isGroove } from './engine/carve/spec.ts'
 import { cubicPoint, cubicTangent, type Vec } from './engine/path/bezier.ts'
-import { composeVectorMarkCached } from './engine/vector/export.ts'
+import { composeBaseMark, composeVectorMarkCached } from './engine/vector/export.ts'
+import { cornerSources, freeCorners } from './engine/fillet/apply.ts'
+import { cornerKind } from './engine/fillet/corners.ts'
+import { filletDot } from './renderer/directEdit/filletEdit.ts'
+import { filletMarksDrawn, guidePointsDrawn, vertexSquaresDrawn } from './renderer/IllustratorRenderer.ts'
 import { DESIGN_SPAN } from './renderer/viewFit.ts'
 import { CURSORS } from './renderer/directEdit/cursors.ts'
 import { canvasPointer, scaledHandleLayout, selectionHandles } from './renderer/directEdit/handleSet.ts'
 import { guideAnchor } from './engine/vector/guides.ts'
+import type { Fillet } from './engine/vector/types.ts'
 
 function canvasFrame() {
   const canvas = document.querySelector('main canvas') as HTMLCanvasElement | null
@@ -22,6 +27,15 @@ function canvasFrame() {
   const unit = Math.min(rect.width, rect.height) / DESIGN_SPAN
   const toClient = (p: Vec) => ({ x: rect.left + rect.width / 2 + p.x * unit, y: rect.top + rect.height / 2 + p.y * unit })
   return { canvas, rect, unit, toClient }
+}
+
+/** A fillet as the end-to-end checks read it: `lost` is null while it does not show (hidden, or no canvas). */
+type FilletOnCanvas = Fillet & {
+  lost: boolean | null
+  used?: number
+  convex?: boolean
+  circle?: Vec & { r: number }
+  dot?: Vec
 }
 
 function layerById(id: string) {
@@ -70,6 +84,73 @@ function createDevHook() {
     /** The composed mark: exactly what the canvas draws and Copy SVG copies. */
     mark() {
       return composeVectorMarkCached(useLogoStore.getState().vectorDocument)
+    },
+
+    /**
+     * The corners the Round tool offers now, those with no fillet on them:
+     * each in client space and layer space, with the objects whose
+     * outlines meet there, the kind Round all matches by, and its turn in degrees.
+     */
+    roundCorners() {
+      const frame = canvasFrame()
+      const { objects, fillets } = useLogoStore.getState().vectorDocument
+      if (!frame) return []
+      return freeCorners(composeBaseMark(objects), fillets, cornerSources(objects)).map((corner) => ({
+        ...frame.toClient(corner.p),
+        at: corner.p,
+        between: corner.between,
+        kind: cornerKind(corner),
+        convex: corner.convex,
+        turn: (corner.turn * 180) / Math.PI,
+      }))
+    },
+
+    /**
+     * The document's fillets as the mark resolves them: each stored fillet,
+     * with where its circle is on the canvas (client space, radius in client
+     * pixels) and its radius dot, or `lost` while its corner is gone.
+     */
+    fillets(): FilletOnCanvas[] {
+      const frame = canvasFrame()
+      const { vectorDocument } = useLogoStore.getState()
+      const resolved = composeVectorMarkCached(vectorDocument).fillets ?? []
+      return vectorDocument.fillets.map((fillet) => {
+        const state = resolved.find((each) => each.id === fillet.id)
+        if (!frame || !state) return { ...fillet, lost: null }
+        if (state.lost) return { ...fillet, lost: true, circle: { ...frame.toClient(state.centre), r: state.used * frame.unit } }
+        return {
+          ...fillet,
+          lost: false,
+          used: state.used,
+          convex: state.convex,
+          circle: { ...frame.toClient(state.centre), r: state.used * frame.unit },
+          dot: frame.toClient(filletDot(state)),
+        }
+      })
+    },
+
+    /** How the canvas last drew the fillets' circles: each solid, dashed or lost, and its colour. None in the final look. */
+    filletMarks() {
+      return filletMarksDrawn()
+    },
+
+    /**
+     * Where the canvas draws the squares at the corner points of the recipes'
+     * own constructions (slab and polygon vertices), layer space: a drag's
+     * live ones in place of those it moves. None in the final look.
+     */
+    cornerSquares() {
+      return vertexSquaresDrawn().map((p) => ({ x: p.x, y: p.y }))
+    },
+
+    /**
+     * Where the canvas last marked guides crossing (squares) and frame lines
+     * touching their circles (open circles), layer space: a live frame's
+     * while a drag moves guides. None in the final look.
+     */
+    guidePoints() {
+      const { crossings, touches } = guidePointsDrawn()
+      return { crossings: crossings.map((p) => ({ x: p.x, y: p.y })), touches: touches.map((p) => ({ x: p.x, y: p.y })) }
     },
 
     /** The document's guides: never composed, never in `mark()`. */

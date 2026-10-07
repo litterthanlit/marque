@@ -92,9 +92,12 @@ import { bandBetween, linkSources } from '../../engine/vector/bands.ts'
 import { ancestorsOf, isInside, layerNumbers, parentsOf, selectionRoot } from '../../engine/vector/groups.ts'
 import { bakedEditableShape } from '../../engine/illustrator/layerPath.ts'
 import { createComposeSession, type ComposeSession } from '../../engine/illustrator/composeSession.ts'
-import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
-import { HISTORY_MERGE_MS, type AnchorRef, type HistoryMergeKind, type LayerEdit, type LayerEditCommit, type Refused } from '../../store/logoStore.ts'
-import { drawLiveConstructionMarks, getInkItem, hideGuides, hideLayerOutlines, setInkPathData, setSurvivalVisible } from '../IllustratorRenderer.ts'
+import type { IllustratorDocument, IllustratorLayer, MarkData } from '../../engine/illustrator/types.ts'
+import { applyFillets, frameSources, type ResolvedFillet } from '../../engine/fillet/apply.ts'
+import { filletCircles, filletDot, filletRadiusAt, filletSizes, radiusReadout, snapFilletRadius } from './filletEdit.ts'
+import { filletRowHover } from './filletPreview.ts'
+import { filletRadius, HISTORY_MERGE_MS, type AnchorRef, type HistoryMergeKind, type LayerEdit, type LayerEditCommit, type Refused } from '../../store/logoStore.ts'
+import { drawLiveConstructionMarks, getInkItem, guidePointMarks, hideGuides, hideLayerOutlines, setSurvivalVisible, showFrame, showMark } from '../IllustratorRenderer.ts'
 import type { Guide } from '../../engine/vector/types.ts'
 import { constructionShape, guideAnchor, lineReading, lineShape, moveGuideShape, sameGuideShape, type GuideShape } from '../../engine/vector/guides.ts'
 import { detachGuide } from '../../engine/vector/follow.ts'
@@ -123,6 +126,7 @@ import { canvasOwnsArrowKeys, registerEditorKeys, setEditorInteracting } from '.
 import {
   drawAnchors,
   drawCarveHandles,
+  drawFilletDot,
   drawCurves,
   addWithHalo,
   drawGhostPoint,
@@ -150,8 +154,16 @@ export type AnchorOp = 'toggle-smooth' | 'delete'
 /** What the controller needs from the app, kept narrow so it can be tested and reused. */
 export interface DirectEditHost {
   getDoc(): IllustratorDocument
-  /** The committed ink (layer space), to restore after a cancelled gesture. */
-  getInkPathData(): string
+  /** The committed mark, its fillets on (layer space), to restore after a cancelled gesture. */
+  getMark(): MarkData
+  /** The committed mark before its fillets: a fillet's radius is previewed on it. Missing is the mark itself. */
+  getBaseMark?(): MarkData
+  /** Do fillets draw on the canvas: the construction look? Missing is never. */
+  filletsShown?(): boolean
+  /** Select fillets, or none with null; `additive` toggles them among the selected fillets. */
+  selectFillets?(ids: string[] | null, additive?: boolean): void
+  /** A fillet's radius: one undo step. */
+  setFilletRadius?(id: string, radius: number): void
   /** The panel's Snapping switch. */
   isSnapping(): boolean
   setSelection(ids: string[], anchor?: AnchorRef | null): void
@@ -177,6 +189,8 @@ interface Session {
   editedIds: Set<string>
   /** Guides the session draws itself: the drawn ones hide meanwhile. */
   guideIds?: Set<string>
+  /** Where those guides are on the frame, for the marks where guides cross and touch their circles. */
+  guideShapes?(): ReadonlyMap<string, GuideShape>
   drawOverlay(layer: paper.Layer): void
 }
 
@@ -635,6 +649,10 @@ export class DirectEditController {
   private live: LiveHandles = 'all'
   /** Under the Guide tool, guides take presses first. */
   private guidesFirst = false
+  /** Under the Round tool, fillets take presses first. */
+  private filletsFirst = false
+  /** A fillet whose radius a gesture is setting, as the live frame shows it, with the radius asked for. */
+  private filletPreview: { id: string; fillet: ResolvedFillet | null; radius: number } | null = null
   /** What the live frame of a gesture shows in place of some layers: their paths, and their recipes. */
   private preview: { paths: Map<string, string | null>; carves: Map<string, CarveSpec>; frames: Map<string, number> } | null = null
   /** Does the gesture going on edit an offset copy's own geometry, so that it stops following its source? */
@@ -694,6 +712,14 @@ export class DirectEditController {
   setHandlesLive(live: LiveHandles): void {
     if (this.live === live) return
     this.live = live
+    this.hover = EMPTY_ZONE
+    this.drawOverlay()
+  }
+
+  /** Let fillets take presses before anything else (the Round tool), or only after every material zone (Select). */
+  setFilletsFirst(first: boolean): void {
+    if (this.filletsFirst === first) return
+    this.filletsFirst = first
     this.hover = EMPTY_ZONE
     this.drawOverlay()
   }
@@ -936,7 +962,46 @@ export class DirectEditController {
       guides: this.reachableGuides(doc),
       guideHandles: this.selectedGuideHandles(doc),
       guidesFirst: this.guidesFirst,
+      fillets: this.host.filletsShown?.() ? filletCircles(this.shownFillets()) : [],
+      filletDot: this.selectedFilletDot(doc),
+      filletsFirst: this.filletsFirst,
     }
+  }
+
+  /** How each fillet that shows resolved on the mark drawn now. */
+  private shownFillets(): readonly ResolvedFillet[] {
+    return this.sliderFillets ?? this.host.getMark().fillets ?? []
+  }
+
+  /** How the fillets resolve at the radius the selection bar's slider is showing, while its thumb moves; null otherwise. */
+  private sliderFillets: readonly ResolvedFillet[] | null = null
+
+  /**
+   * Draw the fillets as the selection bar's slider shows them while its
+   * thumb moves, the ink rounded to match; null goes back to the mark's.
+   */
+  showFilletPreview(fillets: readonly ResolvedFillet[] | null): void {
+    if (fillets === this.sliderFillets) return
+    this.sliderFillets = fillets
+    this.drawOverlay()
+  }
+
+  /** The drawer's row hover moved on or off a fillet: draw it lit, or not. */
+  showRowHover(): void {
+    this.drawOverlay()
+  }
+
+  /** The one selected fillet's radius dot, where it has its corner and fillets are on the canvas. */
+  private selectedFilletDot(doc: IllustratorDocument): { filletId: string; p: Vec } | null {
+    const ids = doc.selectedFilletIds ?? []
+    if (ids.length !== 1 || !this.host.filletsShown?.()) return null
+    const fillet = this.shownFillets().find((each) => each.id === ids[0])
+    return fillet && !fillet.lost ? { filletId: fillet.id, p: filletDot(fillet) } : null
+  }
+
+  /** Draw the committed mark again, its fillets' circles too, after a gesture that showed another. */
+  private restoreInk(): void {
+    showMark(this.scope, this.host.getMark())
   }
 
   /** The guides a press can reach: on the canvas, visible and unlocked. */
@@ -1034,6 +1099,10 @@ export class DirectEditController {
         return CURSORS.move
       case 'guide-handle':
         return zone.handle.id === 'rotate' ? CURSORS.rotate : resizeCursor(zone.handle.id === 'n' || zone.handle.id === 's' ? 90 : 0)
+      case 'fillet-dot':
+        return CURSORS.point
+      case 'fillet':
+        return 'pointer'
       default:
         return CURSORS.default
     }
@@ -1548,6 +1617,9 @@ export class DirectEditController {
       case 'guide':
         this.host.selectGuides([zone.guideId], press.mods.shift)
         return
+      case 'fillet':
+        this.host.selectFillets?.([zone.filletId], press.mods.shift)
+        return
       case 'empty':
         if (!press.mods.shift) this.host.setSelection([])
         return
@@ -1710,9 +1782,74 @@ export class DirectEditController {
         return this.guideMoveSession(press, zone.guideId, zone.point)
       case 'guide-handle':
         return this.guideHandleSession(press, zone.handle)
+      case 'fillet-dot':
+        return this.filletRadiusSession(press, zone.filletId)
       default:
         return null
     }
+  }
+
+  /**
+   * Drag a fillet's radius dot: the radius follows the dot out of the corner
+   * or into it, in whole units from 2 to 200, snapping to the size of
+   * another fillet or a radius on the sheet. The mark shows it live, from
+   * the base mark, which a radius never changes; one undo step on release.
+   */
+  private filletRadiusSession(press: Press, filletId: string): Session | null {
+    const start = this.shownFillets().find((each) => each.id === filletId)
+    const doc = this.host.getDoc()
+    const stored = (doc.fillets ?? []).find((each) => each.id === filletId)
+    if (!start || start.lost || !stored) return null
+    const base = this.host.getBaseMark?.() ?? this.host.getMark()
+    const sources = frameSources(doc.layers, new Map(), new Map())
+    const sizes = filletSizes(doc, this.sizesFor(doc, new Set()), filletId)
+    const center = this.center()
+    let radius = stored.radius
+    const show = (fillet: ResolvedFillet | null) => {
+      this.filletPreview = { id: filletId, fillet, radius }
+      hud.set({ chip: radiusReadout(radius, fillet) })
+    }
+    return {
+      editedIds: new Set(),
+      update: (p, mods) => {
+        const raw = filletRadiusAt(start, sub(p, center))
+        const same = this.snapsOn(mods) ? snapFilletRadius(raw, sizes, this.snapTolerance(press.touch)) : null
+        radius = filletRadius(same ?? raw)
+        hud.set({ label: same !== null ? 'same size' : null })
+        const fillets = (doc.fillets ?? []).map((each) => (each.id === filletId ? { ...each, radius } : each))
+        let mark: MarkData
+        try {
+          mark = applyFillets(base, fillets, sources)
+        } catch {
+          return // a boolean hiccup mid-drag: keep the last good frame
+        }
+        showMark(this.scope, mark)
+        show(mark.fillets?.find((each) => each.id === filletId) ?? null)
+        this.drawOverlay()
+      },
+      commit: () => {
+        this.filletPreview = null
+        if (radius === stored.radius) this.restoreInk()
+        else this.host.setFilletRadius?.(filletId, radius)
+      },
+      cancel: () => {
+        this.filletPreview = null
+        this.restoreInk()
+      },
+      drawOverlay: (overlay) => {
+        const fillet = this.filletPreview?.fillet
+        if (fillet && !fillet.lost) this.drawFillet(overlay, fillet, true, false)
+      },
+    }
+  }
+
+  /** A fillet in the selection colour: its circle, and with `dot` its radius dot. */
+  private drawFillet(overlay: paper.Layer, fillet: ResolvedFillet, dot: boolean, hot: boolean, style: { width?: number; opacity?: number; color?: string } = {}) {
+    const center = this.center()
+    this.scope.activate()
+    overlay.activate()
+    outlineCircle(this.scope, overlay, fillet.centre, fillet.used, center, { width: style.width ?? 1.5, opacity: style.opacity, color: style.color, dashed: fillet.lost || fillet.convex })
+    if (dot && !fillet.lost) drawFilletDot(this.scope, overlay, filletDot(fillet), center, hot)
   }
 
   /**
@@ -1754,7 +1891,7 @@ export class DirectEditController {
     const { starts, carried } = moved
     if (!starts.size) return null
     const compose = this.composeFor(doc, starts.keys())
-    const restore = () => setInkPathData(this.scope, this.host.getInkPathData())
+    const restore = () => this.restoreInk()
     const pathFor = (id: string, d: Vec): string => {
       const start = starts.get(id)!
       return start.carve ? carveOutline(translateCarve(start.carve, d)).pathData : shapePathData(translateShape(start.path!, d))
@@ -1834,11 +1971,11 @@ export class DirectEditController {
     this.preview = { paths: replacements, carves, frames }
     let ink: string
     try {
-      ink = compose.compose(replacements)
+      ink = compose.compose(replacements, carves)
     } catch {
       return
     }
-    setInkPathData(this.scope, ink)
+    showFrame(this.scope, ink, compose.fillets)
   }
 
   /**
@@ -2164,7 +2301,7 @@ export class DirectEditController {
         if (current === start) return
         this.host.commitLayerEdits({ label: handleLabel(handle), edits: [{ layerId, carve: current }], select: [layerId] })
       },
-      cancel: () => setInkPathData(this.scope, this.host.getInkPathData()),
+      cancel: () => this.restoreInk(),
       drawOverlay: (overlay) => this.drawRecipe(overlay, current, handle.id),
     }
   }
@@ -2192,7 +2329,7 @@ export class DirectEditController {
     let current = box
     let hot: HandleId | null = null
     const everyEdit = () => boxMoved(moved, move)
-    const restore = () => setInkPathData(this.scope, this.host.getInkPathData())
+    const restore = () => this.restoreInk()
 
     return {
       editedIds,
@@ -2519,10 +2656,11 @@ export class DirectEditController {
    * handles come first.
    */
   private toolZone(p: Vec, touch: boolean): Zone | null {
-    if (this.live === 'none' && !this.guidesFirst) return null
+    if (this.live === 'none' && !this.guidesFirst && !this.filletsFirst) return null
     const zone = findZone({ ...this.context(touch), edges: false }, p)
     if (zone.kind === 'handle' && !zone.ring) return zone
     if (this.guidesFirst && (zone.kind === 'guide' || zone.kind === 'guide-handle')) return zone
+    if (this.filletsFirst && (zone.kind === 'fillet' || zone.kind === 'fillet-dot')) return zone
     return null
   }
 
@@ -2538,19 +2676,36 @@ export class DirectEditController {
    * it, starting where it was pressed on it (or where two lines cross there),
    * so new guides can start on guides. Null leaves the press to the tool.
    */
-  toolPressTarget(p: Vec, touch: boolean): { kind: 'editor' } | { kind: 'guide'; guideId: string; start: Vec } | null {
+  toolPressTarget(p: Vec, touch: boolean): { kind: 'editor'; zone: Zone['kind'] } | { kind: 'guide'; guideId: string; start: Vec } | null {
     const zone = this.toolZone(p, touch)
     if (!zone) return null
-    if (zone.kind !== 'guide' || this.isGuideSelected(zone.guideId)) return { kind: 'editor' }
+    if (zone.kind !== 'guide' || this.isGuideSelected(zone.guideId)) return { kind: 'editor', zone: zone.kind }
     const reach = GUIDE_PX * this.unitsPerPx() * (touch ? 2 : 1)
     const start = startOnGuides(this.reachableGuides(this.host.getDoc()), sub(p, this.center()), reach) ?? zone.point
     return { kind: 'guide', guideId: zone.guideId, start }
   }
 
-  /** Hover while a tool is active: only handles (and guides, under the Guide tool) react. Returns the cursor to show, if any. */
-  toolHover(p: Vec, touch: boolean): string | null {
+  /**
+   * A radius the Round tool's drag gives: the same size as another fillet or
+   * a radius on the sheet within the snap distance, unless snapping is off or
+   * `free` (Cmd held); else whole units. From 2 to 200 either way.
+   */
+  snapToolFilletRadius(radius: number, touch: boolean, free: boolean): { radius: number; same: boolean } {
+    const doc = this.host.getDoc()
+    const same = this.host.isSnapping() && !free ? snapFilletRadius(radius, filletSizes(doc, this.sizesFor(doc, new Set()), null), this.snapTolerance(touch)) : null
+    return { radius: filletRadius(same ?? radius), same: same !== null }
+  }
+
+  /**
+   * Hover while a tool is active: only handles (and guides, under the Guide
+   * tool) react. Returns the cursor to show, if any. With `cornerFirst` a
+   * fillet's circle or radius dot gives way, as a press there rounds the
+   * corner under it.
+   */
+  toolHover(p: Vec, touch: boolean, cornerFirst = false): string | null {
     this.resting = null
-    const zone = this.toolZone(p, touch)
+    const found = this.toolZone(p, touch)
+    const zone = cornerFirst && (found?.kind === 'fillet' || found?.kind === 'fillet-dot') ? null : found
     const hot = zone ?? EMPTY_ZONE
     if (zoneKey(hot) !== zoneKey(this.hover)) {
       this.hover = hot
@@ -2593,7 +2748,7 @@ export class DirectEditController {
         if (JSON.stringify(current) === JSON.stringify(start)) return
         this.host.commitLayerEdits({ label: bendLabel(start, grab.side), edits: [{ layerId, carve: current }], select: [layerId] })
       },
-      cancel: () => setInkPathData(this.scope, this.host.getInkPathData()),
+      cancel: () => this.restoreInk(),
       drawOverlay: (overlay) => {
         this.drawRecipe(overlay, current, null)
         this.drawSide(overlay, current, grab.side)
@@ -2650,7 +2805,7 @@ export class DirectEditController {
           anchor: point?.layerId === layer.id ? undefined : null,
         })
       },
-      cancel: () => setInkPathData(this.scope, this.host.getInkPathData()),
+      cancel: () => this.restoreInk(),
       drawOverlay: (overlay) => {
         const whole = withContour(shape, contourIndex, current)
         outlinePathData(this.scope, overlay, shapePathData(whole), center)
@@ -2732,7 +2887,7 @@ export class DirectEditController {
           anchor: { layerId, contourIndex, segmentIndex: anchorIndex },
         })
       },
-      cancel: () => setInkPathData(this.scope, this.host.getInkPathData()),
+      cancel: () => this.restoreInk(),
       drawOverlay: (overlay) => {
         const whole = withContour(shape, contourIndex, current)
         outlinePathData(this.scope, overlay, shapePathData(whole), center)
@@ -2801,6 +2956,7 @@ export class DirectEditController {
         this.commitOntoCurrent(next.size > 1 ? 'Move guides' : 'Move guide', next)
       },
       cancel: () => {},
+      guideShapes: () => new Map(moved().map((guide) => [guide.id, guide.shape])),
       drawOverlay: (overlay) => this.drawGuideOutlines(overlay, moved()),
     }
   }
@@ -2860,6 +3016,7 @@ export class DirectEditController {
         this.commitOntoCurrent(turning ? 'Turn guide' : 'Resize guide', new Map([[guide.id, shape]]))
       },
       cancel: () => {},
+      guideShapes: () => new Map([[guide.id, shape]]),
       drawOverlay: (overlay) => this.drawGuideOutlines(overlay, [{ shape, style: guide.style }]),
     }
   }
@@ -2920,8 +3077,8 @@ export class DirectEditController {
    * follow them are drawn where the follow pass will put them, from the live
    * frame; the drawn ones hide meanwhile. Returns the guides drawn so.
    */
-  private drawFollowingGuides(overlay: paper.Layer): Set<string> {
-    const drawn = new Set<string>()
+  private drawFollowingGuides(overlay: paper.Layer): Map<string, GuideShape> {
+    const drawn = new Map<string, GuideShape>()
     const preview = this.preview
     if (!preview || !this.host.guidesShown()) return drawn
     const center = this.center()
@@ -2943,9 +3100,31 @@ export class DirectEditController {
       styleGuideItem(this.scope, item, guide.style, u)
       item.locked = true
       overlay.addChild(item)
-      drawn.add(guide.id)
+      drawn.set(guide.id, shape)
     }
     return drawn
+  }
+
+  /**
+   * The marks where guides cross and where a frame guide touches its
+   * circle, drawn again from the guides and shapes as they are on this
+   * frame, while a gesture moves some: the sheet's own stay hidden meanwhile.
+   */
+  private drawLiveGuidePoints(overlay: paper.Layer, shown: readonly Guide[], live: ReadonlyMap<string, GuideShape>): void {
+    const guides = shown.map((guide) => {
+      const shape = live.get(guide.id)
+      return shape ? { ...guide, shape } : guide
+    })
+    const carves = this.preview?.carves
+    const points = guidePointMarks(this.scope, guides, (id) => {
+      const layer = this.layer(id)
+      if (!layer?.visible) return null
+      const carve = carves?.get(id) ?? layer.carve
+      return carve ? asCircle({ carve, contours: [] }) : null
+    }, true)
+    if (!points) return
+    points.locked = true
+    overlay.addChild(points)
   }
 
   /**
@@ -3066,8 +3245,20 @@ export class DirectEditController {
     this.drawGuideOutlines(layer, hovered, { width: 1, opacity: 0.6 })
     const chosen = shownGuides.filter((guide) => selectedGuides.has(guide.id) && !movingGuides.has(guide.id))
     this.drawGuideOutlines(layer, chosen)
-    const following = editing ? this.drawFollowingGuides(layer) : new Set<string>()
-    hideGuides(this.scope, new Set([...movingGuides, ...following]))
+    const following = editing ? this.drawFollowingGuides(layer) : new Map<string, GuideShape>()
+    const hidden = new Set([...movingGuides, ...following.keys()])
+    hideGuides(this.scope, hidden)
+    if (hidden.size) this.drawLiveGuidePoints(layer, shownGuides, new Map([...following, ...(editing?.guideShapes?.() ?? [])]))
+    // Fillets: the one under the pointer, and the selected ones with the radius dot of one alone.
+    if (this.host.filletsShown?.() && !this.filletPreview) {
+      const shown = this.shownFillets()
+      const chosen = new Set(doc.selectedFilletIds ?? [])
+      const hoverFillet = this.hover.kind === 'fillet' ? this.hover.filletId : filletRowHover.get()
+      for (const fillet of shown) {
+        if (fillet.id === hoverFillet && !chosen.has(fillet.id)) this.drawFillet(layer, fillet, false, false, { width: 1, opacity: 0.6 })
+        if (chosen.has(fillet.id)) this.drawFillet(layer, fillet, chosen.size === 1 && !editing, this.hover.kind === 'fillet-dot', fillet.lost ? { color: NO_FIT_COLOR } : {})
+      }
+    }
     // A guide's handles show only where a press can reach them: under Select, or under the Guide tool.
     if (!editing && (this.live === 'all' || this.guidesFirst)) {
       const handles = this.selectedGuideHandles(doc)
@@ -3187,6 +3378,10 @@ export class DirectEditController {
       }
       if (doc.selectedGuideIds?.length) {
         this.host.selectGuides(null)
+        return true
+      }
+      if (doc.selectedFilletIds?.length) {
+        this.host.selectFillets?.(null)
         return true
       }
       return false

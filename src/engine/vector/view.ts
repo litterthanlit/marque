@@ -148,6 +148,12 @@ export function layersOf(objects: VectorObject[]): IllustratorLayer[] {
   return viewOf(objects).layers
 }
 
+/** The layers and groups of some objects: what composing them reads. */
+export function stackOf(objects: VectorObject[]): Pick<IllustratorDocument, 'layers' | 'groups'> {
+  const view = viewOf(objects)
+  return view.groups ? { layers: view.layers, groups: view.groups } : { layers: view.layers }
+}
+
 /**
  * The document and its selection as layers. A selected group stands for
  * every path inside it in `selectedLayerIds`, and for itself in
@@ -162,16 +168,19 @@ export function vectorDocumentToIllustratorDocument(
   const view = viewOf(document.objects)
   const ids = [
     ...new Set(
-      selection.targets.flatMap((target) => (target.type === 'guide' ? [] : (view.leaves.get(target.objectId) ?? [target.objectId]))),
+      selection.targets.flatMap((target) => (target.type === 'guide' || target.type === 'fillet' ? [] : (view.leaves.get(target.objectId) ?? [target.objectId]))),
     ),
   ]
   const selectedLayerIds = previous && sameIds(previous.selectedLayerIds, ids) ? previous.selectedLayerIds : ids
-  const roots = [...new Set(selection.targets.flatMap((target) => (target.type === 'guide' ? [] : [target.objectId])))]
+  const roots = [...new Set(selection.targets.flatMap((target) => (target.type === 'guide' || target.type === 'fillet' ? [] : [target.objectId])))]
   const selectedRootIds = previous?.selectedRootIds && sameIds(previous.selectedRootIds, roots) ? previous.selectedRootIds : roots
   const entered = view.groups ? enteredGroup(view.parents, roots) : null
   const guideIds = selection.targets.flatMap((target) => (target.type === 'guide' ? [target.guideId] : []))
   const selectedGuideIds =
     previous?.selectedGuideIds && sameIds(previous.selectedGuideIds, guideIds) ? previous.selectedGuideIds : guideIds
+  const filletIds = selection.targets.flatMap((target) => (target.type === 'fillet' ? [target.filletId] : []))
+  const selectedFilletIds =
+    previous?.selectedFilletIds && sameIds(previous.selectedFilletIds, filletIds) ? previous.selectedFilletIds : filletIds
   const point = pointSelectionOf(selection)
   const pointSelection = previous && samePoint(previous.pointSelection, point) ? previous.pointSelection : point
   return {
@@ -186,12 +195,14 @@ export function vectorDocumentToIllustratorDocument(
     ...(entered !== null ? { enteredGroupId: entered } : {}),
     guides: document.guides,
     selectedGuideIds,
+    fillets: document.fillets,
+    selectedFilletIds,
   }
 }
 
 function pointSelectionOf(selection: VectorSelection): PointSelection | null {
   for (const target of selection.targets) {
-    if (target.type === 'object' || target.type === 'guide') continue
+    if (target.type === 'object' || target.type === 'guide' || target.type === 'fillet') continue
     return {
       layerId: target.objectId,
       contourIndex: target.contourIndex,

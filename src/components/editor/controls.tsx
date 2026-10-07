@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { cn } from '../../lib/utils.ts'
 
 export const FOCUS_RING =
@@ -146,6 +147,77 @@ export function Stepper({ label, name, value, min, max, onStep, lessLabel, moreL
         {value ?? '–'}
       </output>
       <EditorButton aria-label={moreLabel} title={moreLabel} disabled={value !== null && value >= max} onClick={() => onStep(1)} className="w-8 px-0">
+        +
+      </EditorButton>
+    </div>
+  )
+}
+
+/** How long a press on a step button is held before it steps by 5, and how often it steps again while held. */
+const LONG_PRESS_MS = 450
+const REPEAT_MS = 250
+
+/** One of a pair of step buttons: what it is read out as and shown on hover, and whether it can step. */
+interface StepButton {
+  label: string
+  title: string
+  disabled: boolean
+}
+
+/**
+ * A − and a + that step a value: a unit, or 5 with Shift or a long press,
+ * which steps again while held. With no keys on touch, the way to an exact
+ * value, which a slider moves a unit or two a pixel. `land` gives where a
+ * step from a value goes; the same value is no step.
+ */
+export function StepButtons({ value, land, onStep, label, less, more }: { value: number; land: (from: number, by: -1 | 1, five: boolean) => number; onStep: (next: number) => void; label: string; less: StepButton; more: StepButton }) {
+  // The value a held press steps from: the bar draws again between its steps.
+  const latest = useRef(value)
+  latest.current = value
+  const held = useRef<{ timer: number; stepped: boolean } | null>(null)
+  const step = (by: -1 | 1, five: boolean) => {
+    const from = latest.current
+    const next = land(from, by, five)
+    if (next === from) return
+    latest.current = next
+    onStep(next)
+  }
+  const letGo = () => {
+    if (held.current) window.clearTimeout(held.current.timer)
+  }
+  useEffect(() => letGo, [])
+  const press = (by: -1 | 1) => ({
+    onPointerDown: (event: React.PointerEvent) => {
+      if (event.button !== 0) return
+      letGo()
+      const state = { timer: 0, stepped: false }
+      const again = () => {
+        state.stepped = true
+        step(by, true)
+        state.timer = window.setTimeout(again, REPEAT_MS)
+      }
+      state.timer = window.setTimeout(again, LONG_PRESS_MS)
+      held.current = state
+    },
+    onPointerUp: letGo,
+    onPointerLeave: letGo,
+    onPointerCancel: letGo,
+    // A long press has stepped already: its click does not step again.
+    onClick: (event: React.MouseEvent) => {
+      if (held.current?.stepped) {
+        held.current = null
+        return
+      }
+      step(by, event.shiftKey)
+    },
+    onContextMenu: (event: React.MouseEvent) => event.preventDefault(),
+  })
+  return (
+    <div className="flex items-center gap-1" role="group" aria-label={label}>
+      <EditorButton aria-label={less.label} title={less.title} disabled={less.disabled} {...press(-1)} className="w-8 px-0 touch-manipulation select-none">
+        −
+      </EditorButton>
+      <EditorButton aria-label={more.label} title={more.title} disabled={more.disabled} {...press(1)} className="w-8 px-0 touch-manipulation select-none">
         +
       </EditorButton>
     </div>

@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { useLogoStore } from '../../store/logoStore.ts'
+import { MAX_FILLET_RADIUS, MIN_FILLET_RADIUS, useLogoStore } from '../../store/logoStore.ts'
 import { pinnedGhosts } from '../../renderer/tools/GuideTool.ts'
 import { PUNCH_SHAPES, SLAB_KINDS, type SlabEntry } from '../../engine/carve/geometry.ts'
 import { clampSides, MAX_SIDES, MIN_SIDES } from '../../engine/carve/spec.ts'
@@ -8,6 +8,7 @@ import { SliderControl } from '../controls/SliderControl.tsx'
 import { Divider, EditorButton, FLOATING_SURFACE, Segmented, Stepper, SwitchButton } from './controls.tsx'
 import { EDITOR_TOOLS } from './tools.ts'
 import { BandFitControl, BandSettingControl } from './BandControls.tsx'
+import { RadiusSteps } from './RadiusSteps.tsx'
 
 const PUNCH_SHAPE_OPTIONS = PUNCH_SHAPES.map((shape) => ({ value: shape.id, label: shape.label }))
 
@@ -43,9 +44,10 @@ export function ToolPill() {
   return (
     <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center px-3">
       <div data-canvas-cover className={cn(FLOATING_SURFACE, 'pointer-events-auto flex max-w-full flex-col')}>
-        {/* Seven tools and the slabs need about 880px in one row: narrower, they stack, and on a phone the tools are icons. */}
-        <div className="flex items-center justify-center gap-x-2 gap-y-1.5 p-1.5 max-[880px]:flex-col">
-          <div className="flex flex-wrap justify-center gap-1" role="group" aria-label="Tools">
+        {/* Eight tools and the slabs need about 940px in one row: narrower, they stack, and on a phone the tools are icons. */}
+        <div className="flex items-center justify-center gap-x-2 gap-y-1.5 p-1.5 max-[940px]:flex-col">
+          {/* Below 360px the icons' buttons narrow, so the eight still fit one row at 320. */}
+          <div className="flex flex-wrap justify-center gap-1 max-[359px]:gap-0.5" role="group" aria-label="Tools">
             {EDITOR_TOOLS.map((tool) => {
               const pressed = activeTool === tool.id
               return (
@@ -53,18 +55,18 @@ export function ToolPill() {
                   key={tool.label}
                   pressed={pressed}
                   aria-label={tool.label}
-                  className="max-md:px-2"
+                  className="max-md:px-2 max-[359px]:w-7 max-[359px]:px-0"
                   title={`${tool.label} (${tool.shortcut}). ${tool.hint}`}
                   onClick={() => setActiveTool(pressed ? null : tool.id)}
                 >
-                  {/* Narrower than a tablet, seven tools fit one row as icons; their names stay in the label and title. */}
+                  {/* Narrower than a tablet, eight tools fit one row as icons; their names stay in the label and title. */}
                   <ToolIcon tool={tool.id} />
                   <span className="max-md:hidden">{tool.label}</span>
                 </EditorButton>
               )
             })}
           </div>
-          <Divider className="max-[880px]:hidden" />
+          <Divider className="max-[940px]:hidden" />
           <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1.5">
             <SlabButtons />
             <Divider className="max-[379px]:hidden" />
@@ -125,6 +127,7 @@ export function ToolPill() {
           </div>
         )}
         {activeTool === 'band' && <BandOptions />}
+        {activeTool === 'round' && <RoundOptions />}
         {(activeTool === 'channel' || activeTool === 'slice') && (
           <div className="flex justify-center border-t border-border px-3 py-2">
             <div className="w-56 max-w-full">
@@ -189,6 +192,27 @@ function BandOptions() {
   )
 }
 
+/**
+ * The radius of the next fillet, labelled so: a click on a corner takes it,
+ * a drag from one sets its own. The fillet just made is selected, and the
+ * bar below shows its own radius.
+ */
+function RoundOptions() {
+  const radius = useLogoStore((s) => s.ui.round.radius)
+  const setRoundRadius = useLogoStore((s) => s.setRoundRadius)
+  return (
+    <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 border-t border-border p-1.5" role="group" aria-label="Next fillet">
+      <OptionLabel>Next fillet</OptionLabel>
+      <div className="flex items-center gap-1">
+        <div className="w-44 max-w-full px-1.5">
+          <SliderControl label="Radius" value={radius} min={MIN_FILLET_RADIUS} max={MAX_FILLET_RADIUS} step={1} scale="sqrt" emphasis onInput={setRoundRadius} onChange={setRoundRadius} />
+        </div>
+        <RadiusSteps value={radius} onStep={setRoundRadius} />
+      </div>
+    </div>
+  )
+}
+
 /** Each tool's icon, drawn on a 14-unit grid in the text colour, for the narrow pill. */
 const TOOL_ICONS: Record<string, React.ReactNode> = {
   select: <path d="M3.5 2v9.5l2.6-2.4 1.8 3.9 1.6-.7-1.8-3.9h3.5z" fill="currentColor" stroke="none" />,
@@ -212,6 +236,12 @@ const TOOL_ICONS: Record<string, React.ReactNode> = {
       <circle cx="3.8" cy="7" r="2.5" />
       <circle cx="10.2" cy="7" r="2.5" />
       <path d="M3.8 4.5h6.4M3.8 9.5h6.4" />
+    </>
+  ),
+  round: (
+    <>
+      <path d="M2 12V7a5 5 0 0 1 5-5h5" />
+      <circle cx="7" cy="7" r="1" fill="currentColor" stroke="none" />
     </>
   ),
 }

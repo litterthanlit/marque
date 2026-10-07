@@ -2,6 +2,7 @@ import { constructionLine, sameGuideShape } from './guides.ts'
 import { bandsOnGuides, followBands, isEmptyBand } from './bands.ts'
 import { followOffsets, isEmptyCopy } from './offsets.ts'
 import { followPins } from './pins.ts'
+import { followFillets } from '../fillet/follow.ts'
 import type { Fillet, Guide, PathObject, VectorObject } from './types.ts'
 
 /**
@@ -12,8 +13,9 @@ import type { Fillet, Guide, PathObject, VectorObject } from './types.ts'
  * same edit: it keeps its last geometry and becomes a plain one, and an undo
  * restores both. A recipe pinned to an object's centre moves with it, an
  * offset copy is made again from its source, and a band from its circles.
- * Later steps add their own followers here (fillets); each reads the lists
- * the earlier ones left.
+ * A fillet moves to the corner it now resolves to, and goes with the
+ * objects it sits between. Each follower reads the lists the earlier ones
+ * left.
  *
  * It is pure, and hands back the very same arrays, and the very same items in
  * them, wherever nothing changed.
@@ -59,7 +61,8 @@ type Follower = (context: FollowContext) => DocumentLists
  * recipe moved off its target lets go is decided once all has settled,
  * against where the target landed. Guides follow whatever moved, last; a
  * band on a circle guide that moved then follows it, and what follows the
- * band in turn, once more.
+ * band in turn, once more. Fillets follow last, once: their places are
+ * carried by how the whole edit moved their objects.
  */
 const SETTLING: Follower[] = [followPinned, followOffsetCopies, followBandLinks]
 const FOLLOWERS: Follower[] = [followConstructionGuides]
@@ -129,6 +132,8 @@ export function follow(before: DocumentLists | null, after: DocumentLists): Docu
     })
     guidesBefore = settle()
   }
+  // Fillets follow once everything else has settled, carried by the whole edit's motion of their objects from before it.
+  run(followFilletCorners, moved, false)
   return lists
 }
 
@@ -172,6 +177,15 @@ function followOffsetCopies({ lists, changed }: FollowContext): DocumentLists {
 function followBandLinks({ lists, changed, guidesWere }: FollowContext): DocumentLists {
   const objects = followBands(lists.objects, lists.guides, changed, guidesWere)
   return objects === lists.objects ? lists : { ...lists, objects }
+}
+
+/* ─── Fillets ─── */
+
+/** Fillets follow their corners on the ink as it is after the edit. A document opens with its fillets as stored. */
+function followFilletCorners({ lists, changed, was }: FollowContext): DocumentLists {
+  if (!changed || !lists.fillets.length) return lists
+  const fillets = followFillets(lists.objects, lists.fillets, was, changed)
+  return fillets === lists.fillets ? lists : { ...lists, fillets }
 }
 
 /* ─── Construction guides ─── */

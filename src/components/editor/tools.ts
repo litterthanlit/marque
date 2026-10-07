@@ -30,6 +30,12 @@ export const EDITOR_TOOLS: ToolEntry[] = [
     shortcut: 'B',
     hint: 'Click a circle, then another, to join them with a band that follows them. Fit sets how: Belt wraps both, Bar runs centre to centre, Strip runs at an angle touching each, Neck curves between them. Escape drops the first circle.',
   },
+  {
+    id: 'round',
+    label: 'Round',
+    shortcut: 'O',
+    hint: 'Click a corner of the mark to round it at the Radius below, or drag from a corner to set the radius as you go; Alt-click reuses the last radius. Click a fillet’s circle to select it. Fillets follow their corners, and their circles show in the construction look.',
+  },
 ]
 
 export function toolForKey(event: KeyboardEvent): ToolEntry | undefined {

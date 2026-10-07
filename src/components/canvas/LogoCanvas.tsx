@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react'
 import { usePaperScope } from '../../renderer/usePaperScope.ts'
-import { previewColor, renderGuides, renderIllustratorOnScope, scaleConstructionLines, setInkPathData } from '../../renderer/IllustratorRenderer.ts'
+import { previewColor, renderGuides, renderIllustratorOnScope, scaleConstructionLines, showFrame, showMark } from '../../renderer/IllustratorRenderer.ts'
 import { CarveTool } from '../../renderer/tools/CarveTool.ts'
 import { DirectEditController, type Modifiers } from '../../renderer/directEdit/DirectEditController.ts'
 import { registerEditorKeys } from '../../renderer/directEdit/keyboard.ts'
@@ -9,7 +9,10 @@ import { cutLayerName, cutPathData, type CutSpec } from '../../engine/carve/geom
 import { createComposeSession, type ComposeSession } from '../../engine/illustrator/composeSession.ts'
 import type { IllustratorDocument } from '../../engine/illustrator/types.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM } from '../../engine/illustrator/types.ts'
-import { composeVectorMarkCached } from '../../engine/vector/export.ts'
+import { composeBaseMark, composeVectorMarkCached } from '../../engine/vector/export.ts'
+import { applyFillets, cornerSources, freeCorners, type ResolvedFillet } from '../../engine/fillet/apply.ts'
+import type { AttributedCorner } from '../../engine/fillet/corners.ts'
+import { RoundTool } from '../../renderer/tools/RoundTool.ts'
 import { tangentCircles, useLogoStore } from '../../store/logoStore.ts'
 import { PenTool } from '../../renderer/tools/PenTool.ts'
 import { GuideTool, type Ghost, type GhostSet } from '../../renderer/tools/GuideTool.ts'
@@ -26,6 +29,7 @@ import { contoursToPathData } from '../../engine/vector/pathSerialization.ts'
 import { offsetPreview, type OffsetPreview } from '../../renderer/directEdit/offsetPreview.ts'
 import { refusals } from '../../renderer/directEdit/refusal.ts'
 import { bandPreview } from '../../renderer/directEdit/bandPreview.ts'
+import { filletPreview, filletRowHover } from '../../renderer/directEdit/filletPreview.ts'
 import type { Contour } from '../../engine/vector/types.ts'
 import type { EditablePath } from '../../engine/path/editPath.ts'
 import { CanvasHud } from './CanvasHud.tsx'
@@ -33,7 +37,7 @@ import { isShuffleKey, sidesKeyStep, toolForKey } from '../editor/tools.ts'
 import { canvasPixelRatio, fitView, visibleUnits } from '../../renderer/viewFit.ts'
 import { useActiveMark } from '../../hooks/useActiveMark.ts'
 
-type Tool = PenTool | CarveTool | GuideTool | BandTool
+type Tool = PenTool | CarveTool | GuideTool | BandTool | RoundTool
 
 const CARVE_PREVIEW_ID = '__carve_preview'
 const OFFSET_PREVIEW_ID = '__offset_preview'
@@ -93,6 +97,53 @@ function toolBandOutline(a: Circle, b: Circle): { outline: string; edges: string
   const spec = bandBetween({ v: 1, kind: 'band', a, b, fit: settings.fit, width: settings.width, angle: settings.angle, side: 1, radius: settings.radius }, a, b)
   const outline = carveOutline(spec)
   return outline.segs.length ? { outline: outline.pathData, edges: bandOuterPathData(spec) } : null
+}
+
+/** The corners the Round tool offers, kept for the base mark and fillets they were read from. */
+let roundCornersCache: { base: object; fillets: object; corners: readonly AttributedCorner[] } | null = null
+
+/** The corners of the mark with no fillet on them: what the Round tool rounds. */
+function roundCorners(): readonly AttributedCorner[] {
+  const { objects, fillets } = useLogoStore.getState().vectorDocument
+  const base = composeBaseMark(objects)
+  if (roundCornersCache?.base === base && roundCornersCache.fillets === fillets) return roundCornersCache.corners
+  const corners = freeCorners(base, fillets, cornerSources(objects))
+  roundCornersCache = { base, fillets, corners }
+  return corners
+}
+
+/** The last few Round tool previews, by the mark, the fillets, the corner and the radius. */
+const roundPreviews: Array<{ base: object; fillets: object; corner: AttributedCorner; radius: number; made: { fillet: ResolvedFillet | null } | null }> = []
+
+/** The fillet a corner would take at `radius`, as the mark would round it with the fillets it has: a neighbour may cut it down. */
+function roundPreview(corner: AttributedCorner, radius: number): { fillet: ResolvedFillet | null } | null {
+  const { objects, fillets } = useLogoStore.getState().vectorDocument
+  const base = composeBaseMark(objects)
+  const known = roundPreviews.find((entry) => entry.base === base && entry.fillets === fillets && entry.corner === corner && entry.radius === radius)
+  if (known) return known.made
+  const id = '__round_preview'
+  let made: { fillet: ResolvedFillet | null } | null = null
+  try {
+    const mark = applyFillets(base, [...fillets, { id, visible: true, radius, at: corner.p, between: corner.between }], cornerSources(objects))
+    made = { fillet: mark.fillets?.find((fillet) => fillet.id === id) ?? null }
+  } catch {
+    made = null
+  }
+  roundPreviews.unshift({ base, fillets, corner, radius, made })
+  roundPreviews.length = Math.min(roundPreviews.length, 8)
+  return made
+}
+
+/**
+ * Under the Round tool, does the corner to round under the pointer take a
+ * press (or the hover) over the editor's zone there? A free corner within
+ * reach always does, over a fillet's circle and over the selected fillet's
+ * radius dot, so corners can be rounded one after another; a press on the
+ * dot with no free corner within reach drags the dot.
+ */
+function roundCornerFirst(tool: RoundTool, point: paper.Point, target: ReturnType<DirectEditController['toolPressTarget']>, touch: boolean): boolean {
+  if (target?.kind !== 'editor' || (target.zone !== 'fillet' && target.zone !== 'fillet-dot')) return false
+  return tool.cornerDistance(point, touch) !== null
 }
 
 /** The construction lines of the shape under `p` (layer space) that are not yet guides following it, and its bounds. */
@@ -206,7 +257,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       setViewport(visibleUnits(width, height))
       if (scopeRef.current) {
         // Lines are clipped to the view: a new size draws them afresh.
-        renderGuides(scopeRef.current, guidesToDraw())
+        renderGuides(scopeRef.current, guidesToDraw(), useLogoStore.getState().illustrator.layers)
         scaleConstructionLines(scopeRef.current)
       }
       controllerRef.current?.refresh()
@@ -236,7 +287,11 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     if (!scope || !canvas) return
     const controller = new DirectEditController(scope, canvas, {
       getDoc: () => useLogoStore.getState().illustrator,
-      getInkPathData: () => composeVectorMarkCached(useLogoStore.getState().vectorDocument).compoundPathData,
+      getMark: () => composeVectorMarkCached(useLogoStore.getState().vectorDocument),
+      getBaseMark: () => composeBaseMark(useLogoStore.getState().vectorDocument.objects),
+      filletsShown: () => useLogoStore.getState().ui.look === 'construction',
+      selectFillets: (ids, additive) => useLogoStore.getState().selectFillets(ids, additive),
+      setFilletRadius: (id, radius) => useLogoStore.getState().setFilletRadius(id, radius),
       isSnapping: () => useLogoStore.getState().ui.carve.snapping,
       setSelection: (ids, anchor) => useLogoStore.getState().setSelection(ids, anchor),
       commitLayerEdits: (commit) => useLogoStore.getState().commitLayerEdits(commit),
@@ -291,7 +346,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       controllerRef.current?.showOffsetOutline(null)
       if (offsetSessionRef.current) {
         offsetSessionRef.current = null
-        setInkPathData(scope, composeVectorMarkCached(state.vectorDocument).compoundPathData)
+        showMark(scope, composeVectorMarkCached(state.vectorDocument))
       }
       return
     }
@@ -304,8 +359,8 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       offsetSessionRef.current = { doc, key, session: createComposeSession(withPreviewOffset(doc, preview, source.operation), [id]) }
     }
     try {
-      const ink = offsetSessionRef.current.session.compose(new Map([[preview.replaces ?? OFFSET_PREVIEW_ID, pathData || null]]))
-      setInkPathData(scope, ink)
+      const session = offsetSessionRef.current.session
+      showFrame(scope, session.compose(new Map([[preview.replaces ?? OFFSET_PREVIEW_ID, pathData || null]])), session.fillets)
     } catch {
       // A boolean hiccup: the last good frame stays.
     }
@@ -331,7 +386,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     if (!preview || !doc.layers.some((layer) => layer.id === preview.id)) {
       if (bandSessionRef.current) {
         bandSessionRef.current = null
-        setInkPathData(scope, composeVectorMarkCached(state.vectorDocument).compoundPathData)
+        showMark(scope, composeVectorMarkCached(state.vectorDocument))
       }
       return
     }
@@ -340,7 +395,8 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     }
     const outline = carveOutline(preview.carve)
     try {
-      setInkPathData(scope, bandSessionRef.current.session.compose(new Map([[preview.id, outline.segs.length ? outline.pathData : null]])))
+      const session = bandSessionRef.current.session
+      showFrame(scope, session.compose(new Map([[preview.id, outline.segs.length ? outline.pathData : null]]), new Map([[preview.id, preview.carve]])), session.fillets)
     } catch {
       // A boolean hiccup: the last good frame stays.
     }
@@ -353,6 +409,44 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       bandPreview.set(null)
     }
   }, [applyBandPreview])
+
+  /** Round the base mark with the radius the selection bar's slider is on. With none, the ink goes back to the mark. */
+  const filletShownRef = useRef(false)
+  const applyFilletPreview = useCallback(() => {
+    const scope = scopeRef.current
+    if (!scope) return
+    const preview = filletPreview.get()
+    const { vectorDocument } = useLogoStore.getState()
+    if (!preview || !vectorDocument.fillets.some((fillet) => preview.ids.includes(fillet.id))) {
+      if (filletShownRef.current) {
+        filletShownRef.current = false
+        showMark(scope, composeVectorMarkCached(vectorDocument))
+        controllerRef.current?.showFilletPreview(null)
+      }
+      return
+    }
+    const fillets = vectorDocument.fillets.map((fillet) => (preview.ids.includes(fillet.id) ? { ...fillet, radius: preview.radius } : fillet))
+    try {
+      const mark = applyFillets(composeBaseMark(vectorDocument.objects), fillets, cornerSources(vectorDocument.objects))
+      showMark(scope, mark)
+      // The selected fillets' circles and radius dot follow the thumb with the ink.
+      controllerRef.current?.showFilletPreview(mark.fillets ?? null)
+      filletShownRef.current = true
+    } catch {
+      // A boolean hiccup: the last good frame stays.
+    }
+  }, [scopeRef])
+
+  useEffect(() => {
+    const unsubscribe = filletPreview.subscribe(applyFilletPreview)
+    return () => {
+      unsubscribe()
+      filletPreview.set(null)
+    }
+  }, [applyFilletPreview])
+
+  // A fillet's row in the drawer under the pointer lights its circle on the canvas.
+  useEffect(() => filletRowHover.subscribe(() => controllerRef.current?.showRowHover()), [])
 
   // Render. The renderer reads only the layers, so a selection change, which
   // keeps the same layers array, does not rebuild the scope.
@@ -373,16 +467,17 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     if (bandPreview.get()) applyBandPreview()
     // A render clears the canvas: the drawing in progress goes back on top.
     const tool = toolRef.current
-    if (tool instanceof PenTool || tool instanceof GuideTool || tool instanceof BandTool) tool.redraw()
+    if (tool instanceof PenTool || tool instanceof GuideTool || tool instanceof BandTool || tool instanceof RoundTool) tool.redraw()
   }, [layers, activeMark, survival, ui.viewport, ui.look, params.fillColor, scopeRef, applyOffsetPreview, applyBandPreview])
 
   // Guides draw on their own: a guide edit, or showing and hiding them, redraws only them.
   const guides = useLogoStore((s) => s.vectorDocument.guides)
   const selectedGuideIds = illustrator.selectedGuideIds
+  const selectedFilletIds = illustrator.selectedFilletIds
   useEffect(() => {
     const scope = scopeRef.current
     if (!scope) return
-    renderGuides(scope, ui.showGuides && ui.look === 'construction' ? guides : null)
+    renderGuides(scope, ui.showGuides && ui.look === 'construction' ? guides : null, useLogoStore.getState().illustrator.layers)
     controllerRef.current?.refresh()
     // The Guide tool's ghosts leave out the lines that are guides now; the Band tool's circles take in the guides on the canvas.
     if (toolRef.current instanceof GuideTool || toolRef.current instanceof BandTool) toolRef.current.redraw()
@@ -398,7 +493,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
   const { selectedLayerIds, pointSelection } = illustrator
   useEffect(() => {
     controllerRef.current?.refresh()
-  }, [selectedLayerIds, pointSelection, selectedGuideIds])
+  }, [selectedLayerIds, pointSelection, selectedGuideIds, selectedFilletIds])
 
   /** Live preview of a cut mid-drag: the document below it is composed once per drag. */
   const previewCut = useCallback((spec: CutSpec | null) => {
@@ -407,7 +502,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     if (!scope) return
     if (!spec) {
       carveSessionRef.current = null
-      setInkPathData(scope, composeVectorMarkCached(useLogoStore.getState().vectorDocument).compoundPathData)
+      showMark(scope, composeVectorMarkCached(useLogoStore.getState().vectorDocument))
       return
     }
     if (!carveSessionRef.current || carveSessionRef.current.doc !== doc) {
@@ -417,12 +512,13 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       }
     }
     let ink: string
+    const session = carveSessionRef.current.session
     try {
-      ink = carveSessionRef.current.session.compose(new Map([[CARVE_PREVIEW_ID, cutPathData(spec)]]))
+      ink = session.compose(new Map([[CARVE_PREVIEW_ID, cutPathData(spec)]]))
     } catch {
       return // a boolean hiccup mid-drag: keep the last good frame
     }
-    setInkPathData(scope, ink)
+    showFrame(scope, ink, session.fillets)
   }, [scopeRef])
 
   // Manage the active drawing tool's lifecycle
@@ -503,14 +599,26 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
           onBand: (a, b) => useLogoStore.getState().addBand(a, b),
         })
         break
+      case 'round':
+        // The fillet a click makes is selected, and the tool stays on for the next corner.
+        toolRef.current = new RoundTool(scope, {
+          corners: roundCorners,
+          preview: roundPreview,
+          radius: () => useLogoStore.getState().ui.round.radius,
+          lastRadius: () => useLogoStore.getState().ui.round.last,
+          snapRadius: (radius, touch, free) => controllerRef.current?.snapToolFilletRadius(radius, touch, free) ?? { radius: Math.round(radius), same: false },
+          onFillet: (corner, radius) => useLogoStore.getState().addFillet(corner.p, corner.between, radius),
+        })
+        break
     }
 
     canvas.style.cursor = toolRef.current ? 'crosshair' : 'default'
     // The pen and the Guide tool hide every handle; a carve tool keeps only a recipe's own, to adjust the cut just made.
     const current = toolRef.current
-    controllerRef.current?.setHandlesLive(current instanceof PenTool || current instanceof GuideTool || current instanceof BandTool ? 'none' : current ? 'recipe' : 'all')
-    // Under the Guide tool, guides take presses before the tool does.
+    controllerRef.current?.setHandlesLive(current instanceof PenTool || current instanceof GuideTool || current instanceof BandTool || current instanceof RoundTool ? 'none' : current ? 'recipe' : 'all')
+    // Under the Guide tool, guides take presses before the tool does; under the Round tool, fillets.
     controllerRef.current?.setGuidesFirst(current instanceof GuideTool)
+    controllerRef.current?.setFilletsFirst(current instanceof RoundTool)
 
     // Tool keys take precedence over the editor's while a tool is active.
     const unregister = registerEditorKeys((event) => {
@@ -536,7 +644,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
         }
         return false
       }
-      if (tool instanceof GuideTool || tool instanceof BandTool) {
+      if (tool instanceof GuideTool || tool instanceof BandTool || tool instanceof RoundTool) {
         // Escape drops the line being drawn (or the ghosts a tap pinned, or the band's first circle) first, then the tool.
         if (event.key === 'Escape') {
           if (!tool.dismiss()) setActiveTool(null)
@@ -560,6 +668,7 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       }
       controllerRef.current?.setHandlesLive('all')
       controllerRef.current?.setGuidesFirst(false)
+      controllerRef.current?.setFilletsFirst(false)
     }
   }, [
     ui.activeTool,
@@ -595,13 +704,16 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     const controller = controllerRef.current
     const p = { x: point.x, y: point.y }
     const touch = e.pointerType === 'touch'
-    const target = toolRef.current && controller ? controller.toolPressTarget(p, touch) : null
+    let target = toolRef.current && controller ? controller.toolPressTarget(p, touch) : null
+    // Under the Round tool a free corner within reach takes the press over a fillet's circle or the selected fillet's radius dot.
+    if (toolRef.current instanceof RoundTool && controller && roundCornerFirst(toolRef.current, point, target, touch)) target = null
     if (toolRef.current && target?.kind !== 'editor') {
       pressOwnerRef.current = 'tool'
       controller?.toolDown(p, modifiersOf(e), touch)
       const tool = toolRef.current
       if (tool instanceof GuideTool) tool.onMouseDown(point, modifiersOf(e), touch, target?.kind === 'guide' ? target : null)
       else if (tool instanceof BandTool) tool.onMouseDown(point, touch)
+      else if (tool instanceof RoundTool) tool.onMouseDown(point, modifiersOf(e), touch)
       else tool.onMouseDown(point)
       return
     }
@@ -620,13 +732,19 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
     const tool = toolRef.current
     if (tool && pressOwnerRef.current !== 'editor') {
       const hovering = e.buttons === 0 && controller !== null
+      let roundYields = false
       if (hovering) {
         const penCursor = tool instanceof PenTool ? tool.cursorAt(point) : null
-        e.currentTarget.style.cursor = penCursor ?? controller.toolHover(p, touch) ?? 'crosshair'
+        // As a press would: a corner to round takes the hover over a fillet's circle or a radius dot further off, and else the editor's zone does.
+        const target = tool instanceof RoundTool ? controller.toolPressTarget(p, touch) : null
+        const cornerFirst = tool instanceof RoundTool && roundCornerFirst(tool, point, target, touch)
+        roundYields = target?.kind === 'editor' && !cornerFirst
+        e.currentTarget.style.cursor = penCursor ?? controller.toolHover(p, touch, cornerFirst) ?? 'crosshair'
       }
       controller?.toolPointer(p, modifiersOf(e), touch)
       if (tool instanceof GuideTool) tool.onMouseDrag(point, modifiersOf(e), touch, hovering && controller.toolPressTarget(p, touch) !== null)
       else if (tool instanceof BandTool) tool.onMouseDrag(point, touch)
+      else if (tool instanceof RoundTool) tool.onMouseDrag(point, modifiersOf(e), touch, hovering && roundYields)
       else tool.onMouseDrag(point)
       return
     }
@@ -653,14 +771,14 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
   /** The gesture was interrupted (pointer cancelled or capture lost): undo the preview. */
   const handlePointerCancel = useCallback(() => {
     pressOwnerRef.current = null
-    if (toolRef.current instanceof CarveTool || toolRef.current instanceof GuideTool || toolRef.current instanceof BandTool) toolRef.current.cancel()
+    if (toolRef.current instanceof CarveTool || toolRef.current instanceof GuideTool || toolRef.current instanceof BandTool || toolRef.current instanceof RoundTool) toolRef.current.cancel()
     controllerRef.current?.cancel()
   }, [])
 
   /** Hover outlines, snap hints and labels go when the pointer leaves (a captured drag keeps them). */
   const handlePointerLeave = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) return
-    if (toolRef.current instanceof PenTool || toolRef.current instanceof GuideTool || toolRef.current instanceof BandTool) toolRef.current.pointerLeave()
+    if (toolRef.current instanceof PenTool || toolRef.current instanceof GuideTool || toolRef.current instanceof BandTool || toolRef.current instanceof RoundTool) toolRef.current.pointerLeave()
     controllerRef.current?.pointerLeave()
   }, [])
 

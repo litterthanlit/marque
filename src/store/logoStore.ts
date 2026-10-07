@@ -8,7 +8,7 @@ import { bakedEditableShape } from '../engine/illustrator/layerPath.ts'
 import { deleteAnchor, editablePathToPathData, toggleSmooth } from '../engine/path/editPath.ts'
 import { getLayerPathItem } from '../engine/illustrator/compose.ts'
 import { savedDocument, type SavedVariation } from '../engine/vector/saved.ts'
-import type { Contour, GroupObject, Guide, PathObject, VectorDocument, VectorObject, VectorSelection } from '../engine/vector/types.ts'
+import type { Contour, Fillet, GroupObject, Guide, PathObject, VectorDocument, VectorObject, VectorSelection } from '../engine/vector/types.ts'
 import { readLegacyLayers } from '../engine/vector/migrate.ts'
 import {
   pointSelectionToVectorSelection,
@@ -38,11 +38,14 @@ import { detachGuide, follow, type DocumentLists } from '../engine/vector/follow
 import { MAX_OFFSET, detachOffset, followsAnyOf, isEmptyCopy, isOffsetCopy, nameDetached, offsetName, offsetRoot, renameDetached } from '../engine/vector/offsets.ts'
 import { closedContourOf, constructionLines, makeGuide, moveGuideShape, respokeGuides, tangentFrame, type GuideShape, type GuideStyle } from '../engine/vector/guides.ts'
 import { asCircle, type Circle } from '../engine/geometry/asCircle.ts'
-import { composeVectorMarkCached } from '../engine/vector/export.ts'
+import { composeBaseMark, composeVectorMarkCached } from '../engine/vector/export.ts'
+import { cornerSources, roundAllPlan } from '../engine/fillet/apply.ts'
+import type { Vec } from '../engine/path/bezier.ts'
 import { placeMark, placeSlab } from '../engine/carve/placement.ts'
 import type { SurvivalSize } from '../engine/carve/survival.ts'
 import { sparkLayers, type Spark } from '../engine/sparks/sparks.ts'
 import {
+  copyFillets,
   copyGroup,
   gatherIntoGroup,
   groupRefusal,
@@ -97,7 +100,20 @@ interface UIState {
   penDraws: PenDraws
   /** What the Band tool makes next: its fit and the fit's setting. */
   band: BandSettings
+  /** The Round tool's radius for new fillets, and the radius the last fillet made took, which Alt-click reuses. */
+  round: RoundSettings
 }
+
+export interface RoundSettings {
+  radius: number
+  /** The radius of the fillet made last, or null before any. */
+  last: number | null
+}
+
+/** The Round tool's radius to start, and its reach. */
+export const DEFAULT_ROUND_RADIUS = 12
+export const MIN_FILLET_RADIUS = 2
+export const MAX_FILLET_RADIUS = 200
 
 /** The next band's fit, and each fit's setting: a bar's width, a strip's angle, a neck's radius. A strip's side is up to its circles. */
 export interface BandSettings {
@@ -151,9 +167,9 @@ export interface AnchorRef {
 }
 
 /** Key edits that run together into one undo step: arrow nudges, turns and scales with Alt, and arrow steps of an offset's distance or a band's setting. */
-export type HistoryMergeKind = 'nudge' | 'key-turn' | 'key-scale' | 'offset-distance' | 'band-setting'
+export type HistoryMergeKind = 'nudge' | 'key-turn' | 'key-scale' | 'offset-distance' | 'band-setting' | 'fillet-radius'
 
-export type EditorTool = 'pen' | 'punch' | 'channel' | 'slice' | 'guide' | 'band'
+export type EditorTool = 'pen' | 'punch' | 'channel' | 'slice' | 'guide' | 'band' | 'round'
 
 /**
  * One undo step. It holds the document's lists (objects, guides, fillets)
@@ -343,9 +359,36 @@ interface LogoStore {
   addTangentFrame: () => void
   /** A path the pen drew in its Guide mode, kept as a guide and selected; back to selecting. */
   addPenGuide: (contour: Contour) => void
+
+  /* Fillets: every edit is one undo step, and none of them touches the objects, so none composes the base mark again. */
+  /** The Round tool's radius for new fillets, in whole units from 2 to 200. */
+  setRoundRadius: (radius: number) => void
+  /** A fillet on the corner at `at` between two objects (the same id twice for a corner of one): selected; one undo step. */
+  addFillet: (at: Vec, between: [string, string], radius: number) => void
+  /** Fillets by id, or `null` for none; `additive` toggles them in the fillets already selected. */
+  selectFillets: (ids: string[] | null, additive?: boolean) => void
+  /**
+   * A fillet's radius, in whole units from 2 to 200: one undo step, or with
+   * `merge`, as arrow keys on its slider give it, joined to the last such
+   * step on the same fillet.
+   */
+  setFilletRadius: (id: string, radius: number, merge?: 'fillet-radius') => void
+  /** One radius for several fillets, in whole units from 2 to 200: one undo step, a burst of slider keys one step. */
+  setFilletsRadius: (ids: string[], radius: number, merge?: 'fillet-radius') => void
+  toggleFilletVisibility: (id: string) => void
+  /** The given fillets, or the selected ones. */
+  deleteFillets: (ids?: string[]) => void
+  /**
+   * Round all N like this: a fillet of the same radius on every other corner
+   * of the mark like this fillet's, between the same kinds of object, convex
+   * or concave as it is, and turning within 15° of it, but for a corner whose
+   * fillet would overlap a neighbour's. One undo step; the new fillets join
+   * the selection.
+   */
+  roundAllLike: (id: string) => void
 }
 
-export const useLogoStore = create<LogoStore>()((set) => ({
+export const useLogoStore = create<LogoStore>()((set, get) => ({
   params: {
     ...DEFAULT_PARAMS,
     modeParams: getAllModeParamDefaults(),
@@ -364,6 +407,7 @@ export const useLogoStore = create<LogoStore>()((set) => ({
     guideDraws: 'line',
     penDraws: 'shape',
     band: { ...DEFAULT_BAND_SETTINGS },
+    round: { radius: DEFAULT_ROUND_RADIUS, last: null },
   },
   ...blankDocument(),
   vectorUndoStack: [],
@@ -381,7 +425,8 @@ export const useLogoStore = create<LogoStore>()((set) => ({
   setActiveTool: (tool) =>
     set((state) => {
       const ui = { ...state.ui, activeTool: tool }
-      // A tool that makes guides puts them on the canvas, so what it makes can be seen.
+      // A tool that makes guides puts them on the canvas, so what it makes can be seen; so does the Round tool, whose fillets draw only on the sheet.
+      if (tool === 'round' && ui.look !== 'construction') return { ui: { ...ui, look: 'construction' } }
       return { ui: tool === 'guide' || (tool === 'pen' && ui.penDraws === 'guide') ? guidesOnCanvas(ui) : ui }
     }),
 
@@ -477,7 +522,11 @@ export const useLogoStore = create<LogoStore>()((set) => ({
         ...objectFromLayer(named ? { ...layer, name: nameDetached(original, original.link.distance, shapeNames(state)) } : layer),
         parentId: original.parentId,
       }
-      return commitObjects(state, 'Duplicate layer', insertObjects(objects, [copy], index + 1), objectSelection([copy.id]))
+      const inserted = insertObjects(objects, [copy], index + 1)
+      // The fillets on the layer's own corners round the copy's too.
+      const fillets = copyFillets(state.vectorDocument.fillets, new Map([[id, copy.id]]), { x: DUPLICATE_OFFSET, y: DUPLICATE_OFFSET })
+      if (!fillets.length) return commitObjects(state, 'Duplicate layer', inserted, objectSelection([copy.id]))
+      return commitDocument(state, 'Duplicate layer', { objects: inserted, fillets: [...state.vectorDocument.fillets, ...fillets] }, objectSelection([copy.id]))
     }),
 
   deleteIllustratorLayers: (ids) =>
@@ -640,7 +689,12 @@ export const useLogoStore = create<LogoStore>()((set) => ({
     ),
 
   toggleLook: () =>
-    set((state) => withGuidesSeen(state, { ...state.ui, look: state.ui.look === 'construction' ? 'final' : 'construction' })),
+    set((state) => {
+      const look = state.ui.look === 'construction' ? 'final' : 'construction'
+      // The Round tool works on the sheet, where fillets draw: the final look puts it down.
+      const activeTool = look === 'final' && state.ui.activeTool === 'round' ? null : state.ui.activeTool
+      return withGuidesSeen(state, { ...state.ui, look, activeTool })
+    }),
 
   setLayersOpen: (open) =>
     set((state) => (state.ui.layersOpen === open ? {} : { ui: { ...state.ui, layersOpen: open } })),
@@ -1079,7 +1133,104 @@ export const useLogoStore = create<LogoStore>()((set) => ({
         ui: guidesOnCanvas({ ...state.ui, activeTool: null }),
       }
     }),
+
+  setRoundRadius: (radius) =>
+    set((state) => {
+      const next = filletRadius(radius)
+      return next === state.ui.round.radius ? {} : { ui: { ...state.ui, round: { ...state.ui.round, radius: next } } }
+    }),
+
+  addFillet: (at, between, radius) =>
+    set((state) => {
+      const objects = state.vectorDocument.objects
+      if (!between.every((id) => objects.some((object) => object.id === id && object.type === 'path'))) return {}
+      const fillet: Fillet = { id: crypto.randomUUID(), visible: true, radius: filletRadius(radius), at: filletPlace(at), between: [between[0], between[1]] }
+      return {
+        // Fillets draw on the sheet alone: in the final look the new one is not selected, as none can be.
+        ...commitDocument(state, 'Round corner', { fillets: [...state.vectorDocument.fillets, fillet] }, state.ui.look === 'construction' ? filletSelection([fillet.id]) : undefined),
+        ui: { ...state.ui, round: { ...state.ui.round, last: fillet.radius } },
+      }
+    }),
+
+  selectFillets: (ids, additive = false) =>
+    set((state) => {
+      if (!ids) return selectionUpdate(state, { targets: [] })
+      const known = new Set(idsOf(state.vectorDocument.fillets))
+      const picked = ids.filter((id) => known.has(id))
+      if (ids.length && !picked.length) return {}
+      const current = filletIdsOf(state.selection)
+      const next = additive
+        ? [...current.filter((id) => !picked.includes(id)), ...picked.filter((id) => !current.includes(id))]
+        : picked
+      return selectionUpdate(state, filletSelection(next))
+    }),
+
+  setFilletRadius: (id, radius, merge) => get().setFilletsRadius([id], radius, merge),
+
+  setFilletsRadius: (ids, radius, merge) =>
+    set((state) => {
+      const next = filletRadius(radius)
+      const fillets = updateFillets(state.vectorDocument.fillets, ids, (fillet) => (fillet.radius === next ? fillet : { ...fillet, radius: next }))
+      if (fillets === state.vectorDocument.fillets) return {}
+      return {
+        ...commitDocument(state, ids.length > 1 ? 'Fillets radius' : 'Fillet radius', { fillets }, undefined, undefined, merge && `${merge} ${[...ids].sort().join(' ')}`),
+        ui: { ...state.ui, round: { ...state.ui.round, last: next } },
+      }
+    }),
+
+  toggleFilletVisibility: (id) =>
+    set((state) => {
+      const fillet = state.vectorDocument.fillets.find((candidate) => candidate.id === id)
+      if (!fillet) return {}
+      const fillets = updateFillets(state.vectorDocument.fillets, [id], (each) => ({ ...each, visible: !each.visible }))
+      return commitDocument(state, fillet.visible ? 'Hide fillet' : 'Show fillet', { fillets })
+    }),
+
+  deleteFillets: (ids) =>
+    set((state) => {
+      const selected = filletIdsOf(state.selection)
+      const gone = new Set(ids ?? selected)
+      const fillets = state.vectorDocument.fillets.filter((fillet) => !gone.has(fillet.id))
+      if (fillets.length === state.vectorDocument.fillets.length) return {}
+      const selection = selected.length ? filletSelection(selected.filter((id) => !gone.has(id))) : undefined
+      return commitDocument(state, gone.size > 1 ? 'Delete fillets' : 'Delete fillet', { fillets }, selection)
+    }),
+
+  roundAllLike: (id) =>
+    set((state) => {
+      const { objects, fillets } = state.vectorDocument
+      const like = fillets.find((fillet) => fillet.id === id)
+      if (!like) return {}
+      const { corners } = roundAllPlan(composeBaseMark(objects), fillets, cornerSources(objects), id)
+      if (!corners.length) return {}
+      const added = corners.map((corner): Fillet => ({ id: crypto.randomUUID(), visible: true, radius: like.radius, at: filletPlace(corner.p), between: corner.between }))
+      const selection = filletSelection([...new Set([...filletIdsOf(state.selection), id, ...idsOf(added)])])
+      return commitDocument(state, 'Round all', { fillets: [...fillets, ...added] }, selection)
+    }),
 }))
+
+/** A radius as fillets take it: whole units from 2 to 200. */
+export function filletRadius(radius: number): number {
+  return Math.max(MIN_FILLET_RADIUS, Math.min(MAX_FILLET_RADIUS, Math.round(radius)))
+}
+
+/** A fillet's place as it is stored, to a hundredth, as the follow pass writes it. */
+function filletPlace(p: Vec): Vec {
+  return { x: Math.round(p.x * 100) / 100 || 0, y: Math.round(p.y * 100) / 100 || 0 }
+}
+
+/** How many corners Round all would round like this fillet now, and how many like it it would skip as too close to a neighbour. */
+export function roundAllOf(state: Pick<LogoStore, 'vectorDocument'>, id: string): { count: number; skipped: number } {
+  const { objects, fillets } = state.vectorDocument
+  if (!fillets.some((fillet) => fillet.id === id)) return { count: 0, skipped: 0 }
+  const plan = roundAllPlan(composeBaseMark(objects), fillets, cornerSources(objects), id)
+  return { count: plan.corners.length, skipped: plan.skipped }
+}
+
+/** How many corners Round all would round like this fillet now. */
+export function roundAllCount(state: Pick<LogoStore, 'vectorDocument'>, id: string): number {
+  return roundAllOf(state, id).count
+}
 
 /** Why a command does nothing: in words, and the layer or group in the way, which the canvas outlines. */
 export interface Refused {
@@ -1130,8 +1281,10 @@ function guidesShown(ui: UIState): boolean {
  * canvas: the bar and Delete only ever act on guides that can be seen.
  */
 function withGuidesSeen(state: LogoStore, ui: UIState): Partial<LogoStore> {
-  if (guidesShown(ui) || !state.selection.targets.some((target) => target.type === 'guide')) return { ui }
-  return { ui, ...selectionUpdate(state, { targets: state.selection.targets.filter((target) => target.type !== 'guide') }) }
+  // Fillets draw on the sheet alone: the final look shows none to act on.
+  const unseen = (target: VectorSelection['targets'][number]) => (target.type === 'guide' && !guidesShown(ui)) || (target.type === 'fillet' && ui.look !== 'construction')
+  if (!state.selection.targets.some(unseen)) return { ui }
+  return { ui, ...selectionUpdate(state, { targets: state.selection.targets.filter((target) => !unseen(target)) }) }
 }
 
 /** The view with guides on the canvas: the construction look, guides shown. */
@@ -1251,7 +1404,7 @@ function commitDocument(
   freezeInDevelopment(before.objects, lists.objects)
   freezeInDevelopment(before.guides, lists.guides)
   freezeInDevelopment(before.fillets, lists.fillets)
-  const selectionAfter = withoutGone(selection ?? state.selection, lists.objects)
+  const selectionAfter = withoutGone(selection ?? state.selection, lists)
   const now = Date.now()
   const last = state.vectorUndoStack.at(-1)
   const joins =
@@ -1288,11 +1441,12 @@ function commitDocument(
   }
 }
 
-/** A selection without objects an edit's follow pass took away, as an empty offset copy goes with its source. */
-function withoutGone(selection: VectorSelection, objects: readonly VectorObject[]): VectorSelection {
+/** A selection without objects or fillets an edit's follow pass took away, as an empty offset copy goes with its source. */
+function withoutGone(selection: VectorSelection, lists: DocumentLists): VectorSelection {
   if (!selection.targets.some((target) => target.type !== 'guide')) return selection
-  const ids = new Set(objects.map((object) => object.id))
-  const targets = selection.targets.filter((target) => target.type === 'guide' || ids.has(target.objectId))
+  const ids = new Set(lists.objects.map((object) => object.id))
+  const fillets = new Set(lists.fillets.map((fillet) => fillet.id))
+  const targets = selection.targets.filter((target) => (target.type === 'guide' ? true : target.type === 'fillet' ? fillets.has(target.filletId) : ids.has(target.objectId)))
   return targets.length === selection.targets.length ? selection : { targets }
 }
 
@@ -1341,15 +1495,23 @@ function restoreStep(
 ): Pick<LogoStore, 'vectorDocument' | 'selection' | 'illustrator'> {
   const ids = new Set(lists.objects.map((object) => object.id))
   const guideIds = new Set(lists.guides.map((guide) => guide.id))
+  const filletIds = new Set(lists.fillets.map((fillet) => fillet.id))
   const vectorDocument: VectorDocument = {
     ...(document ?? state.vectorDocument),
     ...lists,
     updatedAt: new Date().toISOString(),
   }
-  // Guides off the canvas are not selected back: what cannot be seen is not acted on.
+  // Guides off the canvas, and fillets in the final look, are not selected back: what cannot be seen is not acted on.
   const shown = guidesShown(state.ui)
+  const sheet = state.ui.look === 'construction'
   const restored: VectorSelection = {
-    targets: selection.targets.filter((target) => (target.type === 'guide' ? shown && guideIds.has(target.guideId) : ids.has(target.objectId))),
+    targets: selection.targets.filter((target) =>
+      target.type === 'guide'
+        ? shown && guideIds.has(target.guideId)
+        : target.type === 'fillet'
+          ? sheet && filletIds.has(target.filletId)
+          : ids.has(target.objectId),
+    ),
   }
   return {
     vectorDocument,
@@ -1373,9 +1535,31 @@ function guideSelection(ids: string[]): VectorSelection {
   return { targets: ids.map((guideId) => ({ type: 'guide', guideId })) }
 }
 
-/** The objects a selection names: its object and point targets, never its guides. */
+function filletSelection(ids: string[]): VectorSelection {
+  return { targets: ids.map((filletId) => ({ type: 'fillet', filletId })) }
+}
+
+/** The objects a selection names: its object and point targets, never its guides or fillets. */
 function objectIdsOf(selection: VectorSelection): string[] {
-  return selection.targets.flatMap((target) => (target.type === 'guide' ? [] : [target.objectId]))
+  return selection.targets.flatMap((target) => (target.type === 'guide' || target.type === 'fillet' ? [] : [target.objectId]))
+}
+
+/** The fillets a selection names. */
+function filletIdsOf(selection: VectorSelection): string[] {
+  return selection.targets.flatMap((target) => (target.type === 'fillet' ? [target.filletId] : []))
+}
+
+/** Some fillets by id through `update`: the same array when none changes. */
+function updateFillets(fillets: Fillet[], ids: Iterable<string>, update: (fillet: Fillet) => Fillet): Fillet[] {
+  const wanted = new Set(ids)
+  let changed = false
+  const next = fillets.map((fillet) => {
+    if (!wanted.has(fillet.id)) return fillet
+    const result = update(fillet)
+    if (result !== fillet) changed = true
+    return result
+  })
+  return changed ? next : fillets
 }
 
 /** The guides a selection names. */

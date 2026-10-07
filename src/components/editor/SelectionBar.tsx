@@ -1,5 +1,9 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
-import { groupRefusalOf, tangentCircles, ungroupRefusalOf, useLogoStore, type Refused } from '../../store/logoStore.ts'
+import { groupRefusalOf, MAX_FILLET_RADIUS, MIN_FILLET_RADIUS, roundAllOf, tangentCircles, ungroupRefusalOf, useLogoStore, type Refused } from '../../store/logoStore.ts'
+import { useActiveMark } from '../../hooks/useActiveMark.ts'
+import { filletPreview } from '../../renderer/directEdit/filletPreview.ts'
+import { radiusReadout } from '../../renderer/directEdit/filletEdit.ts'
+import type { ResolvedFillet } from '../../engine/fillet/apply.ts'
 import { BAND_FITS, bandSettings, describeCarve, MAX_SIDES, MIN_SIDES, polygonApothem, type BandFit, type BandSpec, type CarveSpec } from '../../engine/carve/spec.ts'
 import { bandParts } from '../../engine/carve/band.ts'
 import { bandRefitted, bandsOf, bandWith, noFitReason, type BandUpdate } from '../../engine/vector/bands.ts'
@@ -16,8 +20,9 @@ import { refusals } from '../../renderer/directEdit/refusal.ts'
 import { MAX_OFFSET, offsetGeometry, offsetIsQuick, offsetName, type OffsetGeometry } from '../../engine/vector/offsets.ts'
 import { cn } from '../../lib/utils.ts'
 import { SliderControl } from '../controls/SliderControl.tsx'
-import { Divider, EditorButton, FLOATING_SURFACE, Segmented, Stepper, SwitchButton } from './controls.tsx'
-import { bandEnds, layerNumber } from './layerNumber.ts'
+import { Divider, EditorButton, FLOATING_SURFACE, Segmented, StepButtons, Stepper, SwitchButton } from './controls.tsx'
+import { RadiusSteps } from './RadiusSteps.tsx'
+import { bandEnds, filletEnds, layerNumber } from './layerNumber.ts'
 import { steppedPolygonSides } from './tools.ts'
 import { Popover } from './Popover.tsx'
 import { useShiftHeld } from './useShiftHeld.ts'
@@ -107,7 +112,143 @@ function describeSelection(
 export function SelectionBar() {
   const illustrator = useLogoStore((s) => s.illustrator)
   if (!illustrator.selectedLayerIds.length && illustrator.selectedGuideIds?.length) return <GuideBar />
+  if (!illustrator.selectedLayerIds.length && illustrator.selectedFilletIds?.length) return <FilletBar />
   return <LayerBar />
+}
+
+/**
+ * A fillet as the bar reads it: "Fillet · r 25", "r 18 · clamped from 25",
+ * "r 18 · clamped by a neighbour", lost, or with no room at its corner.
+ */
+export function describeFillet(radius: number, resolved: ResolvedFillet | undefined): string {
+  if (!resolved) return 'Off'
+  if (resolved.lost) return noRoomWords(resolved.noRoom) ?? 'Lost its corner'
+  return radiusReadout(radius, resolved)
+}
+
+/** Why a fillet whose corner is there rounds nothing: a neighbour leaves it no room, or its corner holds none; null for none of these. */
+export function noRoomWords(noRoom: 'neighbour' | 'corner' | undefined): string | null {
+  if (noRoom === 'neighbour') return 'No room: too close to a neighbour'
+  if (noRoom === 'corner') return 'No fillet fits its corner'
+  return null
+}
+
+/** What the bar says of the corners Round all leaves: "2 skipped: too close to a neighbour". */
+export function skippedWords(skipped: number): string {
+  return `${skipped} skipped: too close to a neighbour`
+}
+
+/** How long the HUD says what Round all skipped, in milliseconds. */
+const SKIPPED_MS = 2400
+
+/** The radii of several fillets as the bar reads them: "r 12", or "r 5–12" when they differ. */
+export function describeRadii(radii: readonly number[]): string {
+  const low = Math.min(...radii)
+  const high = Math.max(...radii)
+  return low === high ? `r ${low}` : `r ${low}–${high}`
+}
+
+/**
+ * The bar for a selection of fillets: the radius as it rounds, a Radius
+ * slider that shows on the canvas as the thumb moves (one undo step per
+ * release, a burst of arrow keys one step) and sets every selected fillet
+ * alike, Round all N like this for one alone, and Delete.
+ */
+function FilletBar() {
+  const illustrator = useLogoStore((s) => s.illustrator)
+  const document = useLogoStore((s) => s.vectorDocument)
+  const setFilletsRadius = useLogoStore((s) => s.setFilletsRadius)
+  const deleteFillets = useLogoStore((s) => s.deleteFillets)
+  const roundAllLike = useLogoStore((s) => s.roundAllLike)
+  const mark = useActiveMark()
+  const ids = useMemo(() => new Set(illustrator.selectedFilletIds ?? []), [illustrator.selectedFilletIds])
+  const selected = useMemo(() => document.fillets.filter((fillet) => ids.has(fillet.id)), [document.fillets, ids])
+  const alone = selected.length === 1 ? selected[0] : null
+  const resolved = alone ? mark.fillets?.find((fillet) => fillet.id === alone.id) : undefined
+  // How many corners Round all would round, and skip: read again only when the mark or the fillets change.
+  const { count: like, skipped } = useMemo(() => (alone ? roundAllOf({ vectorDocument: document }, alone.id) : { count: 0, skipped: 0 }), [alone, document])
+  const byKey = useRef(false)
+  const selectedKey = selected.map((fillet) => fillet.id).join(' ')
+  useEffect(() => () => filletPreview.set(null), [selectedKey])
+  // While the slider's thumb moves, the radius it shows.
+  const preview = useSyncExternalStore(filletPreview.subscribe, filletPreview.get)
+  const sliding = preview && preview.ids.join(' ') === selectedKey ? preview.radius : null
+  if (!selected.length) return null
+  const selectedIds = selected.map((fillet) => fillet.id)
+  const name = alone ? 'Fillet' : `${selected.length} fillets`
+  const numbers =
+    sliding !== null
+      ? `r ${sliding}`
+      : alone
+        ? describeFillet(alone.radius, resolved)
+        : describeRadii(selected.map((fillet) => fillet.radius))
+  const between = alone ? filletEnds(illustrator, alone.between) : null
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center px-3">
+      <div
+        role="toolbar"
+        aria-label="Selection"
+        data-canvas-cover
+        className={cn(
+          FLOATING_SURFACE,
+          'pointer-events-auto relative flex max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1.5 p-1.5',
+        )}
+      >
+        <p
+          className="max-w-full truncate px-1.5 text-xs text-sidebar-text"
+          title={`Drag its dot on the canvas to change its radius. It rounds the corner between ${between ?? 'its shapes'} and follows it as they move.`}
+        >
+          <span aria-live="polite">
+            <span key={selectedIds.join(' ')}>{name}</span>
+          </span>
+          {numbers && <span className={resolved?.lost ? 'text-rose-600' : undefined}> · {numbers}</span>}
+          {between && <span> · {between}</span>}
+        </p>
+        <div
+          className="w-44 max-w-full px-1.5"
+          onKeyDownCapture={() => (byKey.current = true)}
+          onPointerDownCapture={() => (byKey.current = false)}
+        >
+          {/* Several fillets of different radii start from the first one's; a move sets them all to one. */}
+          <SliderControl
+            label="Radius"
+            value={selected[0].radius}
+            min={MIN_FILLET_RADIUS}
+            max={MAX_FILLET_RADIUS}
+            step={1}
+            scale="sqrt"
+            emphasis
+            onInput={(radius) => filletPreview.set({ ids: selectedIds, radius })}
+            onChange={(radius) => {
+              filletPreview.set(null)
+              setFilletsRadius(selectedIds, radius, byKey.current ? 'fillet-radius' : undefined)
+            }}
+          />
+        </div>
+        <RadiusSteps value={selected[0].radius} onStep={(radius) => setFilletsRadius(selectedIds, radius, 'fillet-radius')} />
+        <Divider className="max-sm:hidden" />
+        <div className="flex gap-1">
+          {/* Shown only while some corner is left to round like this one. */}
+          {alone && like > 0 && (
+            <EditorButton
+              title={`Round every other corner like this one, between the same kinds of shape and turning the same way, at r ${alone.radius}${skipped ? `. ${skippedWords(skipped)}` : ''}`}
+              onClick={() => {
+                roundAllLike(alone.id)
+                hud.announce(`${like} more ${like === 1 ? 'corner' : 'corners'} rounded at radius ${alone.radius}${skipped ? `; ${skippedWords(skipped)}` : ''}`)
+                if (skipped) hud.hold(skippedWords(skipped), SKIPPED_MS)
+              }}
+            >
+              Round all {like} like this
+            </EditorButton>
+          )}
+          {alone && like > 0 && skipped > 0 && <span className="self-center px-1 text-[11px] text-sidebar-muted">{skippedWords(skipped)}</span>}
+          <EditorButton danger onClick={() => deleteFillets(selectedIds)}>
+            Delete
+          </EditorButton>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 /** The bar for a selection of layers. */
@@ -646,69 +787,24 @@ function landDistance(value: number, shift: boolean, was: number): number {
   return was < 0 ? step : -step
 }
 
-/** How long a press on a distance step is held before it steps by 5, and how often it steps again while held. */
-const LONG_PRESS_MS = 450
-const REPEAT_MS = 250
-
 /**
  * A unit in or out from a distance, over 0 to the other side, or 5 with
- * Shift or a long press, which steps again while held: with no keys on
- * touch, the way to an exact distance, which the slider moves a unit or
- * two a pixel.
+ * Shift or a long press, which steps again while held.
  */
 function DistanceSteps({ value, onStep }: { value: number; onStep: (next: number) => void }) {
-  // The value a held press steps from: the bar draws again between its steps.
-  const latest = useRef(value)
-  latest.current = value
-  const held = useRef<{ timer: number; stepped: boolean } | null>(null)
-  const step = (by: -1 | 1, five: boolean) => {
-    const from = latest.current
-    // A copy opened further out than the slider reaches steps from where it is, never jumps back to the slider's end.
-    const reach = Math.min(MAX_OFFSET, Math.max(OFFSET_REACH, Math.abs(from)))
-    const next = Math.max(-reach, Math.min(reach, landDistance(from + (five ? 5 : 1) * by, five, from)))
-    if (next === from) return
-    latest.current = next
-    onStep(next)
-  }
-  const letGo = () => {
-    if (held.current) window.clearTimeout(held.current.timer)
-  }
-  useEffect(() => letGo, [])
-  const press = (by: -1 | 1) => ({
-    onPointerDown: (event: React.PointerEvent) => {
-      if (event.button !== 0) return
-      letGo()
-      const state = { timer: 0, stepped: false }
-      const again = () => {
-        state.stepped = true
-        step(by, true)
-        state.timer = window.setTimeout(again, REPEAT_MS)
-      }
-      state.timer = window.setTimeout(again, LONG_PRESS_MS)
-      held.current = state
-    },
-    onPointerUp: letGo,
-    onPointerLeave: letGo,
-    onPointerCancel: letGo,
-    // A long press has stepped already: its click does not step again.
-    onClick: (event: React.MouseEvent) => {
-      if (held.current?.stepped) {
-        held.current = null
-        return
-      }
-      step(by, event.shiftKey)
-    },
-    onContextMenu: (event: React.MouseEvent) => event.preventDefault(),
-  })
   return (
-    <div className="flex items-center gap-1" role="group" aria-label="Distance steps">
-      <EditorButton aria-label="In 1" title="In 1 (Shift or hold: 5)" disabled={value <= -OFFSET_REACH} {...press(-1)} className="w-8 px-0 touch-manipulation select-none">
-        −
-      </EditorButton>
-      <EditorButton aria-label="Out 1" title="Out 1 (Shift or hold: 5)" disabled={value >= OFFSET_REACH} {...press(1)} className="w-8 px-0 touch-manipulation select-none">
-        +
-      </EditorButton>
-    </div>
+    <StepButtons
+      value={value}
+      label="Distance steps"
+      land={(from, by, five) => {
+        // A copy opened further out than the slider reaches steps from where it is, never jumps back to the slider's end.
+        const reach = Math.min(MAX_OFFSET, Math.max(OFFSET_REACH, Math.abs(from)))
+        return Math.max(-reach, Math.min(reach, landDistance(from + (five ? 5 : 1) * by, five, from)))
+      }}
+      onStep={onStep}
+      less={{ label: 'In 1', title: 'In 1 (Shift or hold: 5)', disabled: value <= -OFFSET_REACH }}
+      more={{ label: 'Out 1', title: 'Out 1 (Shift or hold: 5)', disabled: value >= OFFSET_REACH }}
+    />
   )
 }
 

@@ -488,17 +488,25 @@ export function copyGroup(
     shape: moveGuideShape(guide.shape, d),
     link: { ...guide.link!, of: ids.get(guide.link!.of)! },
   }))
-  const fillets = lists.fillets.flatMap((fillet) =>
-    inside(fillet.between[0]) && inside(fillet.between[1])
-      ? [{ ...fillet, id: crypto.randomUUID(), at: { x: fillet.at.x + d.x, y: fillet.at.y + d.y }, between: [ids.get(fillet.between[0])!, ids.get(fillet.between[1])!] as [string, string] }]
-      : [],
-  )
+  const fillets = copyFillets(lists.fillets, ids, d)
   return {
     objects: [...objects.slice(0, end), ...copies, ...objects.slice(end)],
     guides: [...lists.guides, ...guides],
     fillets: [...lists.fillets, ...fillets],
     copyId: ids.get(groupId)!,
   }
+}
+
+/**
+ * Copies of the fillets between objects that are copied, both of them: on
+ * the copies, `ids` mapping each object to its copy, moved by `d` as the
+ * copies are.
+ */
+export function copyFillets(fillets: readonly Fillet[], ids: ReadonlyMap<string, string>, d: Vec): Fillet[] {
+  return fillets.flatMap((fillet) => {
+    const [a, b] = fillet.between.map((id) => ids.get(id))
+    return a && b ? [{ ...fillet, id: crypto.randomUUID(), at: { x: fillet.at.x + d.x, y: fillet.at.y + d.y }, between: [a, b] as [string, string] }] : []
+  })
 }
 
 /* ─── Names ─── */

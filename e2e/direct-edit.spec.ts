@@ -73,7 +73,7 @@ async function startOver(page: Page) {
 const addSlab = (page: Page, name: 'Square' | 'Rounded' | 'Circle' | 'Tall' | 'Polygon') =>
   page.getByRole('button', { name: `Add ${name.toLowerCase()} slab` }).click()
 
-const pickTool = (page: Page, name: 'Pen' | 'Punch' | 'Channel' | 'Slice' | 'Guide' | 'Band') =>
+const pickTool = (page: Page, name: 'Pen' | 'Punch' | 'Channel' | 'Slice' | 'Guide' | 'Band' | 'Round') =>
   page.getByRole('group', { name: 'Tools' }).getByRole('button', { name, exact: true }).click()
 
 /* ─── The spark tray under the canvas ─── */
@@ -805,7 +805,8 @@ test('the canvas opens on the construction look, and F shows the ink', async ({ 
   const inSlab = f.at(-100, -100)
   const [fill] = await pixels(page, [inSlab])
   expect(fill).toEqual({ alpha: 1, dark: false, paleGrey: true })
-  expect(await isEmpty(page, f.at(60, 60))).toBe(true)
+  // The sheet marks the punch's centre with a ringed dot: the hole is read beside it.
+  expect(await isEmpty(page, f.at(60, 75))).toBe(true)
 
   await page.keyboard.press('f')
   await expect.poll(() => isInk(page, inSlab)).toBe(true)
@@ -2758,6 +2759,38 @@ test("ref 2: a circle dragged near a line of the circles' tangent frame snaps to
   expect(await undoDepth(page)).toBe(depth + 1)
 })
 
+test("ref 2: the squares where frame guides cross and the circles where they touch move with a dragged circle's guides, mid-drag", async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const [left, right] = await circleSlabs(page, [
+    [-100, 0, 80],
+    [120, 0, 60],
+  ])
+  await page.evaluate((ids) => window.__marque.store.getState().setSelection(ids), [left, right])
+  await selectionBar(page).getByRole('button', { name: 'Guides ▸' }).click()
+  await page.getByRole('group', { name: 'Guides' }).getByRole('button', { name: 'Tangent frame' }).click()
+  await page.keyboard.press('Escape')
+  const before = await page.evaluate(() => window.__marque.guidePoints())
+  expect(before.touches.length).toBeGreaterThan(0)
+  expect(before.crossings.length).toBeGreaterThan(0)
+  const f = await frame(page)
+  const from = f.at(120, 0)
+  const to = f.at(160, 50)
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(to.x, to.y, { steps: 10 })
+  // Mid-drag the marks stand where the moving guides are: where the sheet marks them once the drag lands.
+  const sorted = (points: Array<{ x: number; y: number }>) => [...points].sort((a, b) => a.x - b.x || a.y - b.y)
+  const live = await page.evaluate(() => window.__marque.guidePoints())
+  await page.mouse.up()
+  const landed = await page.evaluate(() => window.__marque.guidePoints())
+  expect(landed).not.toEqual(before)
+  for (const kind of ['touches', 'crossings'] as const) {
+    expect(live[kind]).toHaveLength(landed[kind].length)
+    sorted(live[kind]).forEach((p, i) => expect(Math.hypot(p.x - sorted(landed[kind])[i].x, p.y - sorted(landed[kind])[i].y)).toBeLessThan(0.5))
+  }
+})
+
 test('ref 4: circle C snaps into a corner of the frame, touching both lines, and circle B snaps to C’s size', async ({ page }) => {
   await openVectorMaker(page, 'construction')
   await startOver(page)
@@ -4509,13 +4542,13 @@ test('a band on a construction circle of a shape being dragged follows it live, 
   await expect(hudLabel(page, 'detached')).toHaveCount(0)
 })
 
-test('the tool pill keeps its seven tools on one row, as icons on a phone, each named', async ({ page }) => {
+test('the tool pill keeps its eight tools on one row, as icons on a phone, each named', async ({ page }) => {
   await openVectorMaker(page)
   const tools = page.getByRole('group', { name: 'Tools' }).getByRole('button')
-  await expect(tools).toHaveCount(7)
+  await expect(tools).toHaveCount(8)
   const tops = await tools.evaluateAll((buttons) => buttons.map((button) => Math.round(button.getBoundingClientRect().top)))
   expect(new Set(tops).size).toBe(1)
-  for (const name of ['Select', 'Pen', 'Punch', 'Channel', 'Slice', 'Guide', 'Band']) {
+  for (const name of ['Select', 'Pen', 'Punch', 'Channel', 'Slice', 'Guide', 'Band', 'Round']) {
     await expect(page.getByRole('group', { name: 'Tools' }).getByRole('button', { name, exact: true })).toBeVisible()
   }
 })
@@ -5297,4 +5330,405 @@ test.describe('groups on touch', () => {
     expect(isolated.type === 'group' && isolated.isolated).toBe(true)
     expect(await undoDepth(page)).toBe(depth + 3)
   })
+})
+
+/* ─── Fillets ─── */
+
+/** The corners the Round tool offers now, in client space, of a kind Round all matches by. */
+const roundCorners = (page: Page, kind?: string) =>
+  page.evaluate((wanted) => window.__marque.roundCorners().filter((corner) => !wanted || corner.kind === wanted), kind)
+const filletsOf = (page: Page) => page.evaluate(() => window.__marque.fillets())
+const filletMarks = (page: Page) => page.evaluate(() => window.__marque.filletMarks())
+/** How many separate contours the mark is drawn with. */
+const subpaths = (page: Page) => page.evaluate(() => (window.__marque.mark().compoundPathData.match(/M/gi) ?? []).length)
+const roundOptions = (page: Page) => page.getByRole('group', { name: 'Next fillet' })
+
+/** The Round tool, its radius set with the keys on its slider from where it starts, 12. */
+async function roundAt(page: Page, radius: number) {
+  await pickTool(page, 'Round')
+  const slider = roundOptions(page).getByRole('slider', { name: 'Radius' })
+  await slider.focus()
+  for (let i = 12; i !== radius; i += radius > 12 ? 1 : -1) await page.keyboard.press(radius > 12 ? 'ArrowRight' : 'ArrowLeft')
+  await expect(roundOptions(page).getByText(String(radius), { exact: true })).toBeVisible()
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+}
+
+/** A slab with sharp corners where a test wants it, set through the store; returns its id. */
+async function blockSlab(page: Page, x: number, y: number, width: number, height: number): Promise<string> {
+  await addSlab(page, 'Square')
+  return page.evaluate(
+    ({ x, y, width, height }) => {
+      const store = window.__marque.store
+      const layer = store.getState().illustrator.layers.at(-1)!
+      store.getState().commitLayerEdits({ label: 'Place', edits: [{ layerId: layer.id, carve: { ...(layer.carve as SlabSpec), center: { x, y }, width, height, radius: 0 } }], select: [] })
+      return layer.id
+    },
+    { x, y, width, height },
+  )
+}
+
+test("ref 2: the Round tool rounds where the bars meet the circles at r 25; a dragged circle takes its fillets along, the mark one piece with no warnings, and undo puts them back", async ({ page }) => {
+  const warnings: string[] = []
+  page.on('console', (message) => {
+    if (message.type() === 'warning') warnings.push(message.text())
+  })
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const [left, right, low] = await circleSlabs(page, [[-170, -130, 73], [135, -110, 91], [0, 110, 110]])
+  await page.evaluate(
+    ([a, b, c]) => {
+      const state = () => window.__marque.store.getState()
+      state().setBandSettings({ fit: 'bar', width: 40 })
+      state().addBand(a, b)
+      state().setBandSettings({ width: 36 })
+      state().addBand(a, c)
+      state().setBandSettings({ width: 44 })
+      state().addBand(b, c)
+      state().setSelection([])
+    },
+    [left, right, low],
+  )
+  const pieces = await subpaths(page)
+  await roundAt(page, 25)
+  const corners = await roundCorners(page, 'band · circle')
+  expect(corners).toHaveLength(12)
+  // Every corner where the bar from the left circle meets a circle, and both of the third bar's ends: six fillets.
+  const chosen = corners.filter((corner) => corner.between.includes(left) || corner.between.includes(low)).slice(0, 6)
+  expect(chosen).toHaveLength(6)
+  // Hovered, a corner shows the radius a click gives.
+  await page.mouse.move(chosen[0].x + 2, chosen[0].y + 1)
+  await expect(hudLabel(page, 'round this corner')).toBeVisible()
+  const depth = await undoDepth(page)
+  for (const corner of chosen) {
+    const now = (await roundCorners(page)).find((each) => Math.hypot(each.at.x - corner.at.x, each.at.y - corner.at.y) < 0.5)!
+    await click(page, now)
+  }
+  expect(await undoDepth(page)).toBe(depth + 6)
+  // The tool stays on, and the last fillet made is selected.
+  await expect(page.getByRole('group', { name: 'Tools' }).getByRole('button', { name: 'Round', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(selectionSummary(page)).toContainText(/^Fillet · r (25|\d+ · clamped (from 25|by a neighbour)) · /)
+  const rounded = await filletsOf(page)
+  expect(rounded.map((fillet) => [fillet.radius, fillet.lost])).toEqual(chosen.map(() => [25, false]))
+  // Of the two that face each other across the left circle's short stretch between its bars, the one made second is cut down to stop where the first touches it; the others hold 25.
+  const crowded = rounded.filter((fillet) => (fillet.used ?? 25) < 25)
+  expect(crowded).toHaveLength(1)
+  expect(crowded.every((fillet) => (fillet.used ?? 0) > 10)).toBe(true)
+  expect(rounded.every((fillet) => !fillet.convex)).toBe(true)
+  expect((await filletMarks(page)).map((mark) => [mark.line, mark.color])).toEqual(chosen.map(() => ['solid', '#a3a3a3']))
+  expect(await subpaths(page)).toBe(pieces)
+
+  // Under Select, the bottom circle dragged down and to the right takes its bars, and its fillets follow their corners.
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+  const f = await frame(page)
+  await drag(page, f.at(0, 160), f.at(30, 190))
+  expect(await undoDepth(page)).toBe(depth + 7)
+  const moved = await filletsOf(page)
+  expect(moved.every((fillet) => fillet.lost === false)).toBe(true)
+  const followed = moved.filter((fillet, i) => Math.hypot(fillet.at.x - rounded[i].at.x, fillet.at.y - rounded[i].at.y) > 5)
+  expect(followed.length).toBeGreaterThanOrEqual(2)
+  expect(await subpaths(page)).toBe(pieces)
+  const mark = await page.evaluate(() => window.__marque.mark())
+  expect(mark.warnings).toBeUndefined()
+  expect(warnings.filter((text) => text.includes('Vector Maker'))).toEqual([])
+
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(async () => (await filletsOf(page)).map((fillet) => fillet.at)).toEqual(rounded.map((fillet) => fillet.at))
+})
+
+/** Ref 1: a hexagon ring, its hole an offset cut 55 in, and a triangle across it. */
+async function ref1Ring(page: Page) {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  await addSlab(page, 'Polygon')
+  await page.evaluate(() => {
+    const state = () => window.__marque.store.getState()
+    const [hexagon] = state().illustrator.layers
+    state().commitLayerEdits({ label: 'Round corners', edits: [{ layerId: hexagon.id, carve: { ...(hexagon.carve as PolygonSpec), radius: 250, cornerRadius: 60 } }], select: [] })
+    state().addOffset(hexagon.id, -55, true)
+    state().setCarveSettings({ polygonSides: 3 })
+  })
+  await addSlab(page, 'Polygon')
+  await page.evaluate(() => {
+    const state = () => window.__marque.store.getState()
+    const triangle = state().illustrator.layers.at(-1)!
+    state().commitLayerEdits({ label: 'Place', edits: [{ layerId: triangle.id, carve: { ...(triangle.carve as PolygonSpec), center: { x: 0, y: 0 }, radius: 250, rotation: 180 } }], select: [] })
+    state().setSelection([])
+  })
+}
+
+test("ref 1: a hole corner rounded at r 5, then Round all 5 like this rounds the other five in one undo step", async ({ page }) => {
+  await ref1Ring(page)
+  await roundAt(page, 5)
+  const holes = await roundCorners(page, 'cut polygon · polygon')
+  expect(holes).toHaveLength(6)
+  expect(holes.every((hole) => !hole.convex && Math.abs(hole.turn - holes[0].turn) < 1)).toBe(true)
+  await click(page, holes[0])
+  await expect(selectionSummary(page)).toContainText('Fillet · r 5 · 02, 03')
+  const depth = await undoDepth(page)
+  await selectionBar(page).getByRole('button', { name: 'Round all 5 like this' }).click()
+  expect(await undoDepth(page)).toBe(depth + 1)
+  const fillets = await filletsOf(page)
+  expect(fillets.map((fillet) => [fillet.radius, fillet.lost, fillet.used])).toEqual(holes.map(() => [5, false, 5]))
+  await expect(selectionSummary(page)).toContainText('6 fillets · r 5')
+  expect(await roundCorners(page, 'cut polygon · polygon')).toEqual([])
+  // The bar's slider sets all six at once, one undo step for a burst of keys.
+  const radius = selectionBar(page).getByRole('slider', { name: 'Radius' })
+  await radius.focus()
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowRight')
+  await expect.poll(async () => (await filletsOf(page)).map((fillet) => fillet.radius)).toEqual(holes.map(() => 8))
+  await expect(selectionSummary(page)).toContainText('6 fillets · r 8')
+  expect(await undoDepth(page)).toBe(depth + 2)
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(async () => (await filletsOf(page)).map((fillet) => fillet.radius)).toEqual(holes.map(() => 5))
+  expect((await page.evaluate(() => window.__marque.mark())).warnings).toBeUndefined()
+  // The drawer lists them under Fillets, each by its radius and the shapes whose corner it rounds.
+  const drawer = await openLayers(page)
+  await expect(drawer.getByRole('heading', { name: 'Fillets · 6' })).toBeVisible()
+  await expect(drawer.getByRole('button', { name: 'Fillet r 5 · 02, 03', exact: true })).toHaveCount(6)
+  await expect(drawer.getByRole('button', { name: 'Delete fillet r 5 · 02, 03', exact: true })).toHaveCount(6)
+  await expect(drawer.getByText('r 5', { exact: true }).first()).toBeVisible()
+  await closeLayers(page)
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(async () => (await filletsOf(page)).length).toBe(1)
+})
+
+test.describe('fillets on touch', () => {
+  test.use({ hasTouch: true })
+
+  test("ref 1: a tap rounds each corner at r 5, the corner beside the one just rounded too, though that fillet's radius dot is near it", async ({ page }) => {
+    await ref1Ring(page)
+    await roundAt(page, 5)
+    /** The free corners a finger can reach: not under a bar floating over the canvas. */
+    const reachable = async () => {
+      const free = await roundCorners(page)
+      const open = await page.evaluate((points) => points.map(({ x, y }) => document.elementFromPoint(x, y)?.tagName === 'CANVAS'), free)
+      return free.filter((_, i) => open[i])
+    }
+    // Each time, the free corner nearest the one just rounded, whose fillet is selected with its radius dot showing.
+    let free = await reachable()
+    expect(free.length).toBeGreaterThanOrEqual(12)
+    let last: (typeof free)[number] | undefined = free[0]
+    let made = 0
+    while (last) {
+      await page.touchscreen.tap(last.x, last.y)
+      made++
+      await expect.poll(async () => (await filletsOf(page)).length).toBe(made)
+      free = await reachable()
+      const from: (typeof free)[number] = last
+      last = free.reduce<(typeof free)[number] | undefined>((best, each) => (!best || Math.hypot(each.x - from.x, each.y - from.y) < Math.hypot(best.x - from.x, best.y - from.y) ? each : best), undefined)
+    }
+    expect(made).toBeGreaterThanOrEqual(12)
+  })
+})
+
+test("ref 3: two convex corners of a slab round at r 22, their circles dashed on the sheet and gone in the final look; the dot sets the radius, and Delete takes one off", async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  await blockSlab(page, 0, 0, 300, 300)
+  await page.evaluate(() => {
+    const state = window.__marque.store.getState()
+    state.addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 40, y: -150 }, radius: 120 })
+    state.addCarveCut({ kind: 'punch', shape: 'circle', center: { x: -40, y: 150 }, radius: 120 })
+    window.__marque.store.getState().setSelection([])
+  })
+  await roundAt(page, 22)
+  const corners = await roundCorners(page, 'slab corner')
+  expect(corners.map((corner) => [corner.at, corner.convex])).toEqual([
+    [{ x: -150, y: -150 }, true],
+    [{ x: 150, y: 150 }, true],
+  ])
+  for (const corner of corners) await click(page, corner)
+  const fillets = await filletsOf(page)
+  expect(fillets.map((fillet) => [fillet.radius, fillet.used, fillet.convex])).toEqual([
+    [22, 22, true],
+    [22, 22, true],
+  ])
+  expect((await filletMarks(page)).map((mark) => mark.line)).toEqual(['dashed', 'dashed'])
+  const rounded = await page.evaluate(() => window.__marque.mark().compoundPathData)
+  // The top left corner's tip is cut away; just inside the rounding stays ink.
+  await page.keyboard.press('f')
+  await expect.poll(() => filletMarks(page)).toEqual([])
+  const f = await frame(page)
+  await pointerAway(page, f)
+  expect(await isEmpty(page, f.at(-148, -148))).toBe(true)
+  expect(await isInk(page, f.at(-140, -125))).toBe(true)
+  expect(await page.evaluate(() => window.__marque.mark().compoundPathData)).toBe(rounded)
+  // The final look put the Round tool down, as it let go of the fillet: it draws none.
+  await expect(page.getByRole('group', { name: 'Tools' }).getByRole('button', { name: 'Round', exact: true })).toHaveAttribute('aria-pressed', 'false')
+  await page.keyboard.press('f')
+  await expect(selectionBar(page)).toBeHidden()
+
+  // Under the Round tool again, a click on its circle picks it.
+  await pickTool(page, 'Round')
+  const [, again] = await filletsOf(page)
+  await click(page, { x: again.circle!.x - again.circle!.r, y: again.circle!.y })
+  await expect(selectionSummary(page)).toContainText('Fillet · r 22 · 01')
+  // The selected fillet's dot drags its radius out, one undo step, the HUD giving the radius.
+  const [, selected] = await filletsOf(page)
+  if (selected.lost !== false || !selected.dot) throw new Error('the fillet should round its corner')
+  const depth = await undoDepth(page)
+  const corner = f.at(150, 150)
+  // Pulled out as far again: well clear of 22, the other fillet's size, which the radius would snap to.
+  const pull = { x: selected.dot.x + (selected.dot.x - corner.x), y: selected.dot.y + (selected.dot.y - corner.y) }
+  await page.mouse.move(selected.dot.x, selected.dot.y)
+  await page.mouse.down()
+  await page.mouse.move(pull.x, pull.y, { steps: 8 })
+  await expect(page.locator('main').getByText(/^r \d+$/)).toBeVisible()
+  await page.mouse.up()
+  expect(await undoDepth(page)).toBe(depth + 1)
+  const grown = (await filletsOf(page))[1]
+  expect(grown.radius).toBeGreaterThan(26)
+  expect(Number.isInteger(grown.radius)).toBe(true)
+  await expect(selectionSummary(page)).toContainText(`Fillet · r ${grown.radius}`)
+  await page.keyboard.press('Delete')
+  expect((await filletsOf(page)).map((fillet) => fillet.radius)).toEqual([22])
+})
+
+test('a rounded slab resized from a corner, or turned 30° with the knob, keeps its fillets on its corners after the drag as during it', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const slab = await blockSlab(page, 0, 0, 300, 300)
+  await roundAt(page, 22)
+  for (const corner of await roundCorners(page, 'slab corner')) await click(page, corner)
+  expect(await filletsOf(page)).toHaveLength(4)
+  await page.keyboard.press('Escape')
+  await page.keyboard.press('Escape')
+  const f = await frame(page)
+  await page.evaluate((id) => window.__marque.store.getState().setSelection([id]), slab)
+  const corners = (points: Point[]) => points.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })).sort((a, b) => a.x - b.x || a.y - b.y)
+
+  // Its south-east handle pulled out by 100 units both ways: held at the north-west corner, it grows to 400 by 400.
+  const se = await handle(page, 'se')
+  await page.mouse.move(se.x, se.y)
+  await page.mouse.down()
+  await page.mouse.move(se.x + 100 * f.unit, se.y + 100 * f.unit, { steps: 10 })
+  expect((await filletMarks(page)).map((mark) => mark.line)).toEqual(['dashed', 'dashed', 'dashed', 'dashed'])
+  await page.mouse.up()
+  const grown = await filletsOf(page)
+  expect(grown.map((fillet) => fillet.lost)).toEqual([false, false, false, false])
+  expect(corners(grown.map((fillet) => fillet.at))).toEqual(corners([{ x: -150, y: -150 }, { x: 250, y: -150 }, { x: -150, y: 250 }, { x: 250, y: 250 }]))
+  expect((await filletMarks(page)).map((mark) => mark.line)).toEqual(['dashed', 'dashed', 'dashed', 'dashed'])
+
+  // Undone, then turned 30° about its middle with the knob: each fillet turns with its corner.
+  await page.keyboard.press('ControlOrMeta+z')
+  await page.evaluate((id) => window.__marque.store.getState().setSelection([id]), slab)
+  await turnKnob(page, f.at(0, 0), 30)
+  const turned = await filletsOf(page)
+  expect(turned.map((fillet) => fillet.lost)).toEqual([false, false, false, false])
+  const turn = (await carves(page)).find((carve) => carve.kind === 'slab' && carve.width === 300)
+  const rotation = turn?.kind === 'slab' ? (turn.rotation * Math.PI) / 180 : 0
+  expect(Math.abs(rotation)).toBeGreaterThan(0.4)
+  const want = [{ x: -150, y: -150 }, { x: 150, y: -150 }, { x: -150, y: 150 }, { x: 150, y: 150 }].map((p) => ({ x: p.x * Math.cos(rotation) - p.y * Math.sin(rotation), y: p.x * Math.sin(rotation) + p.y * Math.cos(rotation) }))
+  for (const fillet of turned) expect(Math.min(...want.map((p) => Math.hypot(p.x - fillet.at.x, p.y - fillet.at.y)))).toBeLessThan(0.5)
+})
+
+test("the squares at a slab's vertices move with the dragged slab, frame by frame", async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const slab = await blockSlab(page, 0, 0, 200, 100)
+  const f = await frame(page)
+  const sorted = (points: Point[]) => points.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y) })).sort((a, b) => a.x - b.x || a.y - b.y)
+  await page.evaluate(() => window.__marque.store.getState().setSelection([]))
+  await expect.poll(async () => sorted(await page.evaluate(() => window.__marque.cornerSquares()))).toEqual(sorted([{ x: -100, y: -50 }, { x: 100, y: -50 }, { x: -100, y: 50 }, { x: 100, y: 50 }]))
+  expect(slab).toBeTruthy()
+  await page.mouse.move(f.at(0, 0).x, f.at(0, 0).y)
+  await page.mouse.down()
+  await page.mouse.move(f.at(60, 40).x, f.at(60, 40).y, { steps: 10 })
+  // Mid-drag, the squares sit at the moved slab's corners, none left where it was.
+  const moving = await page.evaluate(() => window.__marque.cornerSquares())
+  expect(moving).toHaveLength(4)
+  const xs = moving.map((p) => p.x)
+  const ys = moving.map((p) => p.y)
+  expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(200, 0)
+  expect(Math.max(...ys) - Math.min(...ys)).toBeCloseTo(100, 0)
+  expect(Math.min(...xs)).toBeGreaterThan(-100 + 30)
+  expect(Math.min(...ys)).toBeGreaterThan(-50 + 20)
+  await page.mouse.up()
+  // Let go, they are where the slab now is.
+  const placed = (await carves(page))[0]
+  if (placed.kind !== 'slab') throw new Error('a slab')
+  const { x, y } = placed.center
+  expect(sorted(await page.evaluate(() => window.__marque.cornerSquares()))).toEqual(sorted([{ x: x - 100, y: y - 50 }, { x: x + 100, y: y - 50 }, { x: x - 100, y: y + 50 }, { x: x + 100, y: y + 50 }]))
+})
+
+test('a corner a neighbour leaves no room is not rounded by a click, the HUD says why, and a fillet put there says it has no room rather than lost', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  // A slab 30 high: a fillet of r 30 on one corner of its end touches the end at the other corner.
+  const slab = await blockSlab(page, 0, 0, 200, 30)
+  await roundAt(page, 30)
+  const end = (await roundCorners(page)).filter((corner) => corner.at.x > 50)
+  expect(end).toHaveLength(2)
+  const [top, bottom] = [...end].sort((a, b) => a.at.y - b.at.y)
+  await click(page, top)
+  expect(await filletsOf(page)).toHaveLength(1)
+  await page.evaluate(() => window.__marque.store.getState().setRoundRadius(20))
+  const depth = await undoDepth(page)
+  // The other corner is still offered, but its hover says it has no room, and a click makes nothing.
+  const free = (await roundCorners(page)).find((corner) => Math.hypot(corner.at.x - bottom.at.x, corner.at.y - bottom.at.y) < 0.5)!
+  await page.mouse.move(free.x + 1, free.y + 1)
+  await expect(hudLabel(page, 'too close to a neighbour')).toBeVisible()
+  await click(page, free)
+  await expect(hudLabel(page, 'too close to a neighbour')).toBeVisible()
+  expect(await filletsOf(page)).toHaveLength(1)
+  expect(await undoDepth(page)).toBe(depth)
+
+  // Put there through the store, a fillet keeps its corner and says it has no room; Round all offers nothing from it.
+  await page.evaluate(({ at, id }) => window.__marque.store.getState().addFillet(at, [id, id], 20), { at: bottom.at, id: slab })
+  await expect.poll(async () => (await filletsOf(page)).map((fillet) => fillet.lost)).toEqual([false, true])
+  await expect(selectionSummary(page)).toContainText('No room: too close to a neighbour')
+  await expect(selectionSummary(page)).not.toContainText('Lost its corner')
+  await expect(page.getByRole('button', { name: /^Round all/ })).toHaveCount(0)
+  const drawer = await openLayers(page)
+  await expect(drawer.getByRole('button', { name: /^Fillet r 20 · 01, no room$/ })).toBeVisible()
+  await closeLayers(page)
+})
+
+test('a fillet whose corner goes is drawn red and dashed, says it is lost, and rounds its corner again when the corner comes back', async ({ page }) => {
+  await openVectorMaker(page, 'construction')
+  await startOver(page)
+  const [circle] = await circleSlabs(page, [[-80, 0, 120]])
+  const bar = await blockSlab(page, 100, 0, 220, 50)
+  await roundAt(page, 15)
+  const [corner] = (await roundCorners(page, 'circle · slab')).filter((each) => each.at.y < 0)
+  await click(page, corner)
+  // Alt-click reuses the last radius, whatever the slider says, and Delete takes the fillet off again.
+  await page.evaluate(() => window.__marque.store.getState().setRoundRadius(30))
+  const [other] = (await roundCorners(page, 'circle · slab')).filter((each) => each.at.y > 0)
+  await page.keyboard.down('Alt')
+  await click(page, other)
+  await page.keyboard.up('Alt')
+  expect((await filletsOf(page)).map((fillet) => fillet.radius)).toEqual([15, 15])
+  await page.keyboard.press('Delete')
+  expect(await filletsOf(page)).toHaveLength(1)
+  await page.keyboard.press('Escape')
+  const [made] = await filletsOf(page)
+  expect(made).toMatchObject({ lost: false, between: expect.arrayContaining([circle, bar]) })
+  const f = await frame(page)
+
+  // The bar pulled clear of the circle: no corner between them.
+  await drag(page, f.at(180, 0), f.at(180, 200))
+  await expect.poll(async () => (await filletsOf(page))[0].lost).toBe(true)
+  expect(await filletMarks(page)).toEqual([{ id: made.id, line: 'lost', color: '#e11d48' }])
+  const drawer = await openLayers(page)
+  await expect(drawer.getByRole('button', { name: /^Fillet r 15 · 01, 02, lost its corner$/ })).toBeVisible()
+  await drawer.getByRole('button', { name: /^Fillet r 15/ }).click()
+  await closeLayers(page)
+  await expect(selectionSummary(page)).toContainText('Lost its corner')
+
+  // Back where it was, it rounds the corner again.
+  await page.keyboard.press('Escape')
+  await drag(page, f.at(180, 200), f.at(180, 0))
+  await expect.poll(async () => (await filletsOf(page))[0].lost).toBe(false)
+  expect((await filletMarks(page)).map((mark) => mark.line)).toEqual(['solid'])
+
+  // Deleting the bar takes the fillet in the same undo step; undo brings both.
+  await page.evaluate((id) => window.__marque.store.getState().deleteIllustratorLayers([id]), bar)
+  expect(await filletsOf(page)).toEqual([])
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(async () => (await filletsOf(page)).length).toBe(1)
 })

@@ -303,6 +303,16 @@ describe('reading a version 2 document', () => {
     expect(document.fillets.map((fillet) => fillet.id)).toEqual(['kept', 'own'])
   })
 
+  it('removes a fillet that names a group, which has no outline of its own', () => {
+    const group: GroupObject = { id: 'g', type: 'group', name: 'Group 1', parentId: null, visible: true, locked: false, isolated: false, operation: 'add' }
+    const fillets: Fillet[] = [
+      { id: 'kept', visible: true, radius: 20, at: { x: 100, y: 0 }, between: ['a', 'b'] },
+      { id: 'group', visible: true, radius: 20, at: { x: 0, y: 0 }, between: ['a', 'g'] },
+    ]
+    const document = repaired(doc([group, { ...path('a'), parentId: 'g' }, { ...path('b'), parentId: 'g' }], { fillets }))
+    expect(document.fillets.map((fillet) => fillet.id)).toEqual(['kept'])
+  })
+
   it('drops fields it does not know, on the document, its objects and their points', () => {
     const document = doc([path('a')])
     const raw = stored({

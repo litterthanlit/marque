@@ -141,16 +141,19 @@ function App() {
         }
       }
 
-      // Delete/Backspace removes the selected layers or guides (not while a slider has focus)
+      // Delete/Backspace removes the selected layers, guides or fillets (not while a slider has focus)
       const onSlider = Boolean((e.target as HTMLElement).closest?.('[role="slider"]'))
       if ((e.key === 'Delete' || e.key === 'Backspace') && !e.metaKey && !e.ctrlKey && !onSlider) {
-        const { illustrator, deleteIllustratorLayers, deleteGuides } = useLogoStore.getState()
+        const { illustrator, deleteIllustratorLayers, deleteGuides, deleteFillets } = useLogoStore.getState()
         if (illustrator.selectedLayerIds.length) {
           e.preventDefault()
           deleteIllustratorLayers()
         } else if (illustrator.selectedGuideIds?.length) {
           e.preventDefault()
           deleteGuides()
+        } else if (illustrator.selectedFilletIds?.length) {
+          e.preventDefault()
+          deleteFillets()
         }
       }
     }
