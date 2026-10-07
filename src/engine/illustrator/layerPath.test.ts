@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { layersBounds, scaleLayers } from './layerPath.ts'
+import type { EditableShape } from '../path/editPath.ts'
+import { bakeLegacyTransform } from '../vector/migrate.ts'
+import { pathDataToContours } from '../vector/pathSerialization.ts'
+import { bakedEditablePath, bakedEditableShape, editableShapeOf } from './layerPath.ts'
 import { DEFAULT_ILLUSTRATOR_TRANSFORM, type IllustratorLayer, type IllustratorTransform } from './types.ts'
 
 function layer(id: string, pathData: string, transform: Partial<IllustratorTransform> = {}): IllustratorLayer {
@@ -15,69 +18,36 @@ function layer(id: string, pathData: string, transform: Partial<IllustratorTrans
   }
 }
 
-const square = (x: number, y: number, side: number) => `M${x},${y}L${x + side},${y}L${x + side},${y + side}L${x},${y + side}Z`
-
-/** The layers as `scaleLayers` leaves them: the new paths, with nothing left for a transform to do. */
-function scaled(layers: IllustratorLayer[], factor: number): IllustratorLayer[] {
-  const edits = scaleLayers(layers, factor)
-  return layers.map((original) => {
-    const edit = edits.find((candidate) => candidate.layerId === original.id)!
-    return layer(original.id, edit.pathData)
+function expectSameShape(read: EditableShape, drawn: EditableShape) {
+  expect(read).toHaveLength(drawn.length)
+  read.forEach((path, c) => {
+    expect(path.closed).toBe(drawn[c].closed)
+    expect(path.segs).toHaveLength(drawn[c].segs.length)
+    path.segs.forEach((seg, i) => {
+      expect(seg.p.x).toBeCloseTo(drawn[c].segs[i].p.x, 6)
+      expect(seg.p.y).toBeCloseTo(drawn[c].segs[i].p.y, 6)
+      expect(Boolean(seg.hOut)).toBe(Boolean(drawn[c].segs[i].hOut))
+      if (seg.hOut) expect(seg.hOut.x).toBeCloseTo(drawn[c].segs[i].hOut!.x, 6)
+    })
   })
 }
 
-const centre = (layers: IllustratorLayer[]) => {
-  const box = layersBounds(layers)!
-  return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
-}
-
-describe('the box around several layers', () => {
-  it('covers every layer as it is drawn, transform included', () => {
-    const layers = [layer('a', square(0, 0, 100)), layer('b', square(0, 0, 100), { dx: 300, dy: 50, scale: 2 })]
-    // The second square doubles about its own middle, then moves.
-    expect(layersBounds(layers)).toEqual({ x: 0, y: 0, width: 450, height: 200 })
+describe('a layer measured without drawing it', () => {
+  it('bakes the transform as the drawn layer has it: about the middle of its bounds, then moved', () => {
+    const pathData = 'M0,0L120,0C150,0 160,40 120,60L0,60Z'
+    const transform = { dx: 30, dy: -12, scale: 1.5, rotation: 30 }
+    const drawn = bakedEditableShape(layer('a', pathData, transform))!
+    const read = editableShapeOf(bakeLegacyTransform(pathDataToContours(pathData), { ...DEFAULT_ILLUSTRATOR_TRANSFORM, ...transform }))
+    expectSameShape(read, drawn)
   })
 
-  it('is missing when no layer has a path', () => {
-    expect(layersBounds([])).toBeNull()
-    expect(layersBounds([layer('empty', '')])).toBeNull()
-  })
-})
-
-describe('scaling layers together', () => {
-  const layers = [
-    layer('a', square(-200, -100, 100)),
-    layer('b', square(100, 20, 60), { rotation: 30, scale: 1.5, dx: 12, dy: -8 }),
-    layer('c', 'M0,-40C22,-40 40,-22 40,0C40,22 22,40 0,40C-22,40 -40,22 -40,0C-40,-22 -22,-40 0,-40Z'),
-  ]
-
-  it.each([0.5, 2, 1.37])('by %f keeps the middle of their box still and scales the box', (factor) => {
-    const before = layersBounds(layers)!
-    const after = layersBounds(scaled(layers, factor))!
-    expect(after.width).toBeCloseTo(before.width * factor, 3)
-    expect(after.height).toBeCloseTo(before.height * factor, 3)
-    expect(after.x + after.width / 2).toBeCloseTo(before.x + before.width / 2, 3)
-    expect(after.y + after.height / 2).toBeCloseTo(before.y + before.height / 2, 3)
-  })
-
-  it('keeps the arrangement: every layer grows by the factor and moves away from the middle by it', () => {
-    const factor = 1.6
-    const pivot = centre(layers)
-    const after = scaled(layers, factor)
-    for (const [index, original] of layers.entries()) {
-      const was = layersBounds([original])!
-      const now = layersBounds([after[index]])!
-      expect(now.width).toBeCloseTo(was.width * factor, 3)
-      expect(now.height).toBeCloseTo(was.height * factor, 3)
-      expect(centre([after[index]]).x - pivot.x).toBeCloseTo((centre([original]).x - pivot.x) * factor, 3)
-      expect(centre([after[index]]).y - pivot.y).toBeCloseTo((centre([original]).y - pivot.y) * factor, 3)
-    }
-  })
-
-  it('down and back up lands where it started', () => {
-    const there = scaled(layers, 0.25)
-    const back = layersBounds(scaled(there, 4))!
-    const start = layersBounds(layers)!
-    for (const key of ['x', 'y', 'width', 'height'] as const) expect(back[key]).toBeCloseTo(start[key], 2)
+  it('reads every contour of a layer in the order its object holds them', () => {
+    const pathData = 'M-100,-100L100,-100L100,100L-100,100Z M-40,-40L-40,40L40,40L40,-40Z'
+    const shape = bakedEditableShape(layer('ring', pathData))!
+    expectSameShape(shape, editableShapeOf(pathDataToContours(pathData)))
+    expect(shape[1].segs[0].p).toEqual({ x: -40, y: -40 })
+    // A single path is only for a layer of one contour.
+    expect(bakedEditablePath(layer('ring', pathData))).toBeNull()
+    expect(bakedEditablePath(layer('square', 'M0,0L10,0L10,10Z'))?.segs).toHaveLength(3)
   })
 })

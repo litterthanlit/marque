@@ -143,9 +143,40 @@ export function projectOnCubic(c: Cubic, p: Vec): { t: number; point: Vec; dista
     }
     t = next
   }
+  // At an end whose handle sits on its point the curve has no speed, and Newton's method stays put: the samples about it are searched instead.
+  if (t === 0 || t === 1) t = goldenSearch(c, p, Math.max(0, bestT - 1 / samples), Math.min(1, bestT + 1 / samples))
   const point = cubicPoint(c, t)
   const d = distance(point, p)
   return d <= bestD ? { t, point, distance: d } : { t: bestT, point: cubicPoint(c, bestT), distance: bestD }
+}
+
+/** The parameter in [lo, hi] of the point nearest `p`, by golden-section search: the distance has one low there. */
+function goldenSearch(c: Cubic, p: Vec, lo: number, hi: number): number {
+  const ratio = (Math.sqrt(5) - 1) / 2
+  let a = lo
+  let b = hi
+  let x1 = b - ratio * (b - a)
+  let x2 = a + ratio * (b - a)
+  let f1 = distance(cubicPoint(c, x1), p)
+  let f2 = distance(cubicPoint(c, x2), p)
+  for (let i = 0; i < 40 && b - a > 1e-10; i++) {
+    if (f1 <= f2) {
+      b = x2
+      x2 = x1
+      f2 = f1
+      x1 = b - ratio * (b - a)
+      f1 = distance(cubicPoint(c, x1), p)
+    } else {
+      a = x1
+      x1 = x2
+      f1 = f2
+      x2 = a + ratio * (b - a)
+      f2 = distance(cubicPoint(c, x2), p)
+    }
+  }
+  const mid = (a + b) / 2
+  // The search never quite reaches an end: an end nearer than where it settled is taken.
+  return [lo, hi, mid].reduce((best, each) => (distance(cubicPoint(c, each), p) < distance(cubicPoint(c, best), p) ? each : best))
 }
 
 /** de Casteljau split at t. */

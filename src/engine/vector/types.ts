@@ -1,6 +1,12 @@
 import type { CarveSpec } from '../carve/spec.ts'
 
-export type VectorDocumentKind = 'brand-vector' | 'font'
+/**
+ * The document, schema version 2. Every point is in artboard space: nothing
+ * stores a transform, so what an object holds is what it draws. The version
+ * 1 types live on in `v1.ts`, for reading old links and saved marks.
+ */
+
+export type VectorDocumentKind = 'brand-vector'
 export type VectorWorkspaceMode = 'logo' | 'wordmark'
 
 export interface Vec2 {
@@ -15,15 +21,6 @@ export interface Rect {
   height: number
 }
 
-export interface Matrix2D {
-  a: number
-  b: number
-  c: number
-  d: number
-  e: number
-  f: number
-}
-
 export interface VectorArtboard {
   id: string
   name: string
@@ -31,100 +28,122 @@ export interface VectorArtboard {
   background: string | null
 }
 
-export interface VectorPath {
-  id: string
-  closed: boolean
-  segments: VectorPathSegment[]
-}
-
-export interface VectorPathSegment {
+/** One anchor of a contour. Its handles are relative to it; null is no handle. */
+export interface Segment {
   point: Vec2
   handleIn: Vec2 | null
   handleOut: Vec2 | null
-  pointType: 'corner' | 'smooth' | 'symmetric'
 }
 
-export type Paint =
-  | { type: 'none' }
-  | { type: 'solid'; color: string }
-
-export interface VectorAppearance {
-  fill: Paint
-  stroke: Paint
-  strokeWidth: number
-  strokeCap: 'butt' | 'round' | 'square'
-  strokeJoin: 'miter' | 'round' | 'bevel'
-  strokeMiterLimit: number
-  strokeDashArray: number[]
-  opacity: number
-  blendMode: 'normal'
+export interface Contour {
+  closed: boolean
+  segments: Segment[]
 }
 
-export interface VectorSourceRef {
-  generatorId?: string
-  generatorVersion?: string
-  modeId?: string
-  seed?: number
-  sourceShapeId?: string
-  paramsHash?: string
-  convertedAt?: string
-  compatOperation?: 'add' | 'subtract'
-}
+export type Operation = 'add' | 'subtract'
 
-export interface VectorBaseObject {
+export interface ObjectBase {
   id: string
-  type: VectorObject['type']
   name: string
+  /** The group this object belongs to. A group's members follow its header in the stack. */
   parentId: string | null
-  artboardId: string
   visible: boolean
   locked: boolean
-  transform: Matrix2D
-  appearance: VectorAppearance
-  source: VectorSourceRef | null
 }
 
-export interface PathObject extends VectorBaseObject {
+export interface PathObject extends ObjectBase {
   type: 'path'
-  path: VectorPath
+  operation: Operation
+  /** Holes are further contours. */
+  contours: Contour[]
+  /** Read only for two or more contours, so a single contour draws the same either way. */
   fillRule: 'nonzero' | 'evenodd'
-  /** Recipe for slabs and cuts. Older builds ignore it and keep the path. */
+  /** Recipe for slabs and cuts: the object is then one closed contour, the outline of the recipe. */
   carve?: CarveSpec
+  /** The contours are made by the follow pass from the objects the link names. */
+  link?: ObjectLink
+  /** The recipe's centre is held on another object's centre. */
+  pin?: { centreOf: string }
+  /**
+   * How far a free path's box is turned, in degrees: its handles sit around
+   * the path as measured in that frame. Compose and export ignore it. A
+   * recipe has its own rotation and never carries one.
+   */
+  frame?: { rotation: number }
+  /** The generated shape this object came from. */
+  sourceShapeId?: string
 }
 
-export interface ShapeObject extends VectorBaseObject {
-  type: 'shape'
-  shape:
-    | { type: 'circle'; cx: number; cy: number; radius: number }
-    | { type: 'rectangle'; x: number; y: number; width: number; height: number; cornerRadius: number }
-    | { type: 'ellipse'; cx: number; cy: number; rx: number; ry: number }
-    | { type: 'polygon'; points: Vec2[] }
-}
-
-export interface TextObject extends VectorBaseObject {
-  type: 'text'
-  text: string
-  box: Rect
-  fontFamily: string
-  fontSize: number
-  fontWeight: number | string
-  lineHeight: number
-  letterSpacing: number
-  textAlign: 'left' | 'center' | 'right'
-}
-
-export interface GroupObject extends Omit<VectorBaseObject, 'appearance'> {
+export interface GroupObject extends ObjectBase {
   type: 'group'
-  childIds: string[]
-  appearance?: VectorAppearance
+  /** Members compose alone and enter the stack as one input. */
+  isolated: boolean
+  /** Read only when isolated. */
+  operation: Operation
+  frame?: { rotation: number }
 }
 
-export type VectorObject = PathObject | ShapeObject | TextObject | GroupObject
+export type VectorObject = PathObject | GroupObject
 
+export type ObjectLink =
+  /** The recipe is a band between objects `a` and `b`. */
+  | { kind: 'band'; a: string; b: string }
+  /** A copy of `of`, larger by `distance`, or smaller when it is negative. */
+  | { kind: 'offset'; of: string; distance: number }
+
+/** Which construction line of a shape a guide follows. */
+export type ConstructionRole =
+  | 'centre-x'
+  | 'centre-y'
+  | 'top'
+  | 'right'
+  | 'bottom'
+  | 'left'
+  | 'circumcircle'
+  | 'incircle'
+  | `axis-${number}`
+  /** A band's line through its circles' centres. */
+  | 'centre-line'
+  /** A band's edges: a belt's tangents, a bar's or strip's sides, a neck's arc circles. */
+  | 'edge-1'
+  | 'edge-2'
+
+/** A construction line. Guides are never composed, exported or hit as material. */
+export interface Guide {
+  id: string
+  name: string
+  visible: boolean
+  locked: boolean
+  style: 'solid' | 'dashed' | 'dotted'
+  shape:
+    /** An infinite line through `p`, at `angle` degrees. */
+    | { kind: 'line'; p: Vec2; angle: number }
+    | { kind: 'circle'; c: Vec2; r: number }
+    | { kind: 'path'; contour: Contour }
+  link?: { kind: 'construction'; of: string; role: ConstructionRole }
+}
+
+/** A rounded corner of the composed ink: a finishing pass after the stack. */
+export interface Fillet {
+  id: string
+  visible: boolean
+  radius: number
+  /** The corner where it last solved. */
+  at: Vec2
+  /** The objects whose outlines meet there; the same id twice for a corner of one object. */
+  between: [string, string]
+}
+
+/**
+ * What is selected. It lives in the store beside the document, never in it:
+ * links, saved marks and history steps of objects leave it out.
+ */
 export type VectorSelectionTarget =
   | { type: 'object'; objectId: string }
-  | { type: 'anchor'; objectId: string; segmentIndex: number }
-  | { type: 'handle'; objectId: string; segmentIndex: number; handle: 'in' | 'out' }
+  | { type: 'anchor'; objectId: string; contourIndex: number; segmentIndex: number }
+  | { type: 'handle'; objectId: string; contourIndex: number; segmentIndex: number; handle: 'in' | 'out' }
+  | { type: 'guide'; guideId: string }
+  | { type: 'fillet'; filletId: string }
 
 export interface VectorSelection {
   targets: VectorSelectionTarget[]
@@ -140,14 +159,18 @@ export interface VectorDocumentSource {
 }
 
 export interface VectorDocument {
-  schemaVersion: 1
+  schemaVersion: 2
   id: string
   kind: VectorDocumentKind
   activeMode: VectorWorkspaceMode
   name: string
   artboards: VectorArtboard[]
+  /** Stack order: index 0 is at the bottom. */
   objects: VectorObject[]
-  selection: VectorSelection
+  /** Never composed or exported. */
+  guides: Guide[]
+  /** A finishing pass over the composed ink. */
+  fillets: Fillet[]
   source: VectorDocumentSource | null
   createdAt: string
   updatedAt: string

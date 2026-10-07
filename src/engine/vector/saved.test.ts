@@ -4,8 +4,15 @@ import { generate } from '../pipeline/GenerationPipeline.ts'
 import { DEFAULT_PARAMS, type LogoParams } from '../types.ts'
 import { getAllModeParamDefaults } from '../../store/modes.ts'
 import { composeVectorMark } from './export.ts'
-import { illustratorDocumentToVectorDocument } from './legacyIllustratorAdapter.ts'
+import { illustratorDocumentToVectorDocument } from './legacyImport.ts'
+import { readLegacyLayers, upgradeV1 } from './migrate.ts'
 import { createSavedVariation, savedDocument, type SavedVariation } from './saved.ts'
+
+/** A document the test expects to read. */
+function readable<T>(value: T | null): T {
+  if (value === null) throw new Error('could not be read')
+  return value
+}
 
 const square: IllustratorDocument = {
   id: 'doc',
@@ -28,7 +35,9 @@ const square: IllustratorDocument = {
 }
 
 const stored = <T>(value: T): T => JSON.parse(JSON.stringify(value))
-const squareDocument = stored(illustratorDocumentToVectorDocument(square))
+/** As stage 1 saved it: schema version 1. */
+const squareV1 = stored(illustratorDocumentToVectorDocument(square))
+const squareDocument = stored(readable(readLegacyLayers(square)))
 
 const params: LogoParams = {
   ...DEFAULT_PARAMS,
@@ -56,6 +65,16 @@ describe('what a saved entry opens', () => {
   it('is its own document, in its ink', () => {
     const entry = stored({ ...fromGenerateScreen, vectorDocument: squareDocument, illustrator: square })
     expect(savedDocument(entry)).toEqual({ document: squareDocument, inkColor: '#ff3300' })
+  })
+
+  it('is its version 1 document upgraded, and the entry itself is left as it was', () => {
+    const entry = stored({ ...fromGenerateScreen, vectorDocument: squareV1 }) as unknown as SavedVariation
+    const before = JSON.stringify(entry)
+    const saved = savedDocument(entry)
+    expect(saved).toEqual({ document: readable(upgradeV1(squareV1)), inkColor: '#ff3300' })
+    expect(saved?.document.schemaVersion).toBe(2)
+    expect(composeVectorMark(saved!.document).viewBox).toEqual({ x: -50, y: -50, width: 100, height: 100 })
+    expect(JSON.stringify(entry)).toBe(before)
   })
 
   it('is its generated mark as layers when it holds no document', () => {

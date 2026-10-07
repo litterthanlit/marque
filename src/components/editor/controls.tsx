@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { cn } from '../../lib/utils.ts'
 
 export const FOCUS_RING =
@@ -9,9 +10,11 @@ interface EditorButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement
   /** A toggle or one choice of several: sets `aria-pressed` and lights the button. */
   pressed?: boolean
   danger?: boolean
+  /** The one action a panel is for, such as making what it sets. */
+  primary?: boolean
 }
 
-export function EditorButton({ pressed, danger, className, children, ...props }: EditorButtonProps) {
+export function EditorButton({ pressed, danger, primary, className, children, ...props }: EditorButtonProps) {
   return (
     <button
       type="button"
@@ -19,11 +22,13 @@ export function EditorButton({ pressed, danger, className, children, ...props }:
       {...props}
       className={cn(
         'inline-flex h-8 shrink-0 items-center justify-center rounded-lg px-2.5 text-xs transition-colors',
-        'disabled:opacity-40 disabled:cursor-default aria-expanded:bg-interactive aria-expanded:text-fg',
+        'disabled:opacity-40 disabled:cursor-default aria-disabled:opacity-40 aria-disabled:cursor-default aria-expanded:bg-interactive aria-expanded:text-fg',
         FOCUS_RING,
         pressed
           ? 'bg-interactive text-fg ring-1 ring-interactive-ring'
-          : danger
+          : primary
+            ? 'bg-pink-500 font-medium text-white hover:bg-pink-400'
+            : danger
             ? 'bg-interactive-active text-red-400 hover:bg-interactive-hover'
             : 'bg-interactive-active text-sidebar-text hover:bg-interactive-hover hover:text-fg',
         className,
@@ -36,7 +41,8 @@ export function EditorButton({ pressed, danger, className, children, ...props }:
 
 interface SegmentedProps<T extends string | number> {
   label: string
-  options: ReadonlyArray<{ value: T; label: string }>
+  /** Each option, with a tooltip when it has a shortcut or a note; a disabled one says why in its tooltip. */
+  options: ReadonlyArray<{ value: T; label: string; title?: string; disabled?: boolean }>
   value: T
   onChange: (value: T) => void
   className?: string
@@ -50,11 +56,13 @@ export function Segmented<T extends string | number>({ label, options, value, on
           key={option.value}
           type="button"
           aria-pressed={value === option.value}
+          title={option.title}
+          disabled={option.disabled}
           onClick={() => onChange(option.value)}
           className={cn(
-            'h-7 flex-1 rounded-md px-2.5 text-xs transition-colors',
+            'h-7 flex-1 rounded-md px-2.5 text-xs transition-colors disabled:cursor-default disabled:opacity-40',
             FOCUS_RING,
-            value === option.value ? 'bg-interactive text-fg shadow-sm' : 'text-sidebar-text hover:text-fg',
+            value === option.value ? 'bg-interactive text-fg shadow-sm' : 'text-sidebar-text enabled:hover:text-fg',
           )}
         >
           {option.label}
@@ -72,7 +80,7 @@ interface SwitchButtonProps {
   className?: string
 }
 
-/** Pink like the snap guides and the weak-spot marks it turns on: the switch reads as part of the same system. */
+/** Pink like the snap hints and the weak-spot marks it turns on: the switch reads as part of the same system. */
 export function SwitchButton({ label, checked, onChange, title, className }: SwitchButtonProps) {
   return (
     <button
@@ -108,4 +116,110 @@ export function SwitchButton({ label, checked, onChange, title, className }: Swi
 
 export function Divider({ className }: { className?: string }) {
   return <span aria-hidden="true" className={cn('h-4 w-px shrink-0 bg-border', className)} />
+}
+
+interface StepperProps {
+  label: string
+  /** What it is read out as, where that says more than the label shown. */
+  name?: string
+  /** The value shown, or null where the selection holds several. */
+  value: number | null
+  min: number
+  max: number
+  onStep: (delta: 1 | -1) => void
+  /** What the buttons do, read out and shown on hover. */
+  lessLabel: string
+  moreLabel: string
+  title?: string
+}
+
+/** A number stepped one at a time: − value +. Reachable by touch, where a key is not. */
+export function Stepper({ label, name, value, min, max, onStep, lessLabel, moreLabel, title }: StepperProps) {
+  return (
+    <div className="flex items-center gap-1" role="group" aria-label={name ?? label} title={title}>
+      <span aria-hidden="true" className="px-1 text-[10px] uppercase tracking-widest text-sidebar-text">
+        {label}
+      </span>
+      <EditorButton aria-label={lessLabel} title={lessLabel} disabled={value !== null && value <= min} onClick={() => onStep(-1)} className="w-8 px-0">
+        −
+      </EditorButton>
+      <output aria-live="polite" className="w-6 text-center text-xs tabular-nums text-fg">
+        {value ?? '–'}
+      </output>
+      <EditorButton aria-label={moreLabel} title={moreLabel} disabled={value !== null && value >= max} onClick={() => onStep(1)} className="w-8 px-0">
+        +
+      </EditorButton>
+    </div>
+  )
+}
+
+/** How long a press on a step button is held before it steps by 5, and how often it steps again while held. */
+const LONG_PRESS_MS = 450
+const REPEAT_MS = 250
+
+/** One of a pair of step buttons: what it is read out as and shown on hover, and whether it can step. */
+interface StepButton {
+  label: string
+  title: string
+  disabled: boolean
+}
+
+/**
+ * A − and a + that step a value: a unit, or 5 with Shift or a long press,
+ * which steps again while held. With no keys on touch, the way to an exact
+ * value, which a slider moves a unit or two a pixel. `land` gives where a
+ * step from a value goes; the same value is no step.
+ */
+export function StepButtons({ value, land, onStep, label, less, more }: { value: number; land: (from: number, by: -1 | 1, five: boolean) => number; onStep: (next: number) => void; label: string; less: StepButton; more: StepButton }) {
+  // The value a held press steps from: the bar draws again between its steps.
+  const latest = useRef(value)
+  latest.current = value
+  const held = useRef<{ timer: number; stepped: boolean } | null>(null)
+  const step = (by: -1 | 1, five: boolean) => {
+    const from = latest.current
+    const next = land(from, by, five)
+    if (next === from) return
+    latest.current = next
+    onStep(next)
+  }
+  const letGo = () => {
+    if (held.current) window.clearTimeout(held.current.timer)
+  }
+  useEffect(() => letGo, [])
+  const press = (by: -1 | 1) => ({
+    onPointerDown: (event: React.PointerEvent) => {
+      if (event.button !== 0) return
+      letGo()
+      const state = { timer: 0, stepped: false }
+      const again = () => {
+        state.stepped = true
+        step(by, true)
+        state.timer = window.setTimeout(again, REPEAT_MS)
+      }
+      state.timer = window.setTimeout(again, LONG_PRESS_MS)
+      held.current = state
+    },
+    onPointerUp: letGo,
+    onPointerLeave: letGo,
+    onPointerCancel: letGo,
+    // A long press has stepped already: its click does not step again.
+    onClick: (event: React.MouseEvent) => {
+      if (held.current?.stepped) {
+        held.current = null
+        return
+      }
+      step(by, event.shiftKey)
+    },
+    onContextMenu: (event: React.MouseEvent) => event.preventDefault(),
+  })
+  return (
+    <div className="flex items-center gap-1" role="group" aria-label={label}>
+      <EditorButton aria-label={less.label} title={less.title} disabled={less.disabled} {...press(-1)} className="w-8 px-0 touch-manipulation select-none">
+        −
+      </EditorButton>
+      <EditorButton aria-label={more.label} title={more.title} disabled={more.disabled} {...press(1)} className="w-8 px-0 touch-manipulation select-none">
+        +
+      </EditorButton>
+    </div>
+  )
 }

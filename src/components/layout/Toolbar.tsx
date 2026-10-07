@@ -6,16 +6,28 @@ import { SavedMenu } from '../editor/SavedMenu.tsx'
 import { SurvivalPopover } from '../editor/SurvivalPopover.tsx'
 import { ToolbarButton } from './ToolbarButton.tsx'
 import { cn } from '../../lib/utils.ts'
+import { hud } from '../../renderer/directEdit/hud.ts'
 
 type ShareState = 'idle' | 'copied' | 'failed'
 
 export function Toolbar() {
-  const undo = useLogoStore((s) => s.undoVectorCommand)
-  const redo = useLogoStore((s) => s.redoVectorCommand)
+  const undoVectorCommand = useLogoStore((s) => s.undoVectorCommand)
+  const redoVectorCommand = useLogoStore((s) => s.redoVectorCommand)
+  // What a keyboard edit read out last no longer holds after an undo or redo.
+  const undo = () => {
+    hud.silence()
+    undoVectorCommand()
+  }
+  const redo = () => {
+    hud.silence()
+    redoVectorCommand()
+  }
   const canUndo = useLogoStore((s) => s.vectorUndoStack.length > 0)
   const canRedo = useLogoStore((s) => s.vectorRedoStack.length > 0)
   const look = useLogoStore((s) => s.ui.look)
   const toggleLook = useLogoStore((s) => s.toggleLook)
+  const showGuides = useLogoStore((s) => s.ui.showGuides)
+  const toggleShowGuides = useLogoStore((s) => s.toggleShowGuides)
   const layersOpen = useLogoStore((s) => s.ui.layersOpen)
   const setLayersOpen = useLogoStore((s) => s.setLayersOpen)
   const { canExport } = useExport()
@@ -65,6 +77,16 @@ export function Toolbar() {
             className="aria-pressed:bg-interactive-hover aria-pressed:text-fg"
           >
             <ConstructionIcon />
+          </ToolbarButton>
+          {/* Guides draw only in the construction look: in the final look the switch is dimmed and says so. */}
+          <ToolbarButton
+            onClick={toggleShowGuides}
+            aria-label="Show guides"
+            aria-pressed={showGuides}
+            title={look === 'construction' ? 'Show guides (Cmd+;)' : 'Show guides (Cmd+;). Guides show in the construction look (F)'}
+            className={cn('aria-pressed:bg-interactive-hover aria-pressed:text-fg', look !== 'construction' && 'opacity-50')}
+          >
+            <GuidesIcon />
           </ToolbarButton>
           <ToolbarButton
             onClick={() => setLayersOpen(!layersOpen)}
@@ -161,6 +183,15 @@ function ConstructionIcon() {
     <svg {...ICON}>
       <rect x="2" y="6" width="8" height="8" rx="1" />
       <circle cx="10" cy="6" r="4" strokeDasharray="0.1 2.4" />
+    </svg>
+  )
+}
+
+function GuidesIcon() {
+  return (
+    <svg {...ICON}>
+      <path d="M1.5 5h13M5 1.5v13" strokeDasharray="2 1.6" />
+      <circle cx="10" cy="10" r="3.5" />
     </svg>
   )
 }

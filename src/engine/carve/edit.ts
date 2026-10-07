@@ -22,15 +22,30 @@ import {
   type Vec,
 } from '../path/bezier.ts'
 import type { IllustratorTransform } from '../illustrator/types.ts'
+import {
+  applyAffine,
+  boxHandles,
+  boxRotateHandle,
+  DEFAULT_HANDLE_LAYOUT,
+  MIN_BOX_SIZE,
+  rotateBox,
+  type Affine,
+  type CarveHandle,
+  type HandleId,
+  type HandleLayout,
+  type OrientedBox,
+} from '../box/box.ts'
 import { boxGeometryFor, carveOutline, grooveSpine, KAPPA, type SideRef } from './outline.ts'
-import { isGroove } from './spec.ts'
+import { clampSides, isGroove, polygonApothem, polygonCornerRadius, scaledPolygonCorner, scaledSlabRadius } from './spec.ts'
 import type {
+  BandSpec,
   CarveBends,
   CarveSpec,
   CornerFullness,
   CornerId,
   GrooveSpec,
   LineSideId,
+  PolygonSpec,
   PunchSpec,
   SideBend,
   SlabSpec,
@@ -38,65 +53,20 @@ import type {
 
 /* ─── Handles ─── */
 
-export type HandleId =
-  | 'n'
-  | 'ne'
-  | 'e'
-  | 'se'
-  | 's'
-  | 'sw'
-  | 'w'
-  | 'nw'
-  | 'radius'
-  | 'rotate'
-  | 'from'
-  | 'to'
-  | 'width'
-
-export type HandleKind = 'resize' | 'scale' | 'radius' | 'rotate' | 'endpoint' | 'width'
-
-export interface CarveHandle {
-  id: HandleId
-  kind: HandleKind
-  /** Layer-space position. */
-  at: Vec
-  /** Direction the handle pulls along, in degrees (screen), for cursor choice. */
-  axisDeg: number
-}
-
-export interface HandleLayout {
-  /** Gap between the outline and the resize frame, in layer units. */
-  pad: number
-  /** Extra distance of the rotate dot above the frame. */
-  rotateOffset: number
-  /** Below this size, edge-midpoint handles are hidden to avoid crowding. */
-  minEdgeHandleSize: number
-  /** How far inside its corner the rounding dot sits when the corner is sharp. */
-  radiusInset: number
-}
-
-export const DEFAULT_HANDLE_LAYOUT: HandleLayout = { pad: 12, rotateOffset: 22, minEdgeHandleSize: 30, radiusInset: 10 }
+export type { CarveHandle, HandleId, HandleKind, HandleLayout } from '../box/box.ts'
+export { DEFAULT_HANDLE_LAYOUT } from '../box/box.ts'
 
 /**
  * The rounding dot travels half as far as the radius grows, so it stays near
- * its corner: even a full circle keeps its middle free for moving.
+ * its corner. It never comes within the layout's `centreClear` of the middle,
+ * which stays free for moving.
  */
-const RADIUS_DOT_RATE = 0.5
+export const RADIUS_DOT_RATE = 0.5
 
-const MIN_SIZE = 4
+const MIN_SIZE = MIN_BOX_SIZE
 const MIN_GROOVE_WIDTH = 2
 const MIN_PUNCH_RADIUS = 2
-
-const BOX_HANDLES: Array<{ id: HandleId; fx: -1 | 0 | 1; fy: -1 | 0 | 1; axis: number }> = [
-  { id: 'nw', fx: -1, fy: -1, axis: 45 },
-  { id: 'n', fx: 0, fy: -1, axis: 90 },
-  { id: 'ne', fx: 1, fy: -1, axis: -45 },
-  { id: 'e', fx: 1, fy: 0, axis: 0 },
-  { id: 'se', fx: 1, fy: 1, axis: 45 },
-  { id: 's', fx: 0, fy: 1, axis: 90 },
-  { id: 'sw', fx: -1, fy: 1, axis: -45 },
-  { id: 'w', fx: -1, fy: 0, axis: 0 },
-]
+const MIN_POLYGON_RADIUS = 2
 
 function hasBends(spec: CarveBends): boolean {
   return Boolean(
@@ -105,6 +75,8 @@ function hasBends(spec: CarveBends): boolean {
 }
 
 export function carveHandles(spec: CarveSpec, layout: HandleLayout = DEFAULT_HANDLE_LAYOUT): CarveHandle[] {
+  // A band is made from its circles: it has no handles of its own, and a drag of it moves them.
+  if (spec.kind === 'band') return []
   const outline = carveOutline(spec)
 
   if (isGroove(spec)) {
@@ -123,54 +95,77 @@ export function carveHandles(spec: CarveSpec, layout: HandleLayout = DEFAULT_HAN
 
   if (outline.frame.kind !== 'box') return []
   const { extent } = outline.frame
-  const minX = extent.minX - layout.pad
-  const maxX = extent.maxX + layout.pad
-  const minY = extent.minY - layout.pad
-  const maxY = extent.maxY + layout.pad
-  const midX = (minX + maxX) / 2
-  const midY = (minY + maxY) / 2
+  // The box around the outline in the recipe's own frame; bends can push it off centre.
+  const box: OrientedBox = {
+    center: add(spec.center, rotate({ x: (extent.minX + extent.maxX) / 2, y: (extent.minY + extent.maxY) / 2 }, spec.rotation)),
+    width: extent.maxX - extent.minX,
+    height: extent.maxY - extent.minY,
+    rotation: spec.rotation,
+  }
   const toWorld = (p: Vec): Vec => add(spec.center, rotate(p, spec.rotation))
+  // A slab resizes by its sides and corners; a punch and a polygon scale about their centre, by the corners only.
+  const scales = spec.kind !== 'slab'
+  const handles = boxHandles(box, layout, { kind: scales ? 'scale' : 'resize', edges: !scales })
 
-  const handles: CarveHandle[] = []
-  const isPunch = spec.kind === 'punch'
-  for (const h of BOX_HANDLES) {
-    const isEdge = h.fx === 0 || h.fy === 0
-    if (isPunch && isEdge) continue
-    if (isEdge) {
-      const across = h.fx === 0 ? maxX - minX : maxY - minY
-      if (across < layout.minEdgeHandleSize) continue
+  switch (spec.kind) {
+    case 'slab': {
+      const dot = slabDotLocal(spec, layout)
+      if (dot) handles.push({ id: 'radius', kind: 'radius', at: toWorld(dot), axisDeg: 45 + spec.rotation })
+      handles.push(boxRotateHandle(box, layout))
+      break
     }
-    const local = {
-      x: h.fx === -1 ? minX : h.fx === 1 ? maxX : midX,
-      y: h.fy === -1 ? minY : h.fy === 1 ? maxY : midY,
+    case 'punch':
+      if (spec.shape !== 'circle' || hasBends(spec)) handles.push(boxRotateHandle(box, layout))
+      break
+    case 'polygon': {
+      const dot = polygonDotLocal(spec, layout)
+      if (dot) handles.push({ id: 'radius', kind: 'radius', at: toWorld(dot), axisDeg: 90 + spec.rotation })
+      handles.push(boxRotateHandle(box, layout))
+      break
     }
-    handles.push({
-      id: h.id,
-      kind: isPunch ? 'scale' : 'resize',
-      at: toWorld(local),
-      axisDeg: h.axis + spec.rotation,
-    })
-  }
-
-  if (spec.kind === 'slab') {
-    const hw = Math.max(spec.width, 0.5) / 2
-    const hh = Math.max(spec.height, 0.5) / 2
-    const re = clamp(spec.radius, 0, Math.min(hw, hh))
-    const inset = layout.radiusInset + re * RADIUS_DOT_RATE
-    handles.push({
-      id: 'radius',
-      kind: 'radius',
-      at: toWorld({ x: -hw + Math.min(inset, hw), y: -hh + Math.min(inset, hh) }),
-      axisDeg: 45 + spec.rotation,
-    })
-  }
-
-  const rotates = spec.kind === 'slab' || spec.shape !== 'circle' || hasBends(spec)
-  if (rotates) {
-    handles.push({ id: 'rotate', kind: 'rotate', at: toWorld({ x: midX, y: minY - layout.rotateOffset }), axisDeg: 0 })
+    default:
+      return spec satisfies never
   }
 
   return handles
+}
+
+/**
+ * Where a slab's rounding dot sits, unturned: inset from its top-left corner
+ * along the diagonal, moving in at RADIUS_DOT_RATE of the radius, and along
+ * the longer side once the shorter is used up. It stops `centreClear` short
+ * of the middle, so a press there moves the slab; a slab too small on screen
+ * for that has no dot, and the selection bar offers its Corner instead.
+ */
+function slabDotLocal(spec: SlabSpec, layout: HandleLayout): Vec | null {
+  const hw = Math.max(spec.width, 0.5) / 2
+  const hh = Math.max(spec.height, 0.5) / 2
+  const re = clamp(spec.radius, 0, Math.min(hw, hh))
+  const at = (inset: number): Vec => ({ x: -hw + Math.min(inset, hw), y: -hh + Math.min(inset, hh) })
+  const clear = layout.centreClear
+  if (length(at(layout.radiusInset)) < clear) return null
+  // The farthest in it may go: along the longer side when the shorter one leaves room, else on the diagonal.
+  const short = Math.min(hw, hh)
+  const long = Math.max(hw, hh)
+  const furthest = long - short >= clear ? long - clear : (hw + hh - Math.sqrt(2 * clear * clear - (hw - hh) ** 2)) / 2
+  return at(Math.min(layout.radiusInset + re * RADIUS_DOT_RATE, furthest))
+}
+
+/**
+ * Where a polygon's rounding dot sits, unturned: on the line from its top
+ * corner to its middle, inset from the corner as a slab's dot is, then half
+ * the way to the corner's circle's centre, as a slab's moves. It stops
+ * `centreClear` short of the middle, so a press or a finger on the middle
+ * moves the polygon, however round. A polygon too small on screen for that
+ * has no dot, as a box's short side has no square, and the selection bar
+ * offers its Corner instead.
+ */
+function polygonDotLocal(spec: PolygonSpec, layout: HandleLayout): Vec | null {
+  const start = layout.radiusInset * Math.SQRT2
+  const last = spec.radius - layout.centreClear
+  if (last < start) return null
+  const along = start + (polygonCornerRadius(spec) / Math.cos(Math.PI / spec.sides)) * RADIUS_DOT_RATE
+  return { x: 0, y: -spec.radius + Math.min(along, last) }
 }
 
 export interface DragModifiers {
@@ -194,9 +189,7 @@ function angleOf(v: Vec): number {
 }
 
 function rotationDrag(startRotation: number, center: Vec, startPointer: Vec, pointer: Vec, mods: DragModifiers): number {
-  let next = startRotation + (angleOf(sub(pointer, center)) - angleOf(sub(startPointer, center)))
-  if (mods.shift) next = Math.round(next / 15) * 15
-  return normalizeDegrees(next)
+  return rotateBox(startRotation, center, startPointer, pointer, mods.shift)
 }
 
 function dragSlab(start: SlabSpec, id: HandleId, startPointer: Vec, pointer: Vec, mods: DragModifiers): SlabSpec {
@@ -236,7 +229,7 @@ function dragSlab(start: SlabSpec, id: HandleId, startPointer: Vec, pointer: Vec
         ...start,
         width: start.width * f,
         height: start.height * f,
-        radius: start.radius * f,
+        radius: scaledSlabRadius(start, f),
         center: add(start.center, rotate(centerLocal, rot)),
       },
       f,
@@ -260,23 +253,108 @@ function dragSlab(start: SlabSpec, id: HandleId, startPointer: Vec, pointer: Vec
 
   let width = right - left
   let height = bottom - top
+  let radius = start.radius
   if (!isCorner && mods.shift) {
-    // Edge with Shift keeps the proportions, growing across the middle.
+    // Edge with Shift keeps the proportions, growing across the middle, its rounding too: a circle stays one.
+    const f = fx !== 0 ? width / start.width : height / start.height
     if (fx !== 0) {
-      const f = width / start.width
       height = start.height * f
       top = -height / 2
       bottom = height / 2
     } else {
-      const f = height / start.height
       width = start.width * f
       left = -width / 2
       right = width / 2
     }
+    radius = scaledSlabRadius(start, f)
   }
 
   const centerLocal = { x: (left + right) / 2, y: (top + bottom) / 2 }
-  return { ...start, width, height, center: add(start.center, rotate(centerLocal, rot)) }
+  return { ...start, width, height, radius, center: add(start.center, rotate(centerLocal, rot)) }
+}
+
+function dragPolygon(start: PolygonSpec, id: HandleId, startPointer: Vec, pointer: Vec, mods: DragModifiers): PolygonSpec {
+  if (id === 'rotate') {
+    return { ...start, rotation: rotationDrag(start.rotation, start.center, startPointer, pointer, mods) }
+  }
+  if (id === 'radius') {
+    // The dot moves towards the middle at RADIUS_DOT_RATE of the way to the corner's circle's centre.
+    const d = rotate(sub(pointer, startPointer), -start.rotation)
+    const rho = polygonCornerRadius(start) + (d.y * Math.cos(Math.PI / start.sides)) / RADIUS_DOT_RATE
+    // Shift rounds in steps of 5.
+    return { ...start, cornerRadius: clamp(mods.shift ? Math.round(rho / 5) * 5 : rho, 0, polygonApothem(start)) }
+  }
+  // Corner handles scale the polygon about its centre, so that the dragged
+  // corner of its box follows the pointer as near as it can: the box corner
+  // moves only along its own path as the radius changes.
+  const fx = id.includes('e') ? 1 : id.includes('w') ? -1 : 0
+  const fy = id.includes('s') ? 1 : id.includes('n') ? -1 : 0
+  if (fx === 0 || fy === 0) return start
+  const moved = rotate(sub(pointer, startPointer), -start.rotation)
+  const corner = polygonBoxCorner(start, fx, fy)
+  const target = add(corner, moved)
+  if (mods.shift) {
+    // Shift scales the whole polygon, rounding and all: its box corner moves straight out from the centre.
+    const f = Math.max(dot(target, corner) / Math.max(dot(corner, corner), 1e-12), MIN_POLYGON_RADIUS / start.radius)
+    return { ...start, radius: start.radius * f, cornerRadius: scaledPolygonCorner(start, f) }
+  }
+  // Otherwise the rounding stays, as a slab's does, and the box no longer scales with the radius.
+  return { ...start, radius: polygonRadiusFor(start, fx, fy, target) }
+}
+
+/**
+ * A corner of a polygon's box, unturned: x and y as far as it reaches towards
+ * `fx` and `fy`. In each direction it reaches (R − ρ/cos(π/n))·u + ρ, where u
+ * is how far that way the unit polygon's furthest corner lies, with ρ the
+ * rounding drawn.
+ */
+function polygonBoxCorner(spec: Pick<PolygonSpec, 'sides' | 'radius' | 'cornerRadius'>, fx: number, fy: number): Vec {
+  const n = spec.sides
+  const rho = polygonCornerRadius(spec)
+  const inner = spec.radius - rho / Math.cos(Math.PI / n)
+  let ux = -Infinity
+  let uy = -Infinity
+  for (let k = 0; k < n; k++) {
+    const u = rotate({ x: 0, y: -1 }, (360 * k) / n)
+    ux = Math.max(ux, fx * u.x)
+    uy = Math.max(uy, fy * u.y)
+  }
+  return { x: fx * (inner * ux + rho), y: fy * (inner * uy + rho) }
+}
+
+/**
+ * The radius, with the rounding as stored, whose box corner lies nearest
+ * `target`. The corner moves along a straight line as the radius grows, and
+ * bends once, where the rounding reaches the apothem and the polygon is a
+ * circle; so it is the nearer of two projections.
+ */
+function polygonRadiusFor(spec: PolygonSpec, fx: number, fy: number, target: Vec): number {
+  const corner = (radius: number): Vec => polygonBoxCorner({ ...spec, radius }, fx, fy)
+  const knee = Math.max(spec.cornerRadius / Math.cos(Math.PI / spec.sides), MIN_POLYGON_RADIUS)
+  let best = spec.radius
+  let nearest = Infinity
+  for (const [from, to] of [
+    [MIN_POLYGON_RADIUS, knee],
+    [knee, Infinity],
+  ]) {
+    if (to <= from) continue
+    const a = corner(from)
+    // How far the corner moves for each unit of radius, read inside the piece.
+    const along = to === Infinity ? sub(corner(from + 1), a) : scale(sub(corner(to), a), 1 / (to - from))
+    const radius = clamp(from + dot(sub(target, a), along) / Math.max(dot(along, along), 1e-12), from, to)
+    const off = distance(corner(radius), target)
+    if (off < nearest) {
+      nearest = off
+      best = radius
+    }
+  }
+  return best
+}
+
+/** A polygon with a side more or fewer, from 3 to 12; the same polygon when it can go no further. */
+export function stepPolygonSides(spec: PolygonSpec, delta: number): PolygonSpec {
+  const sides = clampSides(spec.sides + delta)
+  return sides === spec.sides ? spec : { ...spec, sides }
 }
 
 function dragPunch(start: PunchSpec, id: HandleId, startPointer: Vec, pointer: Vec, mods: DragModifiers): PunchSpec {
@@ -309,7 +387,8 @@ function dragGroove(start: GrooveSpec, id: HandleId, startPointer: Vec, pointer:
   if (id !== 'from' && id !== 'to') return start
   const other = id === 'from' ? 'to' : 'from'
   let moved = add(start[id], delta)
-  if (mods.shift) moved = snapAngleAround(start[other], moved)
+  // With Alt the groove turns about its middle, which stays: the 15° steps are read from there.
+  if (mods.shift) moved = snapAngleAround(mods.alt ? scale(add(start.from, start.to), 0.5) : start[other], moved)
   const next: GrooveSpec = id === 'from' ? { ...start, from: moved } : { ...start, to: moved }
   if (mods.alt) next[other] = sub(start[other], sub(moved, start[id]))
   return next
@@ -326,9 +405,101 @@ export function dragCarveHandle(
   pointer: Vec,
   mods: DragModifiers = NO_MODS,
 ): CarveSpec {
-  if (start.kind === 'slab') return dragSlab(start, id, startPointer, pointer, mods)
-  if (start.kind === 'punch') return dragPunch(start, id, startPointer, pointer, mods)
-  return dragGroove(start, id, startPointer, pointer, mods)
+  switch (start.kind) {
+    case 'slab':
+      return dragSlab(start, id, startPointer, pointer, mods)
+    case 'punch':
+      return dragPunch(start, id, startPointer, pointer, mods)
+    case 'polygon':
+      return dragPolygon(start, id, startPointer, pointer, mods)
+    case 'channel':
+    case 'slice':
+      return dragGroove(start, id, startPointer, pointer, mods)
+    case 'band':
+      return start
+    default:
+      return start satisfies never
+  }
+}
+
+/**
+ * A handle drag with what it changes at whole numbers, as box handles have
+ * it with snapping on, so the number the readout shows is the number
+ * stored: the knob's angle, a slab's width and height, a punch's diameter,
+ * a polygon's radius or corner radius, a groove's width. The side or point
+ * that stays put still does, and a value keeps its exact size where
+ * rounding would take it below its floor.
+ */
+export function wholeCarveDrag(start: CarveSpec, raw: CarveSpec, id: HandleId, mods: DragModifiers = NO_MODS): CarveSpec {
+  if (start.kind !== raw.kind) return raw
+  switch (raw.kind) {
+    case 'slab':
+    case 'punch':
+    case 'polygon':
+      if (id === 'rotate') {
+        const rotation = normalizeDegrees(Math.round(raw.rotation))
+        return rotation === raw.rotation ? raw : { ...raw, rotation }
+      }
+      if (raw.kind === 'punch' && start.kind === 'punch') {
+        const radius = Math.round(raw.radius * 2) / 2
+        if (radius === raw.radius || radius < MIN_PUNCH_RADIUS) return raw
+        return scaleBends({ ...start, radius }, radius / start.radius)
+      }
+      if (raw.kind === 'polygon' && start.kind === 'polygon') return wholePolygonDrag(start, raw, id, mods)
+      if (raw.kind === 'slab' && start.kind === 'slab') return wholeSlabResize(start, raw, id, mods)
+      return raw
+    case 'channel':
+    case 'slice': {
+      if (id !== 'width') return raw
+      const width = Math.round(raw.width)
+      return width === raw.width || width < MIN_GROOVE_WIDTH ? raw : { ...raw, width }
+    }
+    case 'band':
+      return raw
+    default:
+      return raw satisfies never
+  }
+}
+
+/** A polygon's dot at a whole corner radius, its corners at a whole radius (with Shift, the rounding scaled with it). */
+function wholePolygonDrag(start: PolygonSpec, raw: PolygonSpec, id: HandleId, mods: DragModifiers): PolygonSpec {
+  if (id === 'radius') {
+    // A dot at its limit stays there: the polygon is fully round, not a whole number short of it.
+    if (raw.cornerRadius >= polygonApothem(raw) - 1e-9) return raw
+    const cornerRadius = Math.round(raw.cornerRadius)
+    return cornerRadius === raw.cornerRadius || cornerRadius > polygonApothem(raw) ? raw : { ...raw, cornerRadius }
+  }
+  const radius = Math.round(raw.radius)
+  if (radius === raw.radius || radius < MIN_POLYGON_RADIUS) return raw
+  return { ...raw, radius, cornerRadius: mods.shift ? scaledPolygonCorner(start, radius / start.radius) : raw.cornerRadius }
+}
+
+function wholeSlabResize(start: SlabSpec, raw: SlabSpec, id: HandleId, mods: DragModifiers): SlabSpec {
+  const fx = id.includes('e') ? 1 : id.includes('w') ? -1 : 0
+  const fy = id.includes('s') ? 1 : id === 'n' || id === 'ne' || id === 'nw' ? -1 : 0
+  if ((fx === 0 && fy === 0) || id === 'radius') return raw
+  const whole = (side: number): number => (Math.round(side) >= MIN_SIZE ? Math.round(side) : side)
+  // A side the handle doesn't pull keeps its size, whole or not.
+  let width = fx !== 0 || mods.shift ? whole(raw.width) : raw.width
+  let height = fy !== 0 || mods.shift ? whole(raw.height) : raw.height
+  // Shift keeps the proportions: only the longer side is whole.
+  if (mods.shift && start.width >= start.height) height = (start.height * width) / start.width
+  else if (mods.shift) width = (start.width * height) / start.height
+  // Rounding must not take the shorter side below the smallest slab.
+  if (Math.min(width, height) < MIN_SIZE) return raw
+  if (width === raw.width && height === raw.height) return raw
+  const sx = width / start.width
+  const sy = height / start.height
+  // What stays put: the opposite corner or side, or the middle with Alt (and across a side pulled with Shift).
+  const pivot = {
+    x: mods.alt || fx === 0 ? 0 : (-fx * start.width) / 2,
+    y: mods.alt || fy === 0 ? 0 : (-fy * start.height) / 2,
+  }
+  const center = add(start.center, rotate({ x: pivot.x * (1 - sx), y: pivot.y * (1 - sy) }, start.rotation))
+  // A corner with Shift scales the whole recipe, its rounding and bends too; a side with Shift, its rounding.
+  if (fx !== 0 && fy !== 0 && mods.shift) return scaleBends({ ...start, width, height, center, radius: scaledSlabRadius(start, sx) }, sx)
+  if (mods.shift) return { ...raw, width, height, center, radius: scaledSlabRadius(start, sx) }
+  return { ...raw, width, height, center }
 }
 
 /* ─── Bending ─── */
@@ -362,11 +533,25 @@ export function locateCarveGrab(spec: CarveSpec, point: Vec): CarveGrab | null {
   if (best < 0) return null
   const side = outline.curveSides[best]
 
-  if (isGroove(spec)) {
-    const hit = projectOnCubic(grooveSpine(spec), point)
-    return { side, t: hit.t, point }
+  switch (spec.kind) {
+    case 'channel':
+    case 'slice': {
+      const hit = projectOnCubic(grooveSpine(spec), point)
+      return { side, t: hit.t, point }
+    }
+    case 'polygon':
+    case 'band':
+      // A polygon's sides stay straight, and a band is made from its circles: an edge press moves it.
+      return null
+    case 'slab':
+    case 'punch':
+      return boxGrab(spec, side, point)
+    default:
+      return spec satisfies never
   }
+}
 
+function boxGrab(spec: SlabSpec | PunchSpec, side: SideRef, point: Vec): CarveGrab | null {
   const geometry = boxGeometryFor(spec)
   const local = rotate(sub(point, spec.center), -spec.rotation)
   let cubic: Cubic | undefined
@@ -417,21 +602,37 @@ function withCorner(spec: BoxSpec, id: CornerId, fullness: CornerFullness | null
  * their spine and keep an even width.
  */
 export function bendCarve(start: CarveSpec, grab: CarveGrab, cursor: Vec): CarveSpec {
-  if (isGroove(start)) {
-    const spine = grooveSpine(start)
-    const t = clamp(grab.t, BEND_T_MIN, BEND_T_MAX)
-    const target = add(cubicPoint(spine, t), sub(cursor, grab.point))
-    const bent = solveBend(spine, t, target)
-    const chord = sub(start.to, start.from)
-    if (length(chord) < 0.5) return start
-    const e = normalize(chord)
-    const bend = sideBendFromCubic(bent, { x: e.y, y: -e.x })
-    const next: GrooveSpec = { ...start }
-    if (!bend || maxChordDeviation(bent) < STRAIGHT_SNAP) delete next.bend
-    else next.bend = bend
-    return next
+  switch (start.kind) {
+    case 'channel':
+    case 'slice':
+      return bendGroove(start, grab, cursor)
+    case 'polygon':
+    case 'band':
+      return start
+    case 'slab':
+    case 'punch':
+      return bendBox(start, grab, cursor)
+    default:
+      return start satisfies never
   }
+}
 
+function bendGroove(start: GrooveSpec, grab: CarveGrab, cursor: Vec): GrooveSpec {
+  const spine = grooveSpine(start)
+  const t = clamp(grab.t, BEND_T_MIN, BEND_T_MAX)
+  const target = add(cubicPoint(spine, t), sub(cursor, grab.point))
+  const bent = solveBend(spine, t, target)
+  const chord = sub(start.to, start.from)
+  if (length(chord) < 0.5) return start
+  const e = normalize(chord)
+  const bend = sideBendFromCubic(bent, { x: e.y, y: -e.x })
+  const next: GrooveSpec = { ...start }
+  if (!bend || maxChordDeviation(bent) < STRAIGHT_SNAP) delete next.bend
+  else next.bend = bend
+  return next
+}
+
+function bendBox(start: BoxSpec, grab: CarveGrab, cursor: Vec): BoxSpec {
   const geometry = boxGeometryFor(start)
   const local = rotate(sub(cursor, start.center), -start.rotation)
   const grabLocal = rotate(sub(grab.point, start.center), -start.rotation)
@@ -475,38 +676,81 @@ export function bendCarve(start: CarveSpec, grab: CarveGrab, cursor: Vec): Carve
 
 /** Remove the bend on one side (double-click an edge). */
 export function straightenCarve(spec: CarveSpec, side: SideRef): CarveSpec {
-  if (isGroove(spec)) {
-    const next = { ...spec }
-    delete next.bend
-    return next
+  switch (spec.kind) {
+    case 'channel':
+    case 'slice': {
+      const next = { ...spec }
+      delete next.bend
+      return next
+    }
+    case 'polygon':
+    case 'band':
+      return spec
+    case 'slab':
+    case 'punch':
+      if (side.type === 'line') return withSide(spec, side.id, null)
+      if (side.type === 'corner') return withCorner(spec, side.id, null)
+      return spec
+    default:
+      return spec satisfies never
   }
-  if (side.type === 'line') return withSide(spec, side.id, null)
-  if (side.type === 'corner') return withCorner(spec, side.id, null)
-  return spec
 }
 
 /** True when the side has a bend to straighten. */
 export function isSideBent(spec: CarveSpec, side: SideRef): boolean {
-  if (isGroove(spec)) return Boolean(spec.bend)
-  if (side.type === 'line') return Boolean(spec.sides?.[side.id])
-  if (side.type === 'corner') return Boolean(spec.corners?.[side.id])
-  return false
+  switch (spec.kind) {
+    case 'channel':
+    case 'slice':
+      return Boolean(spec.bend)
+    case 'polygon':
+    case 'band':
+      return false
+    case 'slab':
+    case 'punch':
+      if (side.type === 'line') return Boolean(spec.sides?.[side.id])
+      if (side.type === 'corner') return Boolean(spec.corners?.[side.id])
+      return false
+    default:
+      return spec satisfies never
+  }
 }
 
 /* ─── Moving, rotating, folding transforms ─── */
 
 export function translateCarve(spec: CarveSpec, d: Vec): CarveSpec {
-  if (isGroove(spec)) {
-    return { ...spec, from: add(spec.from, d), to: add(spec.to, d) }
+  switch (spec.kind) {
+    case 'channel':
+    case 'slice':
+      return { ...spec, from: add(spec.from, d), to: add(spec.to, d) }
+    case 'slab':
+    case 'punch':
+    case 'polygon':
+      return { ...spec, center: add(spec.center, d) }
+    case 'band':
+      // Moved by moving its circles: both snapshots alike.
+      return { ...spec, a: { c: add(spec.a.c, d), r: spec.a.r }, b: { c: add(spec.b.c, d), r: spec.b.r } }
+    default:
+      return spec satisfies never
   }
-  return { ...spec, center: add(spec.center, d) }
 }
 
 export function rotateCarveAbout(spec: CarveSpec, pivot: Vec, deg: number): CarveSpec {
-  if (isGroove(spec)) {
-    return { ...spec, from: rotateAbout(spec.from, pivot, deg), to: rotateAbout(spec.to, pivot, deg) }
+  switch (spec.kind) {
+    case 'channel':
+    case 'slice':
+      return { ...spec, from: rotateAbout(spec.from, pivot, deg), to: rotateAbout(spec.to, pivot, deg) }
+    case 'slab':
+    case 'punch':
+    case 'polygon':
+      return { ...spec, center: rotateAbout(spec.center, pivot, deg), rotation: normalizeDegrees(spec.rotation + deg) }
+    case 'band': {
+      const turned: BandSpec = { ...spec, a: { c: rotateAbout(spec.a.c, pivot, deg), r: spec.a.r }, b: { c: rotateAbout(spec.b.c, pivot, deg), r: spec.b.r } }
+      if (spec.angle !== undefined) turned.angle = normalizeDegrees(spec.angle + deg)
+      return turned
+    }
+    default:
+      return spec satisfies never
   }
-  return { ...spec, center: rotateAbout(spec.center, pivot, deg), rotation: normalizeDegrees(spec.rotation + deg) }
 }
 
 /**
@@ -517,28 +761,100 @@ export function rotateCarveAbout(spec: CarveSpec, pivot: Vec, deg: number): Carv
 export function foldTransform(spec: CarveSpec, t: IllustratorTransform, pivot: Vec): CarveSpec {
   const map = (p: Vec): Vec => add(add(pivot, rotate(scale(sub(p, pivot), t.scale), t.rotation)), { x: t.dx, y: t.dy })
   const s = t.scale
-  if (isGroove(spec)) {
-    const next: GrooveSpec = { ...spec, from: map(spec.from), to: map(spec.to), width: spec.width * s }
-    if (spec.bend) next.bend = { ...spec.bend, o1: spec.bend.o1 * s, o2: spec.bend.o2 * s }
-    return next
+  switch (spec.kind) {
+    case 'channel':
+    case 'slice': {
+      const next: GrooveSpec = { ...spec, from: map(spec.from), to: map(spec.to), width: spec.width * s }
+      if (spec.bend) next.bend = { ...spec.bend, o1: spec.bend.o1 * s, o2: spec.bend.o2 * s }
+      return next
+    }
+    case 'punch':
+      return scaleBends(
+        { ...spec, center: map(spec.center), radius: spec.radius * s, rotation: normalizeDegrees(spec.rotation + t.rotation) },
+        s,
+      )
+    case 'polygon':
+      return {
+        ...spec,
+        center: map(spec.center),
+        radius: spec.radius * s,
+        cornerRadius: scaledPolygonCorner(spec, s),
+        rotation: normalizeDegrees(spec.rotation + t.rotation),
+      }
+    case 'slab':
+      return scaleBends(
+        {
+          ...spec,
+          center: map(spec.center),
+          width: spec.width * s,
+          height: spec.height * s,
+          radius: scaledSlabRadius(spec, s),
+          rotation: normalizeDegrees(spec.rotation + t.rotation),
+        },
+        s,
+      )
+    case 'band': {
+      // Its circles' snapshots move, scale and turn as the circles would; its settings scale with them.
+      const next: BandSpec = { ...spec, a: { c: map(spec.a.c), r: spec.a.r * s }, b: { c: map(spec.b.c), r: spec.b.r * s } }
+      if (spec.width !== undefined) next.width = spec.width * s
+      if (spec.radius !== undefined) next.radius = spec.radius * s
+      if (spec.angle !== undefined) next.angle = normalizeDegrees(spec.angle + t.rotation)
+      return next
+    }
+    default:
+      return spec satisfies never
   }
-  if (spec.kind === 'punch') {
-    return scaleBends(
-      { ...spec, center: map(spec.center), radius: spec.radius * s, rotation: normalizeDegrees(spec.rotation + t.rotation) },
-      s,
-    )
+}
+
+/**
+ * A recipe scaled by `factor` about a pivot: its centre or ends move, and
+ * every length scales alike (size, corner radius, width, bend offsets), so
+ * the outline is the old outline scaled. Turning stays with rotateCarveAbout.
+ */
+export function scaleCarveAbout(spec: CarveSpec, pivot: Vec, factor: number): CarveSpec {
+  return foldTransform(spec, { dx: 0, dy: 0, scale: factor, rotation: 0 }, pivot)
+}
+
+/**
+ * A recipe under an affine map. A similarity (an even scale and a turn,
+ * then a move) maps it exactly. Any other map would skew it out of being a
+ * recipe, so it takes the similarity nearest the map: its centre (a
+ * groove's middle) follows the map, its size scales by the square root of
+ * the map's area factor, and it turns by the map's own rotation. A round
+ * punch stays round, centred where the map puts its centre.
+ */
+export function carveUnderAffine(spec: CarveSpec, m: Affine): CarveSpec {
+  const factor = Math.hypot(m.a, m.b)
+  const similar = Math.abs(m.a - m.d) <= 1e-9 * Math.max(1, factor) && Math.abs(m.b + m.c) <= 1e-9 * Math.max(1, factor)
+  // Read back off the matrix, a whole angle comes out a hair off: keep it whole.
+  const whole = (radians: number) => Math.round(((radians * 180) / Math.PI) * 1e9) / 1e9
+  if (similar && factor > 1e-9) {
+    return foldTransform(spec, { dx: m.e, dy: m.f, scale: factor, rotation: whole(Math.atan2(m.b, m.a)) }, { x: 0, y: 0 })
   }
-  return scaleBends(
-    {
-      ...spec,
-      center: map(spec.center),
-      width: spec.width * s,
-      height: spec.height * s,
-      radius: spec.radius * s,
-      rotation: normalizeDegrees(spec.rotation + t.rotation),
-    },
-    s,
-  )
+  const center = recipeMiddle(spec)
+  const area = Math.sqrt(Math.abs(m.a * m.d - m.b * m.c))
+  if (area <= 1e-9) return translateCarve(spec, sub(applyAffine(m, center), center))
+  // The rotation of the map's polar decomposition: none for a stretch along any axis.
+  const rotation = whole(Math.atan2(m.b - m.c, m.a + m.d))
+  const moved = sub(applyAffine(m, center), center)
+  return foldTransform(spec, { dx: moved.x, dy: moved.y, scale: area, rotation }, center)
+}
+
+/** A recipe's middle: a slab's, punch's or polygon's centre, a groove's midpoint. */
+function recipeMiddle(spec: CarveSpec): Vec {
+  switch (spec.kind) {
+    case 'channel':
+    case 'slice':
+      return scale(add(spec.from, spec.to), 0.5)
+    case 'slab':
+    case 'punch':
+    case 'polygon':
+      return spec.center
+    case 'band':
+      return scale(add(spec.a.c, spec.b.c), 0.5)
+    default:
+      return spec satisfies never
+  }
 }
 
 export function isIdentityTransform(t: IllustratorTransform): boolean {

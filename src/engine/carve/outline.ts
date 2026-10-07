@@ -4,9 +4,11 @@ import {
   clamp,
   cubicPoint,
   cubicTangent,
+  dot,
   emptyBounds,
   includeCubic,
   length,
+  lerp,
   normalize,
   rotate,
   scale,
@@ -16,20 +18,24 @@ import {
   type Cubic,
   type Vec,
 } from '../path/bezier.ts'
+import { arcHandleRatio, arcToCubics, KAPPA } from '../path/arc.ts'
+import { FULL_ROUND_SLACK, polygonApothem, polygonCornerRadius } from './spec.ts'
+import { bandParts, partCubics, partEnds } from './band.ts'
 import type {
+  BandSpec,
   CarveBends,
   CarveSpec,
   CornerFullness,
   CornerId,
   GrooveSpec,
   LineSideId,
+  PolygonSpec,
   PunchSpec,
   SideBend,
   SlabSpec,
 } from './spec.ts'
 
-/** Handle ratio that makes a cubic quarter arc look circular. */
-export const KAPPA = 0.5522847498307936
+export { KAPPA } from '../path/arc.ts'
 /** Far enough past any artboard that a slice always cuts edge to edge. */
 export const SLICE_REACH = 4000
 
@@ -49,18 +55,38 @@ export type SideRef =
   | { type: 'corner'; id: CornerId }
   | { type: 'rail'; id: 'left' | 'right' }
   | { type: 'cap'; id: 'start' | 'end' }
+  /** A polygon's side `index`, from its corner `index` to the next. */
+  | { type: 'polygon-side'; index: number }
+  /** A polygon's rounded corner `index`, counted clockwise from the top. */
+  | { type: 'polygon-corner'; index: number }
+  /** Part `index` of a band's outline: an edge, an arc, a cap or a chord. */
+  | { type: 'band'; index: number }
+
+/** A circle in layer space. */
+export interface OutlineCircle {
+  c: Vec
+  r: number
+}
 
 export interface BoxFrame {
   kind: 'box'
   center: Vec
   rotation: number
-  /** Nominal size: for punches 2r × 2r, for the triangle the circumscribed box. */
+  /** Nominal size: for punches 2r × 2r, for the triangle the circumscribed box, for a polygon its circumcircle's. */
   width: number
   height: number
   /** Effective corner radius after clamping. */
   radius: number
   /** Bounds of the outline in the unrotated frame around `center`, bends included. */
   extent: Bounds
+  /**
+   * The circles of a polygon's rounded corners, in layer space, for the
+   * construction look to draw; none for a slab or a punch, whose rounding is
+   * not drawn yet, and none for a polygon rounded all the way, to within the
+   * hundredth storage keeps, where they would all lie on its outline. The
+   * construction look draws them as solid light-grey hairlines.
+   */
+  cornerCircles: OutlineCircle[]
 }
 
 export interface GrooveFrame {
@@ -69,7 +95,19 @@ export interface GrooveFrame {
   width: number
 }
 
-export type CarveFrame = BoxFrame | GrooveFrame
+/**
+ * A band's frame: where it touches its circles, and the circles the
+ * construction look draws, a neck's arcs whole. `valid` is false while its
+ * circles allow no fit: then its outline is empty.
+ */
+export interface BandFrame {
+  kind: 'band'
+  valid: boolean
+  touches: Vec[]
+  cornerCircles: OutlineCircle[]
+}
+
+export type CarveFrame = BoxFrame | GrooveFrame | BandFrame
 
 export interface CarveOutline {
   /** One closed ring of anchors. */
@@ -135,10 +173,16 @@ export function bentSideCubic(
   return { cubic: [p0, p1, p2, p3], line: false }
 }
 
-function cornerCubic(a: Vec, b: Vec, dirIn: Vec, dirOut: Vec, radius: number, fullness?: CornerFullness): Cubic {
+/**
+ * A rounded corner from `a` to `b` that turns through `turn` radians (a
+ * quarter turn on a box). Its handles run along `dirIn` and `dirOut`, each
+ * (4/3)·tan(turn/4)·r long times its fullness: at full fullness a true arc.
+ */
+function cornerCubic(a: Vec, b: Vec, dirIn: Vec, dirOut: Vec, radius: number, fullness?: CornerFullness, turn = Math.PI / 2): Cubic {
   const k1 = clamp(fullness?.k1 ?? 1, 0, 3)
   const k2 = clamp(fullness?.k2 ?? 1, 0, 3)
-  return [a, add(a, scale(dirIn, k1 * KAPPA * radius)), sub(b, scale(dirOut, k2 * KAPPA * radius)), b]
+  const ratio = arcHandleRatio(turn)
+  return [a, add(a, scale(dirIn, k1 * ratio * radius)), sub(b, scale(dirOut, k2 * ratio * radius)), b]
 }
 
 function makeSide(
@@ -226,6 +270,98 @@ export function boxGeometryFor(spec: SlabSpec | PunchSpec): BoxGeometry {
   return boxGeometry(d, d, spec.shape === 'circle' ? spec.radius : 0, spec)
 }
 
+/* ─── Polygons ─── */
+
+/** A polygon's parts in its own frame, centred on the origin and unturned. */
+export interface PolygonGeometry {
+  /** The corners of the sharp polygon, clockwise from the top. */
+  vertices: Vec[]
+  /** The corner radius drawn: the stored one, clamped to the apothem. */
+  radius: number
+  /** Each corner's arc, where the polygon is rounded: from tangent point `a` to `b`, about `c`. */
+  corners: Array<{ a: Vec; b: Vec; c: Vec }>
+  pieces: Piece[]
+}
+
+/**
+ * A regular polygon with rounded corners. Its first corner is at the top, and
+ * the corners follow clockwise. Each corner turns through α = 2π/n, so with
+ * radius ρ its tangent points lie ρ·tan(α/2) from the corner along both
+ * sides, its arc's handles are (4/3)·tan(α/4)·ρ long, and its circle's centre
+ * lies R − ρ/cos(π/n) from the middle, towards the corner. A triangle's
+ * corners turn more than a quarter, so each is drawn as two arcs of half the
+ * turn, as arcToCubics splits any arc. ρ stops at the
+ * apothem, where the tangent points of neighbouring corners meet in the
+ * middle of their side and the polygon is a circle.
+ */
+export function polygonGeometry(spec: Pick<PolygonSpec, 'sides' | 'radius' | 'cornerRadius'>): PolygonGeometry {
+  const n = spec.sides
+  const big = Math.max(spec.radius, 0.25)
+  const turn = (2 * Math.PI) / n
+  const vertices = Array.from({ length: n }, (_, k) => rotate({ x: 0, y: -big }, (360 * k) / n))
+  const rho = polygonCornerRadius({ sides: n, radius: big, cornerRadius: spec.cornerRadius })
+  const reach = rho * Math.tan(Math.PI / n)
+  const toCentre = big - rho / Math.cos(Math.PI / n)
+  const dirs = vertices.map((v, k) => normalize(sub(vertices[(k + 1) % n], v)))
+  const corners: PolygonGeometry['corners'] = []
+  const pieces: Piece[] = []
+  for (let k = 0; k < n; k++) {
+    const v = vertices[k]
+    const dirIn = dirs[(k + n - 1) % n]
+    const dirOut = dirs[k]
+    if (rho > EPS) {
+      const a = sub(v, scale(dirIn, reach))
+      const b = add(v, scale(dirOut, reach))
+      const c = scale(v, toCentre / big)
+      corners.push({ a, b, c })
+      const side: SideRef = { type: 'polygon-corner', index: k }
+      if (turn <= Math.PI / 2 + 1e-12) pieces.push({ c: cornerCubic(a, b, dirIn, dirOut, rho, undefined, turn), side, line: false })
+      else {
+        // A triangle's corners turn a third of the way round: two pieces keep the arc as true as a quarter's.
+        const cubics = arcToCubics(c, rho, Math.atan2(a.y - c.y, a.x - c.x), turn)
+        cubics[0] = [a, cubics[0][1], cubics[0][2], cubics[0][3]]
+        cubics[cubics.length - 1] = [cubics.at(-1)![0], cubics.at(-1)![1], cubics.at(-1)![2], b]
+        for (const cubic of cubics) pieces.push({ c: cubic, side, line: false })
+      }
+    }
+    const next = vertices[(k + 1) % n]
+    const from = rho > EPS ? add(v, scale(dirOut, reach)) : v
+    const to = rho > EPS ? sub(next, scale(dirOut, reach)) : next
+    if (length(sub(to, from)) > EPS) pieces.push({ c: straightCubic(from, to), side: { type: 'polygon-side', index: k }, line: true })
+  }
+  return { vertices, radius: rho, corners, pieces }
+}
+
+/** A polygon's parts in layer space, as snapping, guides and the construction look read them. */
+export interface PolygonParts {
+  vertices: Vec[]
+  /** The middle of each side, from corner k to corner k + 1. */
+  midpoints: Vec[]
+  radius: number
+  /** Each rounded corner: its circle, its tangent points and its arc, from `start` through `sweep` (radians, clockwise on screen). */
+  corners: Array<{ c: Vec; a: Vec; b: Vec; start: number; sweep: number }>
+  /** The straight part of each side that has one. */
+  sides: Array<[Vec, Vec]>
+}
+
+export function polygonParts(spec: PolygonSpec): PolygonParts {
+  const geometry = polygonGeometry(spec)
+  const map = (p: Vec): Vec => add(spec.center, rotate(p, spec.rotation))
+  const vertices = geometry.vertices.map(map)
+  const sweep = (2 * Math.PI) / spec.sides
+  return {
+    vertices,
+    midpoints: vertices.map((v, k) => scale(add(v, vertices[(k + 1) % vertices.length]), 0.5)),
+    radius: geometry.radius,
+    corners: geometry.corners.map((corner) => {
+      const c = map(corner.c)
+      const a = map(corner.a)
+      return { c, a, b: map(corner.b), start: Math.atan2(a.y - c.y, a.x - c.x), sweep }
+    }),
+    sides: geometry.pieces.filter((piece) => piece.line).map((piece) => [map(piece.c[0]), map(piece.c[3])]),
+  }
+}
+
 /* ─── Grooves: channels and slices ─── */
 
 /** The spine of a groove, bent if it has a bend. */
@@ -239,8 +375,12 @@ export function grooveSpine(spec: GrooveSpec): Cubic {
   return cubic
 }
 
+/**
+ * From center + u·r to center + v·r (u ⟂ v), a circular quarter arc. Kept
+ * beside arcToCubics, which draws the same arcs from angles: built on the two
+ * unit vectors, its points stay exactly where grooves have always had them.
+ */
 function quarter(center: Vec, u: Vec, v: Vec, r: number): Cubic {
-  // From center + u·r to center + v·r (u ⟂ v), a circular quarter arc.
   const p0 = add(center, scale(u, r))
   const p3 = add(center, scale(v, r))
   return [p0, add(p0, scale(v, KAPPA * r)), add(p3, scale(u, KAPPA * r)), p3]
@@ -458,28 +598,133 @@ function transformPiece(piece: Piece, center: Vec, rotation: number): Piece {
   return { ...piece, c: [map(piece.c[0]), map(piece.c[1]), map(piece.c[2]), map(piece.c[3])] }
 }
 
-function buildOutline(spec: CarveSpec): CarveOutline {
-  if (spec.kind === 'slab' || spec.kind === 'punch') {
-    const geometry = boxGeometryFor(spec)
-    const extent = emptyBounds()
-    for (const piece of geometry.pieces) includeCubic(extent, piece.c)
-    const frame: BoxFrame = {
-      kind: 'box',
-      center: spec.center,
-      rotation: spec.rotation,
-      width: geometry.width,
-      height: geometry.height,
-      radius: geometry.radius,
-      extent,
-    }
-    return assemble(
-      geometry.pieces.map((piece) => transformPiece(piece, spec.center, spec.rotation)),
-      frame,
-    )
+/** A recipe drawn about its centre: its pieces turned and moved into place, its frame around them. */
+function placed(spec: SlabSpec | PunchSpec | PolygonSpec, pieces: Piece[], size: { width: number; height: number; radius: number }, circles: OutlineCircle[]): CarveOutline {
+  const extent = emptyBounds()
+  for (const piece of pieces) includeCubic(extent, piece.c)
+  const map = (p: Vec): Vec => add(spec.center, rotate(p, spec.rotation))
+  const frame: BoxFrame = {
+    kind: 'box',
+    center: spec.center,
+    rotation: spec.rotation,
+    // By name: a geometry passed as the size must not bring its unturned parts along.
+    width: size.width,
+    height: size.height,
+    radius: size.radius,
+    extent,
+    cornerCircles: circles.map((circle) => ({ c: map(circle.c), r: circle.r })),
   }
-  const spine = grooveSpine(spec)
-  const frame: GrooveFrame = { kind: 'groove', spine, width: spec.width }
-  return assemble(spec.bend ? grooveBentPieces(spec, spine) : grooveStraightPieces(spec), frame)
+  return assemble(
+    pieces.map((piece) => transformPiece(piece, spec.center, spec.rotation)),
+    frame,
+  )
+}
+
+function buildOutline(spec: CarveSpec): CarveOutline {
+  switch (spec.kind) {
+    case 'slab':
+    case 'punch': {
+      const geometry = boxGeometryFor(spec)
+      return placed(spec, geometry.pieces, geometry, [])
+    }
+    case 'polygon': {
+      const geometry = polygonGeometry(spec)
+      const big = Math.max(spec.radius, 0.25)
+      // Rounded all the way, to within what storage keeps, its corners' circles would all lie on its outline.
+      const round = geometry.radius >= polygonApothem(spec) - FULL_ROUND_SLACK
+      const circles = round ? [] : geometry.corners.map((corner) => ({ c: corner.c, r: geometry.radius }))
+      return placed(spec, geometry.pieces, { width: 2 * big, height: 2 * big, radius: geometry.radius }, circles)
+    }
+    case 'channel':
+    case 'slice': {
+      const spine = grooveSpine(spec)
+      const frame: GrooveFrame = { kind: 'groove', spine, width: spec.width }
+      return assemble(spec.bend ? grooveBentPieces(spec, spine) : grooveStraightPieces(spec), frame)
+    }
+    case 'band':
+      return bandOutline(spec)
+    default:
+      return spec satisfies never
+  }
+}
+
+/** A band's outline: its parts as cubics, each arc in pieces of at most 90°; empty while its circles allow no fit. */
+function bandOutline(spec: BandSpec): CarveOutline {
+  const parts = bandParts(spec)
+  if (!parts) return assemble([], { kind: 'band', valid: false, touches: [], cornerCircles: [] })
+  const ends = parts.parts.map(partEnds)
+  const pieces: Piece[] = parts.parts.flatMap((part, index) => {
+    // Each part starts exactly where the one before it ends, and the last closes on the first.
+    const from = index === 0 ? ends[0][0] : ends[index - 1][1]
+    const to = index === ends.length - 1 ? ends[0][0] : ends[index][1]
+    return partCubics(part, from, to).map((c): Piece => ({ c, side: { type: 'band', index }, line: part.kind === 'segment' }))
+  })
+  return assemble(pieces, { kind: 'band', valid: true, touches: parts.touches, cornerCircles: parts.circles })
+}
+
+/**
+ * A band's outline as the construction look strokes it: open path data of
+ * what lies outside its two circles, as the sheets draw it. A bar's caps, a
+ * strip's ends and a neck's chords lie inside them and go, and so do the
+ * runs of a bar's or strip's sides that pass inside a circle. Null when it
+ * strokes whole (a belt), or has no outline.
+ */
+export function bandOuterPathData(spec: BandSpec): string | null {
+  const parts = bandParts(spec)
+  if (!parts) return null
+  const outline = carveOutline(spec)
+  let pathData = ''
+  let clipped = false
+  let last = -1
+  outline.curves.forEach((curve, i) => {
+    const side = outline.curveSides[i]
+    if (side.type !== 'band') return
+    const part = parts.parts[side.index]
+    if (part.inside) {
+      clipped = true
+      last = -1
+      return
+    }
+    if (part.kind === 'segment') {
+      const runs = outsideCircles(curve[0], curve[3], [spec.a, spec.b])
+      if (runs.length !== 1 || runs[0][0] > 0 || runs[0][1] < 1) clipped = true
+      const at = (t: number) => lerp(curve[0], curve[3], t)
+      for (const [from, to] of runs) pathData += `M${fmtVec(at(from))}L${fmtVec(at(to))}`
+      last = -1
+      return
+    }
+    if (side.index !== last) pathData += `M${fmtVec(curve[0])}`
+    pathData += `C${fmtVec(curve[1])} ${fmtVec(curve[2])} ${fmtVec(curve[3])}`
+    last = side.index
+  })
+  return clipped ? pathData : null
+}
+
+/** The runs of the segment from `p` to `q`, as parameters from 0 to 1, that lie outside every circle; a run that only touches one stays. */
+function outsideCircles(p: Vec, q: Vec, circles: ReadonlyArray<{ c: Vec; r: number }>): Array<[number, number]> {
+  let runs: Array<[number, number]> = [[0, 1]]
+  const d = sub(q, p)
+  const dd = dot(d, d)
+  if (dd < 1e-18) return runs
+  for (const { c, r } of circles) {
+    // Where |p + t·d − c| = r: inside between the two roots.
+    const f = sub(p, c)
+    const b = dot(f, d) / dd
+    const disc = b * b - (dot(f, f) - r * r) / dd
+    if (disc <= 1e-12) continue
+    const root = Math.sqrt(disc)
+    const [enter, leave] = [-b - root, -b + root]
+    runs = runs.flatMap(([from, to]): Array<[number, number]> => {
+      if (leave <= from || enter >= to) return [[from, to]]
+      return [
+        ...(enter > from ? [[from, enter] as [number, number]] : []),
+        ...(leave < to ? [[leave, to] as [number, number]] : []),
+      ]
+    })
+  }
+  // Pieces under a hundredth of a unit are rounding, not lines.
+  const length = Math.sqrt(dd)
+  return runs.filter(([from, to]) => (to - from) * length > 0.01)
 }
 
 const CACHE_LIMIT = 64

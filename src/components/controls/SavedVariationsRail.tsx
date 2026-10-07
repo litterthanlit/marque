@@ -1,5 +1,6 @@
 import { useLogoStore } from '../../store/logoStore.ts'
 import { useSavedVariations } from '../../hooks/useSavedVariations.ts'
+import { isBlankDocument } from '../../engine/vector/document.ts'
 
 interface SavedVariationsRailProps {
   /** A saved mark was put on the canvas. */
@@ -17,7 +18,7 @@ export function SavedVariationsRail({ onOpened }: SavedVariationsRailProps) {
       <button
         type="button"
         onClick={() => saveVariation(vectorDocument, params)}
-        disabled={vectorDocument.objects.length === 0}
+        disabled={isBlankDocument(vectorDocument)}
         className="h-7 px-2.5 rounded-md text-xs text-sidebar-text bg-interactive-active hover:bg-interactive-hover hover:text-fg disabled:opacity-40 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-selection)] focus-visible:ring-offset-2 focus-visible:ring-offset-surface-raised"
       >
         Save current

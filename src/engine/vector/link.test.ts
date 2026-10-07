@@ -5,8 +5,15 @@ import { generate } from '../pipeline/GenerationPipeline.ts'
 import { DEFAULT_PARAMS } from '../types.ts'
 import { createEmptyVectorDocument } from './document.ts'
 import { composeVectorMark } from './export.ts'
-import { illustratorDocumentToVectorDocument } from './legacyIllustratorAdapter.ts'
+import { illustratorDocumentToVectorDocument } from './legacyImport.ts'
 import { decodeLink, documentFromGeneratorLink, encodeLink } from './link.ts'
+import { readVectorDocument, upgradeV1 } from './migrate.ts'
+
+/** A document the test expects to read. */
+function readable<T>(value: T | null): T {
+  if (value === null) throw new Error('could not be read')
+  return value
+}
 
 const square: IllustratorDocument = {
   id: 'doc',
@@ -29,7 +36,10 @@ const square: IllustratorDocument = {
 }
 
 // As a link carries it: JSON has no undefined and no negative zero.
-const squareDocument = JSON.parse(JSON.stringify(illustratorDocumentToVectorDocument(square)))
+const stored = <T>(value: T): T => JSON.parse(JSON.stringify(value))
+/** As stage 1 wrote it: schema version 1. */
+const squareV1 = stored(illustratorDocumentToVectorDocument(square))
+const squareDocument = stored(readable(upgradeV1(squareV1)))
 const packed = (value: unknown) => compressToEncodedURIComponent(JSON.stringify(value))
 
 describe('opening a link', () => {
@@ -94,6 +104,17 @@ describe('opening a link', () => {
     expect(link).toEqual({ kind: 'vector', document: squareDocument, inkColor: '#ff3300' })
   })
 
+  it('opens a version 1 document link, upgraded, without its selection', () => {
+    const link = decodeLink(`#fillColor=%23ff3300&vd=${packed(squareV1)}`)
+    expect(link).toEqual({ kind: 'vector', document: readVectorDocument(squareV1), inkColor: '#ff3300' })
+    if (link.kind !== 'vector') return
+    expect(link.document).toMatchObject({ schemaVersion: 2, guides: [], fillets: [] })
+    expect(link.document).not.toHaveProperty('selection')
+    expect(link.document.objects).toEqual([
+      expect.objectContaining({ id: 'square', operation: 'add', contours: [expect.objectContaining({ closed: true })] }),
+    ])
+  })
+
   it('opens a layer document from before the vector format', () => {
     expect(decodeLink(`#v=1.0&surface=illustrator&i=${packed(square)}`)).toEqual({
       kind: 'legacy-layers',
@@ -111,6 +132,14 @@ describe('opening a link', () => {
 describe('writing a link', () => {
   it('writes nothing for an empty document', () => {
     expect(encodeLink(createEmptyVectorDocument(), '#ff3300')).toBe('')
+  })
+
+  it('writes a document with only guides, and reads its guides back', () => {
+    const guide = { id: 'g', name: 'Line', visible: true, locked: false, style: 'dashed' as const, shape: { kind: 'line' as const, p: { x: 0, y: 40 }, angle: 60 } }
+    const document = { ...createEmptyVectorDocument(), guides: [guide] }
+    const decoded = decodeLink(encodeLink(document, '#ff3300'))
+    expect(decoded.kind).toBe('vector')
+    if (decoded.kind === 'vector') expect(decoded.document.guides).toEqual([guide])
   })
 
   it('writes the ink colour and the document, and reads them back', () => {

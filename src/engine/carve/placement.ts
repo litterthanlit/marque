@@ -1,5 +1,7 @@
 import type { Vec } from '../path/bezier.ts'
-import { slabSpec, type SlabKind, type SlabSpec } from './spec.ts'
+import { slabEntrySpec, type SlabEntry } from './geometry.ts'
+import { carveOutline, outlineBounds } from './outline.ts'
+import { DEFAULT_SIDES, type PolygonSpec, type SlabSpec } from './spec.ts'
 
 export interface Box {
   x: number
@@ -45,21 +47,31 @@ function bottomRightCorner(size: Size, limit: Vec): Vec {
 /**
  * Where a new slab goes when the mark already has ink: half size, beside the
  * ink on the first side that fits the canvas, or tucked into the bottom-right
- * corner when nothing fits.
+ * corner when nothing fits. A polygon is placed by the box round its corners,
+ * which an odd number of sides leaves off its centre.
  */
 export function placeSlab(
-  preset: SlabKind,
+  entry: SlabEntry,
   ink: Box,
   viewport: Size,
   margin = 16,
   gap = 24,
-): SlabSpec {
-  const half = slabSpec(preset, { x: 0, y: 0 }, 0.5)
+  sides = DEFAULT_SIDES,
+): SlabSpec | PolygonSpec {
+  const half = slabEntrySpec(entry, sides, { x: 0, y: 0 }, 0.5)
+  let size: Size
+  let offset: Vec = { x: 0, y: 0 }
+  if (half.kind === 'slab') size = half
+  else {
+    const bounds = outlineBounds(carveOutline(half))
+    size = { width: bounds.maxX - bounds.minX, height: bounds.maxY - bounds.minY }
+    offset = { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2 }
+  }
   const limit = limits(viewport, margin)
   const spot =
-    SIDES.map((side) => beside(side, half, ink, gap)).find((center) => fits(center, half, limit)) ??
-    bottomRightCorner(half, limit)
-  return { ...half, center: spot }
+    SIDES.map((side) => beside(side, size, ink, gap)).find((center) => fits(center, size, limit)) ??
+    bottomRightCorner(size, limit)
+  return { ...half, center: { x: spot.x - offset.x, y: spot.y - offset.y } }
 }
 
 /**

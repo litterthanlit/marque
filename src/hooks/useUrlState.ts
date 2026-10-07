@@ -4,6 +4,7 @@ import {
   documentFromGeneratorLink,
   encodeLink,
   type DecodedLink,
+  UNREADABLE,
 } from '../engine/vector/link.ts'
 import { useLogoStore } from '../store/logoStore.ts'
 
@@ -18,11 +19,16 @@ export function useUrlState() {
   useEffect(() => {
     if (!opened.current) {
       opened.current = true
-      openLink(decodeLink(window.location.hash))
+      // Reading never means to throw; if it does all the same, say so instead of showing nothing.
+      try {
+        openLink(decodeLink(window.location.hash))
+      } catch {
+        openLink(UNREADABLE)
+      }
     }
 
     // Opening a link is not an edit: the hash stays as it came until the
-    // layers or the ink change. Selection changes never rewrite it.
+    // objects, guides, fillets or the ink change. Selection changes never rewrite it.
     let written = linkSource(useLogoStore.getState())
     let seen = written
     let timer: number | undefined
@@ -87,7 +93,8 @@ function openLink(link: DecodedLink): void {
 }
 
 function linkSource(state: StoreState) {
-  return [state.vectorDocument.objects, state.vectorDocument.artboards, state.params.fillColor] as const
+  const { objects, guides, fillets, artboards } = state.vectorDocument
+  return [objects, guides, fillets, artboards, state.params.fillColor] as const
 }
 
 function sameSource(a: ReturnType<typeof linkSource>, b: ReturnType<typeof linkSource>): boolean {

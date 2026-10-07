@@ -1,17 +1,53 @@
 import paper from 'paper'
-import type { VectorPath, VectorPathSegment } from './types.ts'
+import type { Contour, Segment } from './types.ts'
 
 let vectorPathScope: paper.PaperScope | null = null
 
-function getScope(): paper.PaperScope {
-  if (!vectorPathScope) {
-    vectorPathScope = new paper.PaperScope()
-    vectorPathScope.setup(new paper.Size(1, 1))
+/**
+ * The scope that is active now. Paper keeps it private, but an item made
+ * without a parent records the active scope's project, and a project its scope.
+ */
+function activeScope(): paper.PaperScope | null {
+  try {
+    const probe = new paper.Path({ insert: false })
+    return (probe.project as unknown as { _scope?: paper.PaperScope } | null)?._scope ?? null
+  } catch {
+    // No scope has a project yet.
+    return null
   }
-  return vectorPathScope
 }
 
-function toSegment(segment: paper.Segment): VectorPathSegment {
+/**
+ * Run `work` in the scope `scratch` gives, its project cleared before and
+ * after, then give the caller's scope back. Items made there never land in
+ * the canvas, and the canvas stays active. The caller's scope is read first:
+ * making a scope makes it the active one.
+ */
+export function inScratchScope<T>(scratch: () => paper.PaperScope, work: (scope: paper.PaperScope) => T): T {
+  const previous = activeScope()
+  const scope = scratch()
+  scope.activate()
+  scope.project.clear()
+  try {
+    return work(scope)
+  } finally {
+    scope.project.clear()
+    if (previous && previous !== scope) previous.activate()
+  }
+}
+
+/** Run `work` in this module's own scope: see inScratchScope. */
+function inOwnScope<T>(work: (scope: paper.PaperScope) => T): T {
+  return inScratchScope(() => {
+    if (!vectorPathScope) {
+      vectorPathScope = new paper.PaperScope()
+      vectorPathScope.setup(new paper.Size(1, 1))
+    }
+    return vectorPathScope
+  }, work)
+}
+
+function toSegment(segment: paper.Segment): Segment {
   return {
     point: { x: segment.point.x, y: segment.point.y },
     handleIn:
@@ -22,49 +58,41 @@ function toSegment(segment: paper.Segment): VectorPathSegment {
       segment.handleOut.length === 0
         ? null
         : { x: segment.handleOut.x, y: segment.handleOut.y },
-    pointType: segment.handleIn.length > 0 || segment.handleOut.length > 0 ? 'smooth' : 'corner',
   }
 }
 
-export function pathDataToVectorPaths(pathData: string): VectorPath[] {
-  const scope = getScope()
-  scope.project.clear()
-
-  try {
+/** Path data as contours, one per subpath, in order. Empty subpaths are left out. */
+export function pathDataToContours(pathData: string): Contour[] {
+  return inOwnScope((scope) => {
     const item = new scope.CompoundPath(pathData)
     const paths = item.getItems({ class: scope.Path })
     return paths
       .filter((path): path is paper.Path => path instanceof scope.Path)
-      .map((path) => ({
-        id: crypto.randomUUID(),
-        closed: path.closed,
-        segments: path.segments.map(toSegment),
-      }))
-      .filter((path) => path.segments.length > 0)
-  } finally {
-    scope.project.clear()
-  }
+      .map((path) => ({ closed: path.closed, segments: path.segments.map(toSegment) }))
+      .filter((contour) => contour.segments.length > 0)
+  })
 }
 
-export function vectorPathToPathData(path: VectorPath): string {
-  const scope = getScope()
-  scope.project.clear()
-
-  try {
-    const paperPath = new scope.Path()
-    paperPath.closed = path.closed
-    for (const segment of path.segments) {
-      paperPath.add(
-        new scope.Segment(
-          new scope.Point(segment.point.x, segment.point.y),
-          segment.handleIn ? new scope.Point(segment.handleIn.x, segment.handleIn.y) : undefined,
-          segment.handleOut ? new scope.Point(segment.handleOut.x, segment.handleOut.y) : undefined,
-        ),
-      )
-    }
-
-    return paperPath.pathData
-  } finally {
-    scope.project.clear()
+function contourPath(scope: paper.PaperScope, contour: Contour): paper.Path {
+  const path = new scope.Path()
+  path.closed = contour.closed
+  for (const segment of contour.segments) {
+    path.add(
+      new scope.Segment(
+        new scope.Point(segment.point.x, segment.point.y),
+        segment.handleIn ? new scope.Point(segment.handleIn.x, segment.handleIn.y) : undefined,
+        segment.handleOut ? new scope.Point(segment.handleOut.x, segment.handleOut.y) : undefined,
+      ),
+    )
   }
+  return path
+}
+
+export function contourToPathData(contour: Contour): string {
+  return inOwnScope((scope) => contourPath(scope, contour).pathData)
+}
+
+/** Every contour's path data in turn: one contour reads exactly as `contourToPathData` writes it. */
+export function contoursToPathData(contours: readonly Contour[]): string {
+  return inOwnScope((scope) => contours.map((contour) => contourPath(scope, contour).pathData).join(''))
 }
