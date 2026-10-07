@@ -164,7 +164,8 @@ function renderConstructionMarks(scope: paper.PaperScope, layers: readonly Illus
   group.locked = true
   group.insertBelow(outline)
   for (const layer of layers) {
-    const marks = layer.visible && layer.carve ? cornerCircleMarks(scope, layer.carve, scope.view.center) : null
+    // A linked offset copy's corners share its source's centres: only the source draws them.
+    const marks = layer.visible && layer.carve && layer.link?.kind !== 'offset' ? cornerCircleMarks(scope, layer.carve, scope.view.center) : null
     if (!marks) continue
     marks.data = { marksOf: layer.id }
     group.addChild(marks)

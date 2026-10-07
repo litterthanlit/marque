@@ -1,5 +1,5 @@
 import type { CarveSpec } from '../carve/spec.ts'
-import type { Guide } from '../vector/types.ts'
+import type { Guide, ObjectLink } from '../vector/types.ts'
 
 export type IllustratorMode = 'object' | 'points'
 
@@ -38,6 +38,8 @@ export interface IllustratorLayer {
   contourCount?: number
   /** The object whose centre the recipe's centre is pinned to. */
   pin?: string
+  /** What the path is made from, when the follow pass makes it: an offset of another object. */
+  link?: ObjectLink
 }
 
 /** A group of the document as the canvas reads it. Its members follow it in the layers. */

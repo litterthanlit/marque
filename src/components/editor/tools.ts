@@ -1,6 +1,7 @@
 import type { IllustratorLayer } from '../../engine/illustrator/types.ts'
 import type { EditorTool } from '../../store/logoStore.ts'
 import { isBareKey } from '../../renderer/directEdit/keyboard.ts'
+import { offsetRoot } from '../../engine/vector/offsets.ts'
 
 export interface ToolEntry {
   /** `null` is plain selecting: no tool, and the handles on the canvas are live. */
@@ -44,7 +45,17 @@ export function sidesKeyStep(event: KeyboardEvent): -1 | 0 | 1 {
   return event.key === ']' ? 1 : event.key === '[' ? -1 : 0
 }
 
-/** The sides of the polygons among `layers` that [ and ] change: those that are visible and not locked. */
-export function steppedPolygonSides(layers: readonly IllustratorLayer[]): number[] {
-  return layers.flatMap((layer) => (layer.visible && !layer.locked && layer.carve?.kind === 'polygon' ? [layer.carve.sides] : []))
+/**
+ * The sides of the polygons that [ and ] change with `layers` selected,
+ * read among `all`: each polygon that is visible, not locked and follows no
+ * source, and for an offset copy the polygon it follows, once each.
+ */
+export function steppedPolygonSides(layers: readonly IllustratorLayer[], all: readonly IllustratorLayer[]): number[] {
+  const byId = new Map(all.map((layer) => [layer.id, layer]))
+  const roots = new Set<IllustratorLayer>()
+  for (const layer of layers) {
+    const root = byId.get(offsetRoot(all, layer.id)) ?? layer
+    roots.add(root)
+  }
+  return [...roots].flatMap((layer) => (layer.visible && !layer.locked && !layer.link && layer.carve?.kind === 'polygon' ? [layer.carve.sides] : []))
 }

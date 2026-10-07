@@ -18,16 +18,14 @@ function activeScope(): paper.PaperScope | null {
 }
 
 /**
- * Run `work` in this module's own scope, then give the caller's scope back.
- * Items made here never land in the canvas, and the canvas stays active.
+ * Run `work` in the scope `scratch` gives, its project cleared before and
+ * after, then give the caller's scope back. Items made there never land in
+ * the canvas, and the canvas stays active. The caller's scope is read first:
+ * making a scope makes it the active one.
  */
-function inOwnScope<T>(work: (scope: paper.PaperScope) => T): T {
+export function inScratchScope<T>(scratch: () => paper.PaperScope, work: (scope: paper.PaperScope) => T): T {
   const previous = activeScope()
-  if (!vectorPathScope) {
-    vectorPathScope = new paper.PaperScope()
-    vectorPathScope.setup(new paper.Size(1, 1))
-  }
-  const scope = vectorPathScope
+  const scope = scratch()
   scope.activate()
   scope.project.clear()
   try {
@@ -36,6 +34,17 @@ function inOwnScope<T>(work: (scope: paper.PaperScope) => T): T {
     scope.project.clear()
     if (previous && previous !== scope) previous.activate()
   }
+}
+
+/** Run `work` in this module's own scope: see inScratchScope. */
+function inOwnScope<T>(work: (scope: paper.PaperScope) => T): T {
+  return inScratchScope(() => {
+    if (!vectorPathScope) {
+      vectorPathScope = new paper.PaperScope()
+      vectorPathScope.setup(new paper.Size(1, 1))
+    }
+    return vectorPathScope
+  }, work)
 }
 
 function toSegment(segment: paper.Segment): Segment {

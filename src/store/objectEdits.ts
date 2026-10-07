@@ -97,13 +97,15 @@ function runEnd(objects: VectorObject[], index: number): number {
 /**
  * A recipe written to an object. Its one contour is always the outline of
  * the rounded recipe. A recipe turns by its own rotation, so it keeps no
- * frame.
+ * frame. An offset copy given a recipe of its own, by a handle or a box,
+ * stops following its source.
  */
 export function writeRecipe(object: PathObject, carve: CarveSpec): PathObject {
   const rounded = roundCarveSpec(carve)
   if (object.carve && !object.frame && JSON.stringify(object.carve) === JSON.stringify(rounded)) return object
   const next: PathObject = { ...object, contours: [segsToContour(carveOutline(rounded).segs)], carve: rounded }
   delete next.frame
+  if (next.link?.kind === 'offset') delete next.link
   return next
 }
 

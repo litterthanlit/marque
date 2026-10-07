@@ -16,6 +16,9 @@ import { GuideTool, type Ghost, type GhostSet } from '../../renderer/tools/Guide
 import { coincide, constructionLines, lineShape } from '../../engine/vector/guides.ts'
 import { commonTangents } from '../../engine/geometry/tangent.ts'
 import { pinsLostWithTarget } from '../../engine/vector/pins.ts'
+import { linksEndedBy, offsetGeometry, offsetIsQuick } from '../../engine/vector/offsets.ts'
+import { contoursToPathData } from '../../engine/vector/pathSerialization.ts'
+import { offsetPreview, type OffsetPreview } from '../../renderer/directEdit/offsetPreview.ts'
 import type { Contour } from '../../engine/vector/types.ts'
 import type { EditablePath } from '../../engine/path/editPath.ts'
 import { CanvasHud } from './CanvasHud.tsx'
@@ -26,6 +29,9 @@ import { useActiveMark } from '../../hooks/useActiveMark.ts'
 type Tool = PenTool | CarveTool | GuideTool
 
 const CARVE_PREVIEW_ID = '__carve_preview'
+const OFFSET_PREVIEW_ID = '__offset_preview'
+/** How long an offset slider must rest before the general method draws the offset it sets. */
+const OFFSET_SETTLE_MS = 150
 
 function modifiersOf(e: React.PointerEvent | PointerEvent): Modifiers {
   return { shift: e.shiftKey, alt: e.altKey, noSnap: e.metaKey || e.ctrlKey }
@@ -113,6 +119,10 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
   const toolRef = useRef<Tool | null>(null)
   const controllerRef = useRef<DirectEditController | null>(null)
   const carveSessionRef = useRef<{ doc: IllustratorDocument; session: ComposeSession } | null>(null)
+  // The composition an offset preview draws over, made once per document and preview target.
+  const offsetSessionRef = useRef<{ doc: IllustratorDocument; key: string; session: ComposeSession } | null>(null)
+  // A general offset preview waiting for its slider to rest.
+  const offsetSettleRef = useRef(0)
   // Who received the current press: a tool, or the editor (handles stay live under tools).
   const pressOwnerRef = useRef<'tool' | 'editor' | null>(null)
   // The canvas's layout size in CSS pixels.
@@ -198,13 +208,15 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       coveredInsets: () => coveredInsets(canvas),
     })
     controllerRef.current = controller
-    // A pin let go of because its target went, by an edit made off the canvas, is said too. Undo and redo bring back what was.
+    // A pin let go of because its target went, by an edit made off the canvas, is said too, and so is a copy that stops following
+    // by an edit the canvas does not read out itself. Undo and redo bring back what was.
     const unwatch = useLogoStore.subscribe((state, before) => {
       if (state.vectorDocument.objects === before.vectorDocument.objects) return
       const step = state.vectorUndoStack.at(-1)
       if (!step || before.vectorUndoStack.includes(step) || before.vectorRedoStack.includes(step)) return
-      const lost = pinsLostWithTarget(before.vectorDocument.objects, state.vectorDocument.objects)
-      if (lost.length) controller.noteLostPins(lost)
+      const unpinned = pinsLostWithTarget(before.vectorDocument.objects, state.vectorDocument.objects)
+      const { gone, edited } = linksEndedBy(before.vectorDocument.objects, state.vectorDocument.objects)
+      if (unpinned.length || gone.length || edited.length) controller.noteLetGo({ unpinned, gone, edited })
     })
     return () => {
       unwatch()
@@ -212,6 +224,58 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       controllerRef.current = null
     }
   }, [scopeRef])
+
+  /**
+   * Draw the offset the selection bar is setting: its outline dashed over
+   * the ink, and the ink composed with it in place, directly above its
+   * source (or in place of the copy it stands in for), so an inset as a cut
+   * shows its ring. With none, the ink goes back to the mark.
+   */
+  const applyOffsetPreview = useCallback((settled = false) => {
+    const scope = scopeRef.current
+    if (!scope) return
+    const preview = offsetPreview.get()
+    const state = useLogoStore.getState()
+    const source = preview ? state.vectorDocument.objects.find((object) => object.id === preview.of) : undefined
+    window.clearTimeout(offsetSettleRef.current)
+    // The general method waits for the slider to rest: the last frame stays meanwhile.
+    if (preview && source?.type === 'path' && !settled && !offsetIsQuick(source, preview.distance)) {
+      offsetSettleRef.current = window.setTimeout(() => applyOffsetPreview(true), OFFSET_SETTLE_MS)
+      return
+    }
+    if (!preview || source?.type !== 'path') {
+      controllerRef.current?.showOffsetOutline(null)
+      if (offsetSessionRef.current) {
+        offsetSessionRef.current = null
+        setInkPathData(scope, composeVectorMarkCached(state.vectorDocument).compoundPathData)
+      }
+      return
+    }
+    const made = offsetGeometry(source, preview.distance)
+    const pathData = made ? contoursToPathData(made.contours) : ''
+    const doc = state.illustrator
+    const key = `${preview.of} ${preview.asCut} ${preview.replaces ?? ''}`
+    if (offsetSessionRef.current?.doc !== doc || offsetSessionRef.current.key !== key) {
+      const id = preview.replaces ?? OFFSET_PREVIEW_ID
+      offsetSessionRef.current = { doc, key, session: createComposeSession(withPreviewOffset(doc, preview, source.operation), [id]) }
+    }
+    try {
+      const ink = offsetSessionRef.current.session.compose(new Map([[preview.replaces ?? OFFSET_PREVIEW_ID, pathData || null]]))
+      setInkPathData(scope, ink)
+    } catch {
+      // A boolean hiccup: the last good frame stays.
+    }
+    controllerRef.current?.showOffsetOutline(pathData || null, preview.replaces ?? null)
+  }, [scopeRef])
+
+  useEffect(() => {
+    const unsubscribe = offsetPreview.subscribe(() => applyOffsetPreview())
+    return () => {
+      unsubscribe()
+      window.clearTimeout(offsetSettleRef.current)
+      offsetPreview.set(null)
+    }
+  }, [applyOffsetPreview])
 
   // Render. The renderer reads only the layers, so a selection change, which
   // keeps the same layers array, does not rebuild the scope.
@@ -227,10 +291,12 @@ export function LogoCanvas({ children }: { children?: React.ReactNode }) {
       guides: guidesToDraw(),
     })
     controllerRef.current?.sync(itemMap)
+    // An offset being set is drawn over the new ink again.
+    if (offsetPreview.get()) applyOffsetPreview()
     // A render clears the canvas: the drawing in progress goes back on top.
     const tool = toolRef.current
     if (tool instanceof PenTool || tool instanceof GuideTool) tool.redraw()
-  }, [layers, activeMark, survival, ui.viewport, ui.look, params.fillColor, scopeRef])
+  }, [layers, activeMark, survival, ui.viewport, ui.look, params.fillColor, scopeRef, applyOffsetPreview])
 
   // Guides draw on their own: a guide edit, or showing and hiding them, redraws only them.
   const guides = useLogoStore((s) => s.vectorDocument.guides)
@@ -571,4 +637,30 @@ function withPreviewCut(doc: IllustratorDocument, spec: CutSpec): IllustratorDoc
       },
     ],
   }
+}
+
+/**
+ * The document as it would be with an offset the bar is setting: a new
+ * layer directly above its source, in its group, or the copy it stands in
+ * for, cutting or not as the preview says.
+ */
+function withPreviewOffset(doc: IllustratorDocument, preview: OffsetPreview, sourceOperation: 'add' | 'subtract'): IllustratorDocument {
+  const operation = preview.asCut ? 'subtract' : sourceOperation
+  if (preview.replaces) {
+    return { ...doc, layers: doc.layers.map((layer) => (layer.id === preview.replaces ? { ...layer, operation } : layer)) }
+  }
+  const index = doc.layers.findIndex((layer) => layer.id === preview.of)
+  const source = doc.layers[index]
+  const layer = {
+    id: OFFSET_PREVIEW_ID,
+    name: 'Offset',
+    operation,
+    visible: true,
+    locked: false,
+    pathData: '',
+    fillRule: 'evenodd' as const,
+    transform: { ...DEFAULT_ILLUSTRATOR_TRANSFORM },
+    ...(source?.parentId ? { parentId: source.parentId } : {}),
+  }
+  return { ...doc, layers: [...doc.layers.slice(0, index + 1), layer, ...doc.layers.slice(index + 1)] }
 }

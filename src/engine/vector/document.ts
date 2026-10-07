@@ -1,5 +1,6 @@
 import { isObjectCarveValid } from '../carve/sync.ts'
 import { follow } from './follow.ts'
+import { MAX_OFFSET, breakOffsetLoops } from './offsets.ts'
 import { breakPinLoops } from './pins.ts'
 import type {
   ConstructionRole,
@@ -72,7 +73,9 @@ export function isBlankDocument(document: Pick<VectorDocument, 'objects' | 'guid
  *   finite turn or sits on a recipe;
  * - a link or guide link of a kind it does not know, or to an object that
  *   is not there, is detached, and so is a pin; pins that would hold each
- *   other in a loop lose the pin that closes it;
+ *   other in a loop lose the pin that closes it, offset copies that would
+ *   follow each other in a loop lose the link that closes it, and an offset
+ *   of a group is detached;
  * - a guide of a shape it does not know is dropped, and so is a fillet
  *   between objects that are not there;
  * - a construction guide is rebuilt from the shape it follows, or detached
@@ -115,7 +118,7 @@ export function repairVectorDocument(value: unknown): VectorDocument | null {
     if (object) read.push(object)
   }
   const structured = repairStructure(uniqueIds(read))
-  const referenced = breakPinLoops(repairReferences(structured))
+  const referenced = breakPinLoops(breakOffsetLoops(repairReferences(structured)))
 
   const ids = new Set(referenced.map((object) => object.id))
   const readGuides = readList(value.guides, (raw) => readGuide(raw, ids))
@@ -316,16 +319,21 @@ function readObject(value: unknown): VectorObject | null | undefined {
 const PIN_KEYS = new Set(['centreOf'])
 const FRAME_KEYS = new Set(['rotation'])
 
-/** A link of a kind this build knows, or undefined. The same link when it needs no repair. */
+/**
+ * A link of a kind this build knows, or undefined. The same link when it
+ * needs no repair. An offset further than MAX_OFFSET is read at MAX_OFFSET;
+ * one with no finite distance is dropped, and the copy keeps its geometry.
+ */
 function readLink(value: unknown): ObjectLink | undefined {
   if (!isRecord(value)) return undefined
   if (value.kind === 'band' && typeof value.a === 'string' && typeof value.b === 'string') {
     return onlyKeys(value, BAND_KEYS) ? (value as unknown as ObjectLink) : { kind: 'band', a: value.a, b: value.b }
   }
   if (value.kind === 'offset' && typeof value.of === 'string' && isFiniteNumber(value.distance)) {
-    return onlyKeys(value, OFFSET_KEYS)
+    const distance = Math.max(-MAX_OFFSET, Math.min(MAX_OFFSET, value.distance))
+    return onlyKeys(value, OFFSET_KEYS) && distance === value.distance
       ? (value as unknown as ObjectLink)
-      : { kind: 'offset', of: value.of, distance: value.distance }
+      : { kind: 'offset', of: value.of, distance }
   }
   return undefined
 }

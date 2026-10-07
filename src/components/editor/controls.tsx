@@ -9,9 +9,11 @@ interface EditorButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement
   /** A toggle or one choice of several: sets `aria-pressed` and lights the button. */
   pressed?: boolean
   danger?: boolean
+  /** The one action a panel is for, such as making what it sets. */
+  primary?: boolean
 }
 
-export function EditorButton({ pressed, danger, className, children, ...props }: EditorButtonProps) {
+export function EditorButton({ pressed, danger, primary, className, children, ...props }: EditorButtonProps) {
   return (
     <button
       type="button"
@@ -23,7 +25,9 @@ export function EditorButton({ pressed, danger, className, children, ...props }:
         FOCUS_RING,
         pressed
           ? 'bg-interactive text-fg ring-1 ring-interactive-ring'
-          : danger
+          : primary
+            ? 'bg-pink-500 font-medium text-white hover:bg-pink-400'
+            : danger
             ? 'bg-interactive-active text-red-400 hover:bg-interactive-hover'
             : 'bg-interactive-active text-sidebar-text hover:bg-interactive-hover hover:text-fg',
         className,

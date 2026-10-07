@@ -84,7 +84,9 @@ import { asCircle, type Circle } from '../../engine/geometry/asCircle.ts'
 import { roundPrimitives, tangentAtAngle, tangentThrough } from '../../engine/geometry/tangent.ts'
 import { PIN_SLACK, recipeCentre, shapeCentre } from '../../engine/vector/pins.ts'
 import { boxGeometryFor, carveOutline, grooveSpine, type SideRef } from '../../engine/carve/outline.ts'
-import { bentEdgeCount, isGroove, polygonApothem, polygonCornerRadius, type CarveSpec, type SlabSpec } from '../../engine/carve/spec.ts'
+import { bentEdgeCount, isGroove, polygonApothem, polygonCornerRadius, roundCarveSpec, type CarveSpec, type SlabSpec } from '../../engine/carve/spec.ts'
+import { offsetRecipe, offsetsExactly } from '../../engine/carve/offset.ts'
+import { offsetRoot } from '../../engine/vector/offsets.ts'
 import { bakedEditableShape } from '../../engine/illustrator/layerPath.ts'
 import { createComposeSession, type ComposeSession } from '../../engine/illustrator/composeSession.ts'
 import type { IllustratorDocument, IllustratorLayer } from '../../engine/illustrator/types.ts'
@@ -267,7 +269,7 @@ interface MoveStarts {
   carried: string[]
 }
 
-/** The commit that moves layers by `d`, leaving the moved ones (not the cuts they carry) selected. */
+/** The commit that moves layers by `d`, leaving `ids` selected: the moved ones, not the cuts they carry. */
 function moveCommit({ starts }: MoveStarts, ids: string[], d: Vec): LayerEditCommit {
   return {
     label: starts.size > 1 ? 'Move shapes' : 'Move',
@@ -582,6 +584,12 @@ export class DirectEditController {
   private guidesFirst = false
   /** What the live frame of a gesture shows in place of some layers: their paths, and their recipes. */
   private preview: { paths: Map<string, string | null>; carves: Map<string, CarveSpec>; frames: Map<string, number> } | null = null
+  /** Does the gesture going on edit an offset copy's own geometry, so that it stops following its source? */
+  private sessionDetaches = false
+  /** True while the controller writes an edit it reads out itself: what the edit lets go of is said then, once. */
+  private sayingOwn = false
+  /** The offset the bar is showing, drawn dashed (layer space), and the copy it stands in for. */
+  private offsetOutline: { pathData: string; replaces: string | null } | null = null
   private readonly unregisterKeys: () => void
   private destroyed = false
 
@@ -689,6 +697,8 @@ export class DirectEditController {
     this.resting = { p, touch }
     if (this.session) {
       this.session.update(p, mods)
+      // A copy's own geometry edited lets go of what it follows: the HUD says so all the way.
+      if (this.sessionDetaches) hud.hold('detached', UNPINNED_MS)
       this.placeHud(p, touch)
       return
     }
@@ -701,9 +711,11 @@ export class DirectEditController {
           return
         }
         this.session = session
+        this.sessionDetaches = this.detaches(session.editedIds)
         setEditorInteracting(true)
         setSurvivalVisible(this.scope, false)
         session.update(p, mods)
+        if (this.sessionDetaches) hud.hold('detached', UNPINNED_MS)
         this.placeHud(p, touch)
       }
       return
@@ -728,11 +740,11 @@ export class DirectEditController {
       this.session = null
       this.press = null
       const before = this.host.getDoc()
-      session.commit()
+      this.saysOwn(() => session.commit())
       // What a keyboard edit read out before no longer holds.
       hud.silence()
-      // "unpinned" stays its moment only if a pin was let go of: one the drag showed letting go may have come back.
-      if (this.noteUnpinned(before)) this.announceEdit(before, null)
+      // "unpinned" or "detached" stays its moment only if a pin or a link was let go of: one the drag showed letting go may have come back.
+      if (this.noteUnpinned(before) || this.noteDetached(before)) this.announceEdit(before, null)
       else hud.letGo()
       this.endGesture()
       return
@@ -994,14 +1006,18 @@ export class DirectEditController {
     return documentSizes(doc, exclude, (layer) => this.freePathOf(layer), this.shownGuides(doc, exclude, exclude))
   }
 
-  /** The recipes pinned to any of `ids`, and those pinned to them in turn: they move with them. */
+  /**
+   * The recipes pinned to any of `ids` and the offset copies of them, and
+   * those that follow them in turn: they move with them.
+   */
   private followersOf(doc: IllustratorDocument, ids: Iterable<string>): string[] {
     const reached = new Set(ids)
     const out: string[] = []
     for (let grew = true; grew; ) {
       grew = false
       for (const layer of doc.layers) {
-        if (!layer.pin || !reached.has(layer.pin) || reached.has(layer.id)) continue
+        const held = layer.pin ?? (layer.link?.kind === 'offset' ? layer.link.of : undefined)
+        if (held === undefined || !reached.has(held) || reached.has(layer.id)) continue
         reached.add(layer.id)
         out.push(layer.id)
         grew = true
@@ -1031,13 +1047,16 @@ export class DirectEditController {
   }
 
   /**
-   * The recipes pinned to layers a live frame replaces, moved as far as the
-   * centres they are pinned to move, put in the frame too: the drag shows
-   * them going with what they are pinned to, as the follow pass will put them.
+   * What follows the layers a live frame replaces, put in the frame too: the
+   * recipes pinned to them, moved as far as the centres they are pinned to
+   * move, and their offset copies. A copy of a recipe with an exact offset
+   * is made again from the live recipe; any other copy moves with its
+   * source's centre, and the commit makes it again. So the drag shows them
+   * where the follow pass will put them.
    */
   private withFollowers(replacements: Map<string, string | null>, carves: Map<string, CarveSpec>, frames: Map<string, number>): void {
     const doc = this.host.getDoc()
-    if (!doc.layers.some((layer) => layer.pin)) return
+    if (!doc.layers.some((layer) => layer.pin || layer.link)) return
     const shifts = new Map<string, Vec | null>()
     const shiftOf = (id: string): Vec | null => {
       if (shifts.has(id)) return shifts.get(id)!
@@ -1055,7 +1074,31 @@ export class DirectEditController {
     for (let grew = true; grew; ) {
       grew = false
       for (const layer of doc.layers) {
-        if (!layer.pin || !layer.carve || replacements.has(layer.id) || !replacements.has(layer.pin)) continue
+        if (replacements.has(layer.id)) continue
+        if (layer.link?.kind === 'offset' && replacements.has(layer.link.of)) {
+          const live = carves.get(layer.link.of)
+          if (live && offsetsExactly(live)) {
+            const offset = offsetRecipe(live, layer.link.distance)
+            const made = offset && roundCarveSpec(offset)
+            replacements.set(layer.id, made ? carveOutline(made).pathData : null)
+            if (made) carves.set(layer.id, made)
+          } else {
+            const shift = shiftOf(layer.link.of)
+            if (!shift) continue
+            if (layer.carve) {
+              const moved = translateCarve(layer.carve, shift)
+              replacements.set(layer.id, carveOutline(moved).pathData)
+              carves.set(layer.id, moved)
+            } else {
+              const shape = this.freePathOf(layer)
+              replacements.set(layer.id, shape ? shapePathData(translateShape(shape, shift)) : null)
+            }
+            shifts.set(layer.id, shift)
+          }
+          grew = true
+          continue
+        }
+        if (!layer.pin || !layer.carve || !replacements.has(layer.pin)) continue
         const shift = shiftOf(layer.pin)
         if (!shift) continue
         const moved = translateCarve(layer.carve, shift)
@@ -1064,6 +1107,67 @@ export class DirectEditController {
         shifts.set(layer.id, shift)
         grew = true
       }
+    }
+  }
+
+  /** Does the layer follow, as an offset copy, directly or through other copies, one of `ids`? */
+  private followsLayerOf(id: string, ids: ReadonlySet<string>): boolean {
+    const seen = new Set<string>()
+    for (let layer = this.layer(id); layer?.link?.kind === 'offset' && !seen.has(layer.id); layer = this.layer(layer.link.of)) {
+      seen.add(layer.id)
+      if (ids.has(layer.link.of)) return true
+    }
+    return false
+  }
+
+  /**
+   * What a move of `ids` moves: an offset copy moves its source instead,
+   * and the source of that in turn; a copy whose source cannot move stays.
+   * `redirected` says whether any copy was swapped for its source, `held`
+   * names the sources that are locked or hidden.
+   */
+  private movedSources(ids: readonly string[]): { ids: string[]; redirected: boolean; held: string[] } {
+    const out: string[] = []
+    const held: string[] = []
+    let redirected = false
+    const layers = this.host.getDoc().layers
+    for (const id of ids) {
+      const at = offsetRoot(layers, id)
+      if (at !== id) {
+        redirected = true
+        if (!usable(this.layer(at))) {
+          if (this.layer(at) && !held.includes(at)) held.push(at)
+          continue
+        }
+      }
+      if (!out.includes(at)) out.push(at)
+    }
+    return { ids: out, redirected, held }
+  }
+
+  /**
+   * Why a copy does not move when its source is locked or hidden: a label by
+   * the pointer, and a sentence that says what to do.
+   */
+  private heldSource(doc: IllustratorDocument, id: string): { label: string; sentence: string } {
+    const layer = this.layer(id)
+    const number = String(doc.layers.findIndex((each) => each.id === id) + 1).padStart(2, '0')
+    return layer?.locked
+      ? { label: 'source is locked', sentence: `source is locked: unlock ${number} to move it` }
+      : { label: 'source is hidden', sentence: `source is hidden: show ${number} to move it` }
+  }
+
+  /** A drag of a copy whose source cannot move: nothing moves, and the HUD says why all the way. */
+  private heldSession(said: { label: string; sentence: string }): Session {
+    // What an earlier edit held up goes: this drag's own word shows.
+    hud.letGo()
+    hud.announce(said.sentence)
+    return {
+      editedIds: new Set(),
+      update: () => hud.set({ label: said.label, chip: null }),
+      commit: () => {},
+      cancel: () => {},
+      drawOverlay: () => {},
     }
   }
 
@@ -1428,7 +1532,7 @@ export class DirectEditController {
     return { starts, carried }
   }
 
-  private movePlan(ids: string[], carry: boolean): MovePlan | null {
+  private movePlan(ids: string[], carry: boolean, select: string[] = ids): MovePlan | null {
     const doc = this.host.getDoc()
     if (!ids.length) return null
     const moved = this.moveStarts(doc, ids, carry)
@@ -1487,7 +1591,7 @@ export class DirectEditController {
           restore()
           return
         }
-        const commit = { ...moveCommit(moved, ids, d), ...(still ? { label: 'Pin' } : {}) }
+        const commit = { ...moveCommit(moved, select, d), ...(still ? { label: 'Pin' } : {}) }
         this.host.commitLayerEdits(pins.size ? { ...commit, edits: commit.edits.map((edit) => (pins.has(edit.layerId) ? { ...edit, pin: pins.get(edit.layerId) } : edit)) } : commit)
       },
       cancel: restore,
@@ -1528,9 +1632,12 @@ export class DirectEditController {
    */
   private boxMembers(doc: IllustratorDocument, ids: string[], carry: boolean, picked?: readonly string[]): BoxMembers | null {
     const members = new Map<string, MovedStart>()
+    const all = new Set(ids)
     for (const id of ids) {
       const layer = this.layer(id)
       if (!layer || layer.locked) continue
+      // An offset copy boxed with its source follows it, made again from it, rather than scaling or turning itself.
+      if (this.followsLayerOf(id, all)) continue
       if (layer.carve) {
         members.set(id, { carve: layer.carve, frame: 0 })
         continue
@@ -1567,9 +1674,13 @@ export class DirectEditController {
 
   private moveSession(press: Press, pressedId: string, mods: Modifiers): Session | null {
     const doc = this.host.getDoc()
+    // An offset copy goes where its source puts it: dragging it moves the source, and the HUD says so.
+    const selected = this.movingIds(doc, pressedId)
+    const sources = this.movedSources(selected)
     // Alt moves the shape alone, leaving its holes where they are.
-    const plan = this.movePlan(this.movingIds(doc, pressedId), !mods.alt)
-    if (!plan) return null
+    const plan = this.movePlan(sources.ids, !mods.alt, selected)
+    if (!plan) return sources.held.length ? this.heldSession(this.heldSource(doc, sources.held[0])) : null
+    const fallback = sources.redirected ? 'moves the source' : null
     let index: SnapIndex | null = null
     let d: Vec = { x: 0, y: 0 }
     // The recipes moved that are pinned to something staying put: dragged, they let go, unless dropped back on a centre.
@@ -1604,7 +1715,8 @@ export class DirectEditController {
             snap = { ...snap, label: 'pinned', hints: [{ kind: 'pin', p: add(plan.keyPoints[snap.hit!.moving], d) }] }
           }
         }
-        this.showSnap(snap)
+        // A copy dragged says it moves its source, whatever it snaps to.
+        this.showSnap(fallback && snap.label ? { ...snap, label: `${fallback} · ${snap.label}` } : snap, fallback)
         letGo.update(Math.hypot(d.x, d.y) >= 0.5 && pinned.some((id) => pinTo?.id !== id))
         plan.preview(d)
         hud.set({ chip: `${Math.round(d.x)}, ${Math.round(d.y)}` })
@@ -1675,39 +1787,77 @@ export class DirectEditController {
    * never let go of without a word.
    */
   private announceEdit(before: IllustratorDocument, status: string | null) {
-    if (!this.noteUnpinned(before)) {
+    const unpinned = this.noteUnpinned(before)
+    const detached = this.noteDetached(before)
+    if (!unpinned && !detached) {
       if (status) hud.announce(status)
       return
     }
-    hud.hold('unpinned', UNPINNED_MS)
-    const said = 'Unpinned: it no longer stays on the centre it was pinned to'
+    hud.hold(unpinned ? 'unpinned' : 'detached', UNPINNED_MS)
+    const said = [
+      ...(unpinned ? ['Unpinned: it no longer stays on the centre it was pinned to'] : []),
+      ...(detached ? ['Detached: it no longer follows its shape'] : []),
+    ].join('. ')
     hud.announce(status ? `${status}. ${said}` : said)
   }
 
+  /** Did the last edit end an offset copy's link: its own geometry edited, so it no longer follows its shape? */
+  private noteDetached(before: IllustratorDocument): boolean {
+    const after = new Map(this.host.getDoc().layers.map((layer) => [layer.id, layer]))
+    return before.layers.some((layer) => layer.link?.kind === 'offset' && after.has(layer.id) && after.get(layer.id)!.link === undefined)
+  }
+
+  /** Would an edit of these layers end a copy's link: a copy among them edited without the shape it follows? */
+  private detaches(ids: ReadonlySet<string>): boolean {
+    return [...ids].some((id) => this.layer(id)?.link?.kind === 'offset' && !this.followsLayerOf(id, ids))
+  }
+
+  /** Run an edit whose read-out the controller gives itself, after it. */
+  private saysOwn(commit: () => void) {
+    this.sayingOwn = true
+    try {
+      commit()
+    } finally {
+      this.sayingOwn = false
+    }
+  }
+
   /**
-   * Pins let go of because what they were pinned to went, by an edit made
-   * outside the canvas (deleted, made a guide, merged): "unpinned" shows by
-   * those recipes for a moment and is read out, so no pin goes without a word.
+   * What an edit made off the canvas let go of, or one the controller does
+   * not read out itself: `unpinned`, recipes whose pin went with what they
+   * were pinned to (deleted, made a guide, merged); `gone`, offset copies
+   * whose source went so; `edited`, copies whose own points were edited, by
+   * a double-click, a key or the bar. "unpinned" or "detached" shows by them
+   * for a moment and all of it is read out, so no pin and no link goes
+   * without a word.
    */
-  noteLostPins(ids: readonly string[]) {
+  noteLetGo({ unpinned = [], gone = [], edited = [] }: { unpinned?: readonly string[]; gone?: readonly string[]; edited?: readonly string[] }) {
+    if (this.sayingOwn) return
     const doc = this.host.getDoc()
     // Numbered as the drawer numbers them, from 01 at the bottom.
-    const numbers = ids.flatMap((id) => {
-      const index = doc.layers.findIndex((layer) => layer.id === id)
-      return index < 0 ? [] : [String(index + 1).padStart(2, '0')]
-    })
-    if (!numbers.length) return
-    const around = selectionBox({ ...doc, selectedLayerIds: [...ids] }, (layer) => this.freePathOf(layer))
+    const numbered = (ids: readonly string[]) =>
+      ids.flatMap((id) => {
+        const index = doc.layers.findIndex((layer) => layer.id === id)
+        return index < 0 ? [] : [String(index + 1).padStart(2, '0')]
+      })
+    const said = (ids: readonly string[], one: string, many: string, verb: string) => {
+      const numbers = numbered(ids)
+      return numbers.length ? [`${verb} ${numbers.join(', ')}: ${numbers.length > 1 ? many : one}`] : []
+    }
+    const sentences = [
+      ...said(unpinned, 'the shape it was pinned to is gone', 'the shape they were pinned to is gone', 'Unpinned'),
+      ...said(gone, 'the shape it followed is gone', 'the shapes they followed are gone', 'Detached'),
+      ...said(edited, 'it no longer follows its shape', 'they no longer follow their shapes', 'Detached'),
+    ]
+    if (!sentences.length) return
+    const ids = [...unpinned, ...gone, ...edited]
+    const around = selectionBox({ ...doc, selectedLayerIds: ids }, (layer) => this.freePathOf(layer))
     if (around) {
       const corners = (['nw', 'ne', 'se', 'sw'] as const).map((id) => add(boxHandlePoint(around.box, id)!, this.center()))
       this.placeHud({ x: Math.max(...corners.map((c) => c.x)), y: Math.min(...corners.map((c) => c.y)) })
     }
-    hud.hold('unpinned', UNPINNED_MS)
-    hud.announce(
-      numbers.length > 1
-        ? `Unpinned ${numbers.join(', ')}: the shape they were pinned to is gone`
-        : `Unpinned ${numbers[0]}: the shape it was pinned to is gone`,
-    )
+    hud.hold(numbered(unpinned).length ? 'unpinned' : 'detached', UNPINNED_MS)
+    hud.announce(sentences.join('. '))
   }
 
   /**
@@ -2570,6 +2720,17 @@ export class DirectEditController {
     return { minX: left - c.x, minY: top - c.y, maxX: right - c.x, maxY: bottom - c.y }
   }
 
+  /**
+   * Show the outline of an offset the selection bar is setting, dashed over
+   * the ink, in place of the copy it stands in for; null shows none.
+   */
+  showOffsetOutline(pathData: string | null, replaces: string | null = null): void {
+    const next = pathData === null ? null : { pathData, replaces }
+    if (next?.pathData === this.offsetOutline?.pathData && next?.replaces === this.offsetOutline?.replaces) return
+    this.offsetOutline = next
+    this.drawOverlay()
+  }
+
   /* ─── Overlay ─── */
 
   /** The one selected slab or polygon, when it is too small on screen for its rounding dot to keep clear of its centre. */
@@ -2597,11 +2758,13 @@ export class DirectEditController {
       const item = this.items.get(this.hover.layerId)
       if (item) outlineItem(this.scope, layer, item, { dashed: true, width: 1.25 })
     }
+    const offset = editing ? null : this.offsetOutline
     for (const id of selected) {
-      if (edited.has(id)) continue
+      if (edited.has(id) || id === offset?.replaces) continue
       const item = this.items.get(id)
       if (item) outlineItem(this.scope, layer, item)
     }
+    if (offset) outlinePathData(this.scope, layer, offset.pathData, this.center(), { dashed: true, width: 1.5 })
 
     // Guides: the one under the pointer, the selected ones, and those following a reshaped layer.
     const movingGuides = editing?.guideIds ?? new Set<string>()
@@ -2795,7 +2958,7 @@ export class DirectEditController {
     const was = going?.turn ? going.turn.rotation : target.box.rotation
     const rotation = normalizeDegrees(Math.round(was + step))
     const move = turnMove(center, normalizeDegrees(rotation - was))
-    this.host.commitLayerEdits({ label: boxLabel(true, moved.members.size > 1), edits: boxEdits(moved, move), merge: 'key-turn' })
+    this.saysOwn(() => this.host.commitLayerEdits({ label: boxLabel(true, moved.members.size > 1), edits: boxEdits(moved, move), merge: 'key-turn' }))
     this.noteBurst('key-turn', [...moved.carried.keys()], { center, rotation })
     this.showKeyChip(`${r0(rotation)}°`)
     // Each key reads out where the selection now is, never how far the burst has gone.
@@ -2818,7 +2981,7 @@ export class DirectEditController {
     const whole = Math.abs(longer - Math.round(longer)) < 0.01 ? Math.round(longer) : longer
     const factor = Math.max((whole + step) / longer, evenScaleFloor(box))
     const move = scaleMove(box.center, factor)
-    this.host.commitLayerEdits({ label: boxLabel(false, moved.members.size > 1), edits: boxEdits(moved, move), merge: 'key-scale' })
+    this.saysOwn(() => this.host.commitLayerEdits({ label: boxLabel(false, moved.members.size > 1), edits: boxEdits(moved, move), merge: 'key-scale' }))
     this.noteBurst('key-scale', [...moved.carried.keys()])
     const size = `${r0(box.width * factor)} × ${r0(box.height * factor)}`
     this.showKeyChip(size)
@@ -2890,13 +3053,27 @@ export class DirectEditController {
     const doc = this.host.getDoc()
     const ids = this.usableSelection(doc)
     if (!ids.length) return
-    const moved = this.moveStarts(doc, ids, true, this.burstGoing(doc, 'nudge')?.carried)
-    if (!moved.starts.size) return
+    // An offset copy nudges its source, as a drag of it does, and the HUD says so.
+    const { ids: sources, redirected, held } = this.movedSources(ids)
+    const moved = this.moveStarts(doc, sources, true, this.burstGoing(doc, 'nudge')?.carried)
+    if (!moved.starts.size) {
+      // A copy whose shape is locked or hidden stays, and says why: a label over any other, without a chip, as nothing moved.
+      if (!held.length || !this.placeKeyHud()) return
+      const said = this.heldSource(doc, held[0])
+      hud.hold(said.label, KEY_CHIP_MS)
+      hud.announce(said.sentence)
+      return
+    }
     // A selected point stays selected: its shape moves whole, so it is still the same point.
     const point = doc.pointSelection
     const keepPoint = point && ids.length === 1 && point.layerId === ids[0]
-    this.host.commitLayerEdits({ ...moveCommit(moved, ids, d), ...(keepPoint ? { anchor: undefined } : {}), merge: 'nudge' })
+    this.saysOwn(() => this.host.commitLayerEdits({ ...moveCommit(moved, ids, d), ...(keepPoint ? { anchor: undefined } : {}), merge: 'nudge' }))
     this.noteBurst('nudge', moved.carried)
+    if (redirected) {
+      this.showKeyChip(`${r2(d.x)}, ${r2(d.y)}`, undefined, 'moves the source')
+      this.announceEdit(doc, 'Moved the source')
+      return
+    }
     if (!this.noteUnpinned(doc)) return
     // Nothing else is shown for a nudge: the label goes by the selection.
     this.placeKeyHud()

@@ -76,11 +76,13 @@ function createDevHook() {
     /**
      * The corner circles of a layer's recipe, as the construction look draws
      * them: each centre in client space, and its radius in client pixels.
+     * A linked offset copy draws none of its own.
      */
     cornerCircles(layerId: string) {
-      const spec = layerById(layerId)?.carve
+      const layer = layerById(layerId)
+      const spec = layer?.carve
       const frame = canvasFrame()
-      if (!spec || !frame) return []
+      if (!spec || !frame || layer.link?.kind === 'offset') return []
       const outline = carveOutline(spec).frame
       return outline.kind === 'box' ? outline.cornerCircles.map((circle) => ({ ...frame.toClient(circle.c), r: circle.r * frame.unit })) : []
     },

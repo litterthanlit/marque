@@ -2,16 +2,18 @@ import paper from 'paper'
 import { compressToEncodedURIComponent } from 'lz-string'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useLogoStore } from './logoStore.ts'
-import type { PunchSpec, SlabSpec } from '../engine/carve/spec.ts'
+import { translateCarve } from '../engine/carve/edit.ts'
+import { polygonApothem, type PolygonSpec, type PunchSpec, type SlabSpec } from '../engine/carve/spec.ts'
 import { composeIllustratorMark } from '../engine/illustrator/compose.ts'
 import type { IllustratorLayer } from '../engine/illustrator/types.ts'
 import { rollSparks } from '../engine/sparks/sparks.ts'
 import { composeVectorMark, composeVectorMarkCached } from '../engine/vector/export.ts'
 import { readLegacyLayers } from '../engine/vector/migrate.ts'
 import { constructionLines, guideRows } from '../engine/vector/guides.ts'
-import type { PathObject, VectorObject } from '../engine/vector/types.ts'
+import type { PathObject, VectorDocument, VectorObject } from '../engine/vector/types.ts'
 import { decodeLink, encodeLink } from '../engine/vector/link.ts'
 import { createSavedVariation, type SavedVariation } from '../engine/vector/saved.ts'
+import { pinsLostWithTarget } from '../engine/vector/pins.ts'
 
 /** A document the test expects to read. */
 function readable<T>(value: T | null): T {
@@ -1709,5 +1711,365 @@ describe('centre pins', () => {
     useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: slab.id, carve: moved }] })
     expect(carveOf(channel.id)).toMatchObject({ from: { x: -10, y: -30 }, to: { x: 90, y: -30 }, width: 20 })
     expect(carveOf(slice.id)).toMatchObject({ from: { x: 40, y: -70 }, to: { x: 40, y: 10 } })
+  })
+})
+
+describe('offset copies', () => {
+  beforeEach(() => reset())
+
+  /** A hexagon slab rounded to 60, as ref 1 starts, and its id. */
+  function hexagon(): string {
+    useLogoStore.getState().addSlab('polygon')
+    const id = layers()[0].id
+    const carve: PolygonSpec = { ...(layers()[0].carve as PolygonSpec), cornerRadius: 60 }
+    useLogoStore.getState().commitLayerEdits({ label: 'Round corners', edits: [{ layerId: id, carve }] })
+    return id
+  }
+  const object = (id: string) => objects().find((each) => each.id === id) as PathObject
+
+  it('adds ref 1’s ring as one undo step: a cut directly above its source, selected, 55 in with corners of 5', () => {
+    const id = hexagon()
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 250, y: 0 }, radius: 10 })
+    const depth = undoDepth()
+    useLogoStore.getState().addOffset(id, -55, true)
+    expect(undoDepth()).toBe(depth + 1)
+    const [, copy, punch] = objects() as PathObject[]
+    expect(punch.carve?.kind).toBe('punch')
+    expect(copy).toMatchObject({ operation: 'subtract', name: 'Inset \u221255', link: { kind: 'offset', of: id, distance: -55 } })
+    expect(copy.carve).toMatchObject({ kind: 'polygon', cornerRadius: 5 })
+    expect(polygonApothem(object(id).carve as PolygonSpec) - polygonApothem(copy.carve as PolygonSpec)).toBeCloseTo(55, 2)
+    expect(useLogoStore.getState().illustrator.selectedLayerIds).toEqual([copy.id])
+    expect(layers()[1].link).toEqual({ kind: 'offset', of: id, distance: -55 })
+    // The ring: the hexagon less the inset, as the mark draws it.
+    const hexArea = (spec: PolygonSpec) => {
+      const a = polygonApothem(spec)
+      const rho = spec.cornerRadius
+      return 6 * a * a * Math.tan(Math.PI / 6) - 6 * rho * rho * Math.tan(Math.PI / 6) + Math.PI * rho * rho
+    }
+    const ring = hexArea(object(id).carve as PolygonSpec) - hexArea(copy.carve as PolygonSpec)
+    expect(Math.abs(markArea() - ring) / ring).toBeLessThan(0.002)
+    useLogoStore.getState().undoVectorCommand()
+    expect(objects()).toHaveLength(2)
+    useLogoStore.getState().redoVectorCommand()
+    expect(object(copy.id)).toBe(copy)
+  })
+
+  it('adds an outset with the source’s own operation unless it is a cut, and nothing for a distance of 0', () => {
+    useLogoStore.getState().addSlab('circle')
+    const id = layers()[0].id
+    const depth = undoDepth()
+    useLogoStore.getState().addOffset(id, 0, false)
+    expect(undoDepth()).toBe(depth)
+    useLogoStore.getState().addOffset(id, 12, false)
+    expect(objects()[1]).toMatchObject({ operation: 'add', name: 'Outset 12', carve: { width: 424, radius: 212 } })
+  })
+
+  it('keeps the copy in its source’s group, directly above it', () => {
+    const corner = (x: number, y: number) => ({ point: { x, y }, handleIn: null, handleOut: null })
+    const square = { closed: true, segments: [corner(-100, -100), corner(100, -100), corner(100, 100), corner(-100, 100)] }
+    useLogoStore.getState().setVectorDocument({
+      ...useLogoStore.getState().vectorDocument,
+      objects: [
+        { id: 'g', name: 'g', parentId: null, visible: true, locked: false, type: 'group', isolated: true, operation: 'add' },
+        { id: 'a', name: 'a', parentId: 'g', visible: true, locked: false, type: 'path', operation: 'add', contours: [square], fillRule: 'evenodd' },
+        { id: 'b', name: 'b', parentId: 'g', visible: true, locked: false, type: 'path', operation: 'add', contours: [square], fillRule: 'evenodd' },
+      ],
+    })
+    useLogoStore.getState().addOffset('a', -20, true)
+    const order = objects().map((each) => [each.id, each.parentId])
+    expect(order.slice(0, 2)).toEqual([['g', null], ['a', 'g']])
+    expect(order[2][1]).toBe('g')
+    expect(order[3]).toEqual(['b', 'g'])
+    // A free source takes the general method: a square 20 in.
+    const copy = objects()[2] as PathObject
+    expect(copy.carve).toBeUndefined()
+    expect(Math.max(...copy.contours[0].segments.map((segment) => Math.abs(segment.point.x)))).toBeCloseTo(80, 1)
+  })
+
+  it('follows its source in the same undo step as the source’s edit, keeping ref 1’s ring 55 thick', () => {
+    const id = hexagon()
+    useLogoStore.getState().addOffset(id, -55, true)
+    const copyId = objects()[1].id
+    const depth = undoDepth()
+    const grown: PolygonSpec = { ...(object(id).carve as PolygonSpec), radius: 263.4, center: { x: 12, y: -8 } }
+    useLogoStore.getState().commitLayerEdits({ label: 'Resize', edits: [{ layerId: id, carve: grown }] })
+    expect(undoDepth()).toBe(depth + 1)
+    const copy = object(copyId).carve as PolygonSpec
+    expect(Math.abs(polygonApothem(grown) - polygonApothem(copy) - 55)).toBeLessThanOrEqual(0.01)
+    expect(copy).toMatchObject({ center: { x: 12, y: -8 }, cornerRadius: 5 })
+    useLogoStore.getState().undoVectorCommand()
+    expect((object(copyId).carve as PolygonSpec).radius).toBeCloseTo(200 - 55 / Math.cos(Math.PI / 6), 2)
+  })
+
+  it('sets the distance as one undo step, its name following, and detaches as another', () => {
+    const id = hexagon()
+    useLogoStore.getState().addOffset(id, -55, true)
+    const copyId = objects()[1].id
+    const depth = undoDepth()
+    useLogoStore.getState().setOffsetDistance(copyId, -30)
+    expect(undoDepth()).toBe(depth + 1)
+    expect(object(copyId)).toMatchObject({ name: 'Inset \u221230', link: { distance: -30 }, carve: { cornerRadius: 30 } })
+    useLogoStore.getState().setOffsetDistance(copyId, -30)
+    expect(undoDepth()).toBe(depth + 1)
+    useLogoStore.getState().detachOffsets([copyId])
+    expect(undoDepth()).toBe(depth + 2)
+    const detached = object(copyId)
+    expect(detached.link).toBeUndefined()
+    expect(detached.carve).toMatchObject({ cornerRadius: 30 })
+    // Detached, it stays put when the hexagon grows.
+    useLogoStore.getState().commitLayerEdits({ label: 'Resize', edits: [{ layerId: id, carve: { ...(object(id).carve as PolygonSpec), radius: 300 } }] })
+    expect(object(copyId)).toBe(detached)
+  })
+
+  it('joins a burst of arrow keys on the distance into one undo step, which undo takes back whole', () => {
+    const id = hexagon()
+    useLogoStore.getState().addOffset(id, -55, true)
+    const copyId = objects()[1].id
+    const depth = undoDepth()
+    useLogoStore.getState().setOffsetDistance(copyId, -54, 'offset-distance')
+    useLogoStore.getState().setOffsetDistance(copyId, -53, 'offset-distance')
+    useLogoStore.getState().setOffsetDistance(copyId, -52, 'offset-distance')
+    expect(undoDepth()).toBe(depth + 1)
+    expect(object(copyId).link).toMatchObject({ distance: -52 })
+    // A release of the pointer is a step of its own.
+    useLogoStore.getState().setOffsetDistance(copyId, -40)
+    expect(undoDepth()).toBe(depth + 2)
+    useLogoStore.getState().undoVectorCommand()
+    useLogoStore.getState().undoVectorCommand()
+    expect(object(copyId).link).toMatchObject({ distance: -55 })
+  })
+
+  it('detaches, keeping its geometry, when its source is deleted, in the same undo step, and undo brings both back', () => {
+    const id = hexagon()
+    useLogoStore.getState().addOffset(id, -55, true)
+    const copy = objects()[1] as PathObject
+    const depth = undoDepth()
+    useLogoStore.getState().deleteIllustratorLayers([id])
+    expect(undoDepth()).toBe(depth + 1)
+    expect(objects()).toHaveLength(1)
+    expect((objects()[0] as PathObject).link).toBeUndefined()
+    expect((objects()[0] as PathObject).carve).toEqual(copy.carve)
+    useLogoStore.getState().undoVectorCommand()
+    expect(object(copy.id)).toBe(copy)
+  })
+
+  it('follows, still linked, when a box edit scales it with its source: the source scales and the ring stays 55 thick', () => {
+    const id = hexagon()
+    useLogoStore.getState().addOffset(id, -55, true)
+    const copy = object(objects()[1].id)
+    const scaled = (spec: PolygonSpec): PolygonSpec => ({ ...spec, radius: spec.radius * 1.5, cornerRadius: spec.cornerRadius * 1.5 })
+    useLogoStore.getState().commitLayerEdits({
+      label: 'Resize shapes',
+      edits: [
+        { layerId: id, carve: scaled(object(id).carve as PolygonSpec) },
+        { layerId: copy.id, carve: scaled(copy.carve as PolygonSpec) },
+      ],
+    })
+    const after = object(copy.id)
+    expect(after.link).toEqual(copy.link)
+    expect(Math.abs(polygonApothem(object(id).carve as PolygonSpec) - polygonApothem(after.carve as PolygonSpec) - 55)).toBeLessThanOrEqual(0.01)
+    expect(after.carve).toMatchObject({ cornerRadius: 35 })
+  })
+
+  it('stops following when its own recipe or its points are edited, or a layer view gives it new geometry', () => {
+    const id = hexagon()
+    useLogoStore.getState().addOffset(id, -55, true)
+    const copy = objects()[1] as PathObject
+    useLogoStore.getState().commitLayerEdits({ label: 'Resize', edits: [{ layerId: copy.id, carve: { ...(copy.carve as PolygonSpec), radius: 100 } }] })
+    expect(object(copy.id).link).toBeUndefined()
+    expect((object(copy.id).carve as PolygonSpec).radius).toBe(100)
+    useLogoStore.getState().undoVectorCommand()
+    useLogoStore.getState().commitLayerEdits({ label: 'Move point', edits: [{ layerId: copy.id, pathData: 'M0,0L50,0L0,50Z' }] })
+    expect(object(copy.id).link).toBeUndefined()
+    useLogoStore.getState().undoVectorCommand()
+    // Renamed, hidden or made to add, it still follows.
+    useLogoStore.getState().setIllustratorLayerOperation(copy.id, 'add')
+    useLogoStore.getState().toggleIllustratorLayerVisibility(copy.id)
+    expect(object(copy.id).link).toEqual(copy.link)
+  })
+
+  it('names a copy that stops following as a new layer of its kind, unless it was named by hand', () => {
+    const id = hexagon()
+    useLogoStore.getState().addOffset(id, -55, true)
+    const copyId = objects()[1].id
+    useLogoStore.getState().detachOffsets([copyId])
+    expect(object(copyId).name).toBe('Polygon · 6')
+    useLogoStore.getState().undoVectorCommand()
+    expect(object(copyId).name).toBe('Inset −55')
+    // Its source deleted, or its own recipe edited, the same.
+    useLogoStore.getState().deleteIllustratorLayers([id])
+    expect(object(copyId).name).toBe('Polygon · 6')
+    expect(object(copyId).link).toBeUndefined()
+    useLogoStore.getState().undoVectorCommand()
+    useLogoStore.getState().commitLayerEdits({ label: 'Resize', edits: [{ layerId: copyId, carve: { ...(object(copyId).carve as PolygonSpec), radius: 100 } }] })
+    expect(object(copyId).name).toBe('Polygon · 6')
+    useLogoStore.getState().undoVectorCommand()
+    // A copy of the copy follows nothing, and is named so.
+    useLogoStore.getState().duplicateIllustratorLayer(copyId)
+    expect(objects()[2].name).toBe('Polygon · 6')
+    expect((objects()[2] as PathObject).link).toBeUndefined()
+    useLogoStore.getState().undoVectorCommand()
+    // A free copy takes the next shape name; a name given by hand stays.
+    useLogoStore.getState().commitLayerEdits({ label: 'Move point', edits: [{ layerId: copyId, pathData: 'M0,0L50,0L0,50Z' }] })
+    expect(object(copyId).name).toMatch(/^Shape \d+$/)
+    useLogoStore.getState().undoVectorCommand()
+    useLogoStore.getState().updateIllustratorLayer(copyId, { name: 'Rim' })
+    useLogoStore.getState().detachOffsets([copyId])
+    expect(object(copyId).name).toBe('Rim')
+  })
+
+  it('opens a saved mark with its copies as stored, not made again from their sources', () => {
+    const corner = (x: number, y: number) => ({ point: { x, y }, handleIn: null, handleOut: null })
+    const square = (r: number) => ({ closed: true, segments: [corner(-r, -r), corner(r, -r), corner(r, r), corner(-r, r)] })
+    const document = {
+      ...useLogoStore.getState().vectorDocument,
+      objects: [
+        { id: 'a', name: 'a', parentId: null, visible: true, locked: false, type: 'path', operation: 'add', contours: [square(150)], fillRule: 'evenodd' },
+        { id: 'c', name: 'Inset −25', parentId: null, visible: true, locked: false, type: 'path', operation: 'subtract', contours: [square(10)], fillRule: 'evenodd', link: { kind: 'offset', of: 'a', distance: -25 } },
+      ],
+    } as VectorDocument
+    const { params } = useLogoStore.getState()
+    useLogoStore.getState().openSaved(JSON.parse(JSON.stringify(createSavedVariation(document, params))))
+    expect(object('c').contours).toEqual([square(10)])
+    expect(object('c').link).toEqual({ kind: 'offset', of: 'a', distance: -25 })
+    // The next edit of its source makes it again.
+    useLogoStore.getState().commitLayerEdits({ label: 'Move point', edits: [{ layerId: 'a', pathData: 'M-160,-150L150,-150L150,150L-150,150Z' }] })
+    expect(Math.max(...object('c').contours[0].segments.map((segment) => segment.point.x))).toBeCloseTo(125, 1)
+  })
+
+  it('keeps a pin and guides on a copy while its distance leaves nothing, and they follow it when it comes back', () => {
+    const id = hexagon()
+    useLogoStore.getState().addOffset(id, -55, true)
+    const copyId = objects()[1].id
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 10 }, copyId)
+    const punchId = useLogoStore.getState().illustrator.selectedLayerIds[0]
+    useLogoStore.getState().addConstructionGuides([copyId])
+    const onCopy = () => useLogoStore.getState().vectorDocument.guides.filter((guide) => guide.link?.of === copyId)
+    const count = onCopy().length
+    expect(count).toBeGreaterThan(0)
+    useLogoStore.getState().setOffsetDistance(copyId, -199)
+    expect(object(copyId).contours).toEqual([])
+    expect(object(copyId).link).toMatchObject({ distance: -199 })
+    expect(object(punchId).pin).toEqual({ centreOf: copyId })
+    expect(onCopy()).toHaveLength(count)
+    // The hexagon moves while the copy is empty: the punch waits, and joins the copy when it comes back.
+    useLogoStore.getState().commitLayerEdits({ label: 'Move', edits: [{ layerId: id, carve: translateCarve(object(id).carve!, { x: 50, y: 0 }) }] })
+    expect(object(punchId).carve).toMatchObject({ center: { x: 0, y: 0 } })
+    useLogoStore.getState().setOffsetDistance(copyId, -55)
+    expect(object(copyId).carve).toMatchObject({ center: { x: 50, y: 0 } })
+    expect(object(punchId).pin).toEqual({ centreOf: copyId })
+    expect(object(punchId).carve).toMatchObject({ center: { x: 50, y: 0 } })
+    expect(onCopy()).toHaveLength(count)
+    expect(onCopy().map((guide) => guide.shape)).toEqual(constructionLines(object(copyId)).map((line) => line.shape))
+  })
+
+  it('lets a recipe pinned to an empty copy go when its own edit moves it, as from any copy, and keeps it through one that does not', () => {
+    const id = hexagon()
+    useLogoStore.getState().addOffset(id, -55, true)
+    const copyId = objects()[1].id
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 10 }, copyId)
+    const punchId = useLogoStore.getState().illustrator.selectedLayerIds[0]
+    useLogoStore.getState().setOffsetDistance(copyId, -199)
+    // A new radius leaves the punch where it is: it keeps waiting.
+    useLogoStore.getState().commitLayerEdits({ label: 'Radius', edits: [{ layerId: punchId, carve: { ...(object(punchId).carve as PunchSpec), radius: 14 } }] })
+    expect(object(punchId).pin).toEqual({ centreOf: copyId })
+    // Nudged, as the arrow keys write it, with no word on its pin: it lets go.
+    for (let i = 0; i < 3; i++) {
+      useLogoStore.getState().commitLayerEdits({ label: 'Nudge', edits: [{ layerId: punchId, carve: translateCarve(object(punchId).carve!, { x: 10, y: 0 }) }], merge: 'nudge' })
+    }
+    expect(object(punchId).pin).toBeUndefined()
+    expect(object(punchId).carve).toMatchObject({ center: { x: 30, y: 0 } })
+    // The copy comes back, and the punch stays where it was put.
+    useLogoStore.getState().setOffsetDistance(copyId, -55)
+    expect(object(punchId).pin).toBeUndefined()
+    expect(object(punchId).carve).toMatchObject({ center: { x: 30, y: 0 } })
+  })
+
+  it('makes no copy of an empty copy, as Detach keeps none: it has no geometry to copy', () => {
+    const id = hexagon()
+    useLogoStore.getState().addOffset(id, -55, true)
+    const copyId = objects()[1].id
+    useLogoStore.getState().setOffsetDistance(copyId, -199)
+    const depth = undoDepth()
+    useLogoStore.getState().duplicateIllustratorLayer(copyId)
+    expect(undoDepth()).toBe(depth)
+    expect(objects().map((each) => each.id)).toEqual([id, copyId])
+    // Back at a distance that leaves something, it copies as any copy does: whole, and following nothing.
+    useLogoStore.getState().setOffsetDistance(copyId, -55)
+    useLogoStore.getState().duplicateIllustratorLayer(copyId)
+    const [, , duplicate] = objects()
+    expect(duplicate.type === 'path' && duplicate.contours.length).toBeGreaterThan(0)
+    expect(duplicate.type === 'path' && duplicate.link).toBeUndefined()
+  })
+
+  it('takes an empty copy away with its source, and the pin on it goes as a pin on any deleted shape does', () => {
+    const id = hexagon()
+    useLogoStore.getState().addOffset(id, -55, true)
+    const copyId = objects()[1].id
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 10 }, copyId)
+    const punchId = useLogoStore.getState().illustrator.selectedLayerIds[0]
+    useLogoStore.getState().setOffsetDistance(copyId, -199)
+    // Detach waits: an empty copy has nothing to keep.
+    const depth = undoDepth()
+    useLogoStore.getState().detachOffsets([copyId])
+    expect(undoDepth()).toBe(depth)
+    expect(object(copyId).link).toMatchObject({ kind: 'offset', of: id })
+    useLogoStore.getState().setSelection([id, copyId])
+    const before = objects()
+    useLogoStore.getState().deleteIllustratorLayers([id])
+    expect(objects().map((each) => each.id)).toEqual([punchId])
+    expect(object(punchId).pin).toBeUndefined()
+    expect(pinsLostWithTarget(before, objects())).toEqual([punchId])
+    expect(useLogoStore.getState().illustrator.selectedLayerIds).toEqual([])
+    // One undo step brings all three back, the pin too.
+    useLogoStore.getState().undoVectorCommand()
+    expect(objects().map((each) => each.id)).toEqual(before.map((each) => each.id))
+    expect(object(punchId).pin).toEqual({ centreOf: copyId })
+  })
+
+  it('steps the sides of the polygon a selected copy follows, and the copy follows it', () => {
+    const id = hexagon()
+    useLogoStore.getState().addOffset(id, -55, true)
+    const copyId = objects()[1].id
+    const depth = undoDepth()
+    useLogoStore.getState().stepPolygonSides(1)
+    expect(undoDepth()).toBe(depth + 1)
+    expect((object(id).carve as PolygonSpec).sides).toBe(7)
+    expect((object(copyId).carve as PolygonSpec).sides).toBe(7)
+    expect(object(copyId).link).toMatchObject({ of: id, distance: -55 })
+    expect(useLogoStore.getState().ui.carve.polygonSides).toBe(7)
+  })
+
+  it('steps nothing with a copy of anything but a polygon selected, not even the next polygon’s sides', () => {
+    useLogoStore.getState().addSlab('rounded')
+    const id = objects()[0].id
+    useLogoStore.getState().addOffset(id, 12, false)
+    const copyId = objects()[1].id
+    useLogoStore.getState().setSelection([copyId])
+    const depth = undoDepth()
+    const sides = useLogoStore.getState().ui.carve.polygonSides
+    useLogoStore.getState().stepPolygonSides(1)
+    expect(undoDepth()).toBe(depth)
+    expect(useLogoStore.getState().ui.carve.polygonSides).toBe(sides)
+  })
+
+  it('keeps a punch pinned to the copy pinned when select all and an arrow move it with the hexagon', () => {
+    const id = hexagon()
+    useLogoStore.getState().addOffset(id, -55, true)
+    const copyId = objects()[1].id
+    useLogoStore.getState().addCarveCut({ kind: 'punch', shape: 'circle', center: { x: 0, y: 0 }, radius: 10 }, copyId)
+    const punchId = useLogoStore.getState().illustrator.selectedLayerIds[0]
+    expect(object(punchId).pin).toEqual({ centreOf: copyId })
+    // A nudge of all three moves the hexagon (for the copy) and the punch, as one commit.
+    const by = { x: 1, y: 0 }
+    useLogoStore.getState().commitLayerEdits({
+      label: 'Move shapes',
+      edits: [id, punchId].map((each) => ({ layerId: each, carve: translateCarve(object(each).carve!, by) })),
+      select: [id, copyId, punchId],
+      merge: 'nudge',
+    })
+    expect(object(copyId).carve).toMatchObject({ center: by })
+    expect(object(punchId).carve).toMatchObject({ center: by })
+    expect(object(punchId).pin).toEqual({ centreOf: copyId })
   })
 })

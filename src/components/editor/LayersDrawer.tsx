@@ -5,6 +5,60 @@ import { EditorButton, FOCUS_RING, SwitchButton } from './controls.tsx'
 import { isBlankDocument } from '../../engine/vector/document.ts'
 import { guideRows } from '../../engine/vector/guides.ts'
 import { layerNumber } from './layerNumber.ts'
+import { offsetName } from '../../engine/vector/offsets.ts'
+import type { IllustratorLayer } from '../../engine/illustrator/types.ts'
+
+/**
+ * How a row names a layer. An offset copy is named for what it follows, by
+ * that layer's number, "Inset −55 · 03", and says so when nothing is left of
+ * it at its distance; anything else by its own name. `shown` is the name as
+ * the row draws it, the dot between thin spaces so that a long distance
+ * and the number it follows fit the desktop drawer whole. `copies` numbers
+ * the copies that follow the layer, as the bar's "Copies 03" does; the row
+ * draws them short, after a glyph, and they give way to the name.
+ */
+function rowName(
+  layers: readonly IllustratorLayer[],
+  layer: IllustratorLayer,
+): { name: string; shown: string; follows: string | null; empty: boolean; copies: string[] } {
+  const copies = layers.flatMap((each, index) => (each.link?.kind === 'offset' && each.link.of === layer.id ? [String(index + 1).padStart(2, '0')] : []))
+  const link = layer.link?.kind === 'offset' ? layer.link : null
+  if (!link) return { name: layer.name, shown: layer.name, follows: null, empty: false, copies }
+  const number = layerNumber(layers, link.of) ?? '—'
+  const what = offsetName(link.distance)
+  return { name: `${what} · ${number}`, shown: `${what}\u2009·\u2009${number}`, follows: number, empty: !layer.pathData, copies }
+}
+
+/** A chain link: the row follows another layer. Broken, it follows one but nothing is left of it. */
+function LinkGlyph({ broken }: { broken: boolean }) {
+  return (
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" aria-hidden="true" className="mr-0.5 inline-block align-[-1px]">
+      {broken ? (
+        <>
+          <path d="M6.8 2.9l.5-.5a2 2 0 0 1 2.8 2.8l-.5.5" />
+          <path d="M5.2 9.1l-.5.5a2 2 0 0 1-2.8-2.8l.5-.5" />
+          <path d="M4 1.5v1.3M1.5 4h1.3M8 10.5V9.2M10.5 8H9.2" />
+        </>
+      ) : (
+        <>
+          <path d="M5 7l2-2" />
+          <path d="M6.3 3.4l1-1a2 2 0 0 1 2.8 2.8l-1 1" />
+          <path d="M5.7 8.6l-1 1a2 2 0 0 1-2.8-2.8l1-1" />
+        </>
+      )}
+    </svg>
+  )
+}
+
+/** Copies follow the row: an outline within an outline, as an inset lies in its shape. */
+function CopiesGlyph() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.2" aria-hidden="true" className="mr-0.5 inline-block align-[-1px]">
+      <rect x="1.5" y="1.5" width="9" height="9" rx="2" />
+      <rect x="4" y="4" width="4" height="4" rx="0.8" strokeDasharray="1.6 1.2" />
+    </svg>
+  )
+}
 
 const ROW_BUTTON = cn('h-7 shrink-0 rounded-md text-[10px] transition-colors hover:bg-interactive-hover', FOCUS_RING)
 
@@ -101,8 +155,9 @@ export function LayersDrawer() {
               const index = top - reverseIndex
               const selected = illustrator.selectedLayerIds.includes(layer.id)
               const number = String(index + 1).padStart(2, '0')
+              const row = rowName(layers, layer)
               // Slabs share a name: the position tells two rows apart.
-              const name = `${number} ${layer.name}`
+              const name = `${number} ${row.name}`
               return (
                 <li
                   key={layer.id}
@@ -126,13 +181,30 @@ export function LayersDrawer() {
                   <button
                     type="button"
                     aria-pressed={selected}
+                    aria-label={`${row.empty ? `${name}, empty` : name}${row.copies.length ? `, copies ${row.copies.join(', ')}` : ''}`}
                     onClick={(event) => selectIllustratorLayer(layer.id, event.shiftKey || event.metaKey)}
                     className={cn(
-                      'h-7 min-w-0 flex-1 truncate rounded-md px-2 text-left text-xs text-sidebar-text transition-colors hover:bg-interactive-hover hover:text-fg',
+                      'flex h-7 min-w-0 flex-1 items-center rounded-md px-1.5 text-left text-xs text-sidebar-text transition-colors hover:bg-interactive-hover hover:text-fg',
                       FOCUS_RING,
                     )}
+                    title={row.empty ? 'Nothing is left of it at this distance: it comes back when its shape grows' : undefined}
                   >
-                    <span className="font-mono-tabular text-sidebar-muted">{number}</span> {layer.name}
+                    {/* The name keeps its room; the copies after it give way first, whole in the title and label. */}
+                    <span className="min-w-0 max-w-full shrink-0 truncate">
+                      <span className="font-mono-tabular text-sidebar-muted">{number}</span>{' '}
+                      {row.follows && (
+                        <span title={row.empty ? undefined : `Follows ${row.follows}`} className={cn(row.empty && 'text-rose-300')}>
+                          <LinkGlyph broken={row.empty} />
+                        </span>
+                      )}
+                      {row.shown}
+                    </span>
+                    {row.copies.length > 0 && (
+                      <span className="ml-1.5 min-w-0 truncate text-sidebar-muted" title={`Copies ${row.copies.join(', ')} follow this shape`}>
+                        <CopiesGlyph />
+                        <span className="font-mono-tabular">{row.copies.join(', ')}</span>
+                      </span>
+                    )}
                   </button>
                   <div className="flex shrink-0 gap-0.5">
                     <button

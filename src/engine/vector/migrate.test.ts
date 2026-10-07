@@ -285,6 +285,7 @@ describe('a version 2 document', () => {
 
   it('keeps its guides, fillets, groups, links and pins through a link and a saved mark', () => {
     const spec = slabSpec('circle')
+    const inset: SlabSpec = { ...spec, width: 360, height: 360, radius: 180 }
     const circle = segsToContour(carveOutline(spec).segs)
     const document = stored({
       ...readable(upgradeV1(penDocument().v1)),
@@ -303,6 +304,19 @@ describe('a version 2 document', () => {
           fillRule: 'evenodd',
           carve: spec,
           pin: { centreOf: 'a' },
+        },
+        // An offset copy takes no pin: it goes where its source puts it.
+        {
+          id: 'c',
+          name: 'Inset −20',
+          parentId: 'g',
+          visible: true,
+          locked: false,
+          type: 'path',
+          operation: 'subtract',
+          contours: [segsToContour(carveOutline(inset).segs)],
+          fillRule: 'evenodd',
+          carve: inset,
           link: { kind: 'offset', of: 'a', distance: -20 },
         },
       ],

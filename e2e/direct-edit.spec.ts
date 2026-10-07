@@ -3554,3 +3554,364 @@ test("a polygon too small for its rounding dot to keep clear of its middle has n
   await expect.poll(() => handleIds(page)).toContain('radius')
   await expect(corner).toHaveCount(0)
 })
+
+/* ─── Offsets ─── */
+
+const offsetPanel = (page: Page) => page.getByRole('group', { name: 'Offset' })
+
+/** The Distance slider of the Offset popover, moved by keys from where it starts to `distance`. */
+async function setOffsetDistance(page: Page, distance: number) {
+  const slider = offsetPanel(page).getByRole('slider', { name: 'Distance' })
+  await slider.focus()
+  await page.keyboard.press('Home')
+  // The slider steps over 0, which offsets nothing.
+  const presses = distance + 120 - (distance > 0 ? 1 : 0)
+  for (let i = 0; i < presses; i++) await page.keyboard.press('ArrowRight')
+  await expect(offsetPanel(page).getByText(distance < 0 ? `Inset −${-distance}` : `Outset ${distance}`, { exact: true })).toBeVisible()
+}
+
+/** The source and its offset copy, read from the store: the copy's link, and how far apart their apothems are. */
+function ringOf(page: Page) {
+  return page.evaluate(() => {
+    const [source, copy] = window.__marque.store.getState().vectorDocument.objects as Array<{ carve?: PolygonSpec; link?: { kind: string; of: string; distance: number } }>
+    const apothem = (spec: PolygonSpec) => spec.radius * Math.cos(Math.PI / spec.sides)
+    return {
+      source: source.carve!,
+      copy: copy.carve ?? null,
+      link: copy.link ?? null,
+      thickness: copy.carve ? apothem(source.carve!) - apothem(copy.carve) : null,
+    }
+  })
+}
+
+test("ref 1: Offset… −55 as a cut makes the hexagon a ring that stays 55 thick, its inner corners 5, as the hexagon is resized; undo, redo and Detach", async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await addSlab(page, 'Polygon')
+  // Rounded to 60, as the polygon's dot does it (step 6).
+  await page.evaluate(() => {
+    const state = window.__marque.store.getState()
+    const [hexagon] = state.illustrator.layers
+    state.commitLayerEdits({ label: 'Round corners', edits: [{ layerId: hexagon.id, carve: { ...(hexagon.carve as PolygonSpec), cornerRadius: 60 } }], select: [hexagon.id] })
+  })
+  const f = await frame(page)
+  const depth = await undoDepth(page)
+
+  // The popover previews the ring as the slider moves: ink in the ring, none in the middle.
+  await selectionBar(page).getByRole('button', { name: 'Offset…' }).click()
+  await expect(offsetPanel(page).getByRole('switch', { name: 'As cut' })).toHaveAttribute('aria-checked', 'true')
+  await setOffsetDistance(page, -55)
+  const inRing = f.at(-145.7 * Math.sin(Math.PI / 3), -145.7 * Math.cos(Math.PI / 3))
+  await expect.poll(() => isEmpty(page, f.at(0, 0))).toBe(true)
+  expect(await isInk(page, inRing)).toBe(true)
+  // Added rather than cut, the inset lies inside the hexagon and changes nothing: the popover says what As cut does.
+  const inside = offsetPanel(page).getByText('Lies inside its source \u2014 As cut makes a ring', { exact: true })
+  await expect(inside).toBeHidden()
+  await offsetPanel(page).getByRole('switch', { name: 'As cut' }).click()
+  await expect(inside).toBeVisible()
+  await offsetPanel(page).getByRole('switch', { name: 'As cut' }).click()
+  await expect(inside).toBeHidden()
+  expect(await undoDepth(page)).toBe(depth)
+
+  // Its button, named for what it makes, makes it, one undo step, and selects the copy, named for what it follows.
+  await offsetPanel(page).getByRole('button', { name: 'Cut inset −55' }).click()
+  expect(await undoDepth(page)).toBe(depth + 1)
+  await expect(selectionSummary(page)).toContainText('Inset −55 of 01')
+  // The keyboard goes on to the copy's own Distance, as the popover and its Offset… go.
+  await expect(selectionBar(page).getByRole('group', { name: 'Offset' }).getByRole('slider', { name: 'Distance' })).toBeFocused()
+  const ring = await ringOf(page)
+  expect(ring.link).toMatchObject({ kind: 'offset', distance: -55 })
+  expect(ring.copy).toMatchObject({ kind: 'polygon', cornerRadius: 5 })
+  expect(Math.abs(ring.thickness! - 55)).toBeLessThanOrEqual(0.01)
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  await page.keyboard.press('Escape')
+  await pointerAway(page, f)
+  expect(await isEmpty(page, f.at(0, 0))).toBe(true)
+  expect(await isInk(page, inRing)).toBe(true)
+  expect(await isEmpty(page, f.at(0, -215))).toBe(true)
+
+  // The drawer names the copy by its distance and the layer it follows.
+  const drawer = await openLayers(page)
+  await expect(drawer.getByRole('button', { name: '02 Inset \u221255 · 01', exact: true })).toBeVisible()
+  // The hexagon's row says which copies follow it: their numbers after a glyph, in full in its title.
+  const source = drawer.getByRole('button', { name: '01 Polygon · 6, copies 02', exact: true })
+  await expect(source.getByTitle('Copies 02 follow this shape')).toHaveText('02')
+  await closeLayers(page)
+
+  // Resizing the hexagon by a corner keeps the ring 55 thick, its inner corners 5, as one undo step.
+  await click(page, inRing)
+  await expect(selectionSummary(page)).toContainText('Polygon')
+  await expect(selectionBar(page).getByText('Copies 02', { exact: true })).toBeVisible()
+  const se = await handle(page, 'se')
+  await drag(page, se, { x: se.x + 40 * f.unit, y: se.y + 40 * f.unit })
+  expect(await undoDepth(page)).toBe(depth + 2)
+  const resized = await ringOf(page)
+  expect(resized.source.radius).toBeGreaterThan(220)
+  expect(Math.abs(resized.thickness! - 55)).toBeLessThanOrEqual(0.01)
+  expect(resized.copy).toMatchObject({ cornerRadius: 5, center: resized.source.center })
+
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(async () => (await ringOf(page)).source.radius).toBe(200)
+  expect((await ringOf(page)).copy).toEqual(ring.copy)
+  await page.keyboard.press('ControlOrMeta+Shift+z')
+  await expect.poll(async () => (await ringOf(page)).source.radius).toBe(resized.source.radius)
+  expect((await ringOf(page)).copy).toEqual(resized.copy)
+
+  // Detach keeps the ring as it is, and the hexagon no longer moves it.
+  await page.evaluate(() => {
+    const state = window.__marque.store.getState()
+    state.setSelection([state.illustrator.layers[1].id])
+  })
+  // The bar's Distance moves the copy, one undo step a change.
+  const before = await undoDepth(page)
+  await selectionBar(page).getByRole('group', { name: 'Offset' }).getByRole('slider', { name: 'Distance' }).focus()
+  await page.keyboard.press('ArrowLeft')
+  await expect(selectionSummary(page)).toContainText('Inset \u221256 of 01')
+  expect(await undoDepth(page)).toBe(before + 1)
+  expect(Math.abs((await ringOf(page)).thickness! - 56)).toBeLessThanOrEqual(0.01)
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect(selectionSummary(page)).toContainText('Inset \u221255 of 01')
+  // Taken past 0, the cut copy cuts the whole hexagon away, and the bar says so, as the popover does.
+  const cutsAll = selectionBar(page).getByText('Cuts the whole shape away.')
+  await expect(cutsAll).toBeHidden()
+  await page.keyboard.press('End')
+  await expect(selectionSummary(page)).toContainText('Outset 120 of 01')
+  await expect(cutsAll).toBeVisible()
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect(selectionSummary(page)).toContainText('Inset \u221255 of 01')
+  await expect(cutsAll).toBeHidden()
+  // Scaling the copy by itself with Alt+Up is an edit of its own: it lets go, and the HUD says so. Undo links it again.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  await page.keyboard.press('Alt+ArrowUp')
+  await expect(page.locator('main').getByText('detached', { exact: true })).toBeVisible()
+  expect((await ringOf(page)).link).toBeNull()
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(async () => (await ringOf(page)).link).toMatchObject({ kind: 'offset', distance: -55 })
+  await selectionBar(page).getByRole('button', { name: 'Detach' }).click()
+  expect((await ringOf(page)).link).toBeNull()
+  expect((await ringOf(page)).copy).toEqual(resized.copy)
+  await expect(selectionSummary(page)).not.toContainText('Inset')
+})
+
+test("ref 1's ring: the copy's Out 1 sets an exact distance, ] on the copy steps the hexagon's sides, and with the hexagon locked the copy says why it stays", async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await addSlab(page, 'Polygon')
+  const ids = await page.evaluate(() => {
+    const state = window.__marque.store.getState()
+    const [hexagon] = state.illustrator.layers
+    state.commitLayerEdits({ label: 'Round corners', edits: [{ layerId: hexagon.id, carve: { ...(hexagon.carve as PolygonSpec), cornerRadius: 60 } }], select: [hexagon.id] })
+    state.addOffset(hexagon.id, -55, true)
+    return { hexagon: hexagon.id, copy: window.__marque.store.getState().illustrator.selectedLayerIds[0] }
+  })
+  await expect(selectionSummary(page)).toContainText('Inset \u221255 of 01')
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  const f = await frame(page)
+
+  // A step out, as a finger sets an exact distance: one undo step, the ring 54 thick.
+  const depth = await undoDepth(page)
+  const offset = selectionBar(page).getByRole('group', { name: 'Offset' })
+  await offset.getByRole('button', { name: 'Out 1' }).click()
+  await expect(selectionSummary(page)).toContainText('Inset \u221254 of 01')
+  expect(await undoDepth(page)).toBe(depth + 1)
+  expect(Math.abs((await ringOf(page)).thickness! - 54)).toBeLessThanOrEqual(0.01)
+  // On a phone the Distance has a row of its own, so its track is long enough to aim at.
+  const track = await offset.getByRole('slider', { name: 'Distance' }).evaluate((thumb) => thumb.closest('.touch-none')!.getBoundingClientRect().width)
+  expect(track).toBeGreaterThanOrEqual(f.box.width < 640 ? 160 : 120)
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect(selectionSummary(page)).toContainText('Inset \u221255 of 01')
+  // With Shift a step is 5, and the readout says the distance plainly, its sign and all.
+  await offset.getByRole('button', { name: 'In 1' }).click({ modifiers: ['Shift'] })
+  await expect(selectionSummary(page)).toContainText('Inset \u221260 of 01')
+  await expect(offset.getByText('Inset \u221260', { exact: true })).toHaveCSS('font-size', '12px')
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect(selectionSummary(page)).toContainText('Inset \u221255 of 01')
+  // Past 0 the note that it cuts the whole shape away takes a line of its own on a phone: the track keeps its length, the readout one line.
+  await page.evaluate((copy) => window.__marque.store.getState().setOffsetDistance(copy, 12), ids.copy)
+  await expect(offset.getByText('Cuts the whole shape away.')).toBeVisible()
+  const past = await offset.getByRole('slider', { name: 'Distance' }).evaluate((thumb) => thumb.closest('.touch-none')!.getBoundingClientRect().width)
+  expect(past).toBeGreaterThanOrEqual(f.box.width < 640 ? 160 : 120)
+  const readout = offset.getByText('Outset 12', { exact: true })
+  expect(await readout.evaluate((el) => el.getBoundingClientRect().height)).toBeLessThan(24)
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect(selectionSummary(page)).toContainText('Inset \u221255 of 01')
+  // The copy draws no corner circles of its own: its corners share the hexagon's centres.
+  expect(await page.evaluate((id) => window.__marque.cornerCircles(id).length, ids.copy)).toBe(0)
+  expect(await page.evaluate((id) => window.__marque.cornerCircles(id).length, ids.hexagon)).toBe(6)
+
+  // ] on the copy steps the hexagon it follows, and the copy follows: one undo step, and the HUD says which moved.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur())
+  await page.keyboard.press(']')
+  await expect.poll(async () => [(await ringOf(page)).source.sides, (await ringOf(page)).copy?.sides]).toEqual([7, 7])
+  await expect(page.locator('main div[aria-hidden="true"]').getByText('steps the source', { exact: true })).toBeVisible()
+  await expect(page.locator('main p[role="status"]')).toHaveText('steps the source · 7 sides')
+  expect(Math.abs((await ringOf(page)).thickness! - 55)).toBeLessThanOrEqual(0.01)
+  expect(await undoDepth(page)).toBe(depth + 1)
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(async () => (await ringOf(page)).source.sides).toBe(6)
+
+  // With the hexagon locked, an arrow on its copy moves nothing and says why.
+  await page.evaluate(({ hexagon, copy }) => {
+    const state = window.__marque.store.getState()
+    state.updateIllustratorLayer(hexagon, { locked: true })
+    state.setSelection([copy])
+  }, ids)
+  const locked = await undoDepth(page)
+  await page.keyboard.press('ArrowRight')
+  await expect(page.locator('main div[aria-hidden="true"]').getByText('source is locked', { exact: true })).toBeVisible()
+  await expect(page.locator('main p[role="status"]')).toHaveText('source is locked: unlock 01 to move it')
+  expect(await undoDepth(page)).toBe(locked)
+  expect((await ringOf(page)).source.center).toEqual({ x: 0, y: 0 })
+  // A drag from inside the copy says the same while it lasts.
+  await pointerAway(page, f)
+  const [from, to] = [f.at(0, 0), f.at(50, 0)]
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  await page.mouse.move(to.x, to.y, { steps: 10 })
+  await expect(page.locator('main div[aria-hidden="true"]').getByText('source is locked', { exact: true })).toBeVisible()
+  await page.mouse.up()
+  expect(await undoDepth(page)).toBe(locked)
+  expect((await ringOf(page)).source.center).toEqual({ x: 0, y: 0 })
+})
+
+test('the drawer names an offset copy whole, a long distance and an empty one alike', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await addSlab(page, 'Polygon')
+  // A hexagon 100 round: an inset of 120 leaves nothing of it.
+  await page.evaluate(() => {
+    const state = window.__marque.store.getState()
+    const [hexagon] = state.illustrator.layers
+    state.commitLayerEdits({ label: 'Resize', edits: [{ layerId: hexagon.id, carve: { ...(hexagon.carve as PolygonSpec), radius: 100 } }] })
+    state.addOffset(hexagon.id, 100, false)
+    state.addOffset(hexagon.id, -120, true)
+  })
+  const drawer = await openLayers(page)
+  const rows = [drawer.getByRole('button', { name: '02 Inset \u2212120 · 01, empty', exact: true }), drawer.getByRole('button', { name: '03 Outset 100 · 01', exact: true })]
+  for (const row of rows) {
+    await expect(row).toBeVisible()
+    const name = row.locator('span.truncate')
+    expect(await name.evaluate((span) => span.scrollWidth - span.clientWidth)).toBeLessThanOrEqual(0)
+  }
+  await closeLayers(page)
+})
+
+test('the drawer keeps a source row\'s number and name whole when three copies follow it', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  await addSlab(page, 'Polygon')
+  await page.evaluate(() => {
+    const state = window.__marque.store.getState()
+    const [hexagon] = state.illustrator.layers
+    for (const d of [-55, 12, 20]) state.addOffset(hexagon.id, d, d < 0)
+    state.setSelection([hexagon.id])
+  })
+  const drawer = await openLayers(page)
+  const row = drawer.getByRole('button', { name: /^01 .*, copies 02, 03, 04$/ })
+  await expect(row).toBeVisible()
+  const [name, copies] = await row.locator(':scope > span').all()
+  // The name is drawn whole; the copies after it give way, and stay inside the row.
+  expect(await name.evaluate((span) => span.scrollWidth - span.clientWidth)).toBeLessThanOrEqual(0)
+  const rowBox = (await row.boundingBox())!
+  const copiesBox = (await copies.boundingBox())!
+  expect(copiesBox.x + copiesBox.width).toBeLessThanOrEqual(rowBox.x + rowBox.width + 0.5)
+  expect(await drawer.locator('ul').first().evaluate((list) => list.scrollWidth - list.clientWidth)).toBeLessThanOrEqual(0)
+  await closeLayers(page)
+})
+
+test('an offset of a pen shape is made by the general method, follows a drag of its shape at the commit, and a drag of the copy moves the shape', async ({ page }) => {
+  await openVectorMaker(page)
+  await startOver(page)
+  // An L, drawn with the pen.
+  await page.evaluate(() => window.__marque.store.getState().addPenShape('M-120,-120L40,-120L40,-20L-20,-20L-20,120L-120,120Z'))
+  const f = await frame(page)
+  const depth = await undoDepth(page)
+  await selectionBar(page).getByRole('button', { name: 'Offset…' }).click()
+  // As cut follows the side of 0 until it is set: on for an inset, off for an outset.
+  await expect(offsetPanel(page).getByRole('switch', { name: 'As cut' })).toHaveAttribute('aria-checked', 'true')
+  await setOffsetDistance(page, 12)
+  await expect(offsetPanel(page).getByRole('switch', { name: 'As cut' })).toHaveAttribute('aria-checked', 'false')
+  await offsetPanel(page).getByRole('button', { name: 'Add outset 12' }).click()
+  expect(await undoDepth(page)).toBe(depth + 1)
+  await expect(selectionSummary(page)).toContainText('Outset 12 of 01')
+
+  /** How far the copy's points stray from lying 12 from the L, the worst of them. */
+  const stray = () =>
+    page.evaluate(() => {
+      const [shape, copy] = window.__marque.store.getState().vectorDocument.objects as Array<{ contours: Array<{ segments: Array<{ point: Point }> }>; carve?: unknown }>
+      const outline = shape.contours[0].segments.map((segment) => segment.point)
+      const away = (p: Point) =>
+        Math.min(
+          ...outline.map((a, i) => {
+            const b = outline[(i + 1) % outline.length]
+            const dx = b.x - a.x
+            const dy = b.y - a.y
+            const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy)))
+            return Math.hypot(p.x - a.x - dx * t, p.y - a.y - dy * t)
+          }),
+        )
+      return { free: copy.carve === undefined, worst: Math.max(...copy.contours[0].segments.map((segment) => Math.abs(away(segment.point) - 12))) }
+    })
+  expect(await stray()).toEqual({ free: true, worst: expect.any(Number) })
+  expect((await stray()).worst).toBeLessThan(0.5)
+
+  // Dragging the copy moves the L, and the HUD says so; the commit makes the copy again around it.
+  const grip = f.at(-70, 60)
+  await page.mouse.move(grip.x, grip.y)
+  await page.mouse.down()
+  await page.mouse.move(grip.x + 30 * f.unit, grip.y + 20 * f.unit, { steps: 10 })
+  await expect(page.locator('main').getByText(/^moves the source/)).toBeVisible()
+  await page.mouse.up()
+  expect(await undoDepth(page)).toBe(depth + 2)
+  const outline = await page.evaluate(() => (window.__marque.store.getState().vectorDocument.objects[0] as { contours: Array<{ segments: Array<{ point: Point }> }> }).contours[0].segments[0].point)
+  expect(Math.abs(outline.x - -120)).toBeGreaterThan(10)
+  expect((await stray()).worst).toBeLessThan(0.5)
+  await expect(selectionSummary(page)).toContainText('Outset 12 of 01')
+
+  // A nudge of the copy nudges the L too, and the HUD says so.
+  await pointerAway(page, f)
+  await page.keyboard.press('ArrowRight')
+  await expect(page.locator('main').getByText('moves the source', { exact: true })).toBeVisible()
+  await expect
+    .poll(() => page.evaluate(() => (window.__marque.store.getState().vectorDocument.objects[0] as { contours: Array<{ segments: Array<{ point: Point }> }> }).contours[0].segments[0].point.x))
+    .toBeCloseTo(outline.x + 1, 6)
+  expect((await stray()).worst).toBeLessThan(0.5)
+  await expect(selectionSummary(page)).toContainText('Outset 12 of 01')
+
+  // ] on the copy steps nothing: a copy of a free shape keeps its source's shape, and says so.
+  const sides = await page.evaluate(() => window.__marque.store.getState().ui.carve.polygonSides)
+  const before = await undoDepth(page)
+  await page.keyboard.press(']')
+  await expect(page.locator('main div[aria-hidden="true"]').getByText("Offset copies keep their source's shape", { exact: true })).toBeVisible()
+  await expect(page.locator('main p[role="status"]')).toHaveText("Offset copies keep their source's shape")
+  expect(await undoDepth(page)).toBe(before)
+  expect(await page.evaluate(() => window.__marque.store.getState().ui.carve.polygonSides)).toBe(sides)
+
+  // A double-click on one of the copy's points edits it by itself: it lets go, and the HUD and the status line say so.
+  const status = page.locator('main').getByRole('status')
+  const linkOf = () => page.evaluate(() => (window.__marque.store.getState().vectorDocument.objects[1] as { link?: unknown }).link ?? null)
+  const corner = await page.evaluate(() => (window.__marque.store.getState().vectorDocument.objects[1] as { contours: Array<{ segments: Array<{ point: Point }> }> }).contours[0].segments[0].point)
+  const linked = await undoDepth(page)
+  const point = f.at(corner.x, corner.y)
+  await page.mouse.dblclick(point.x, point.y)
+  await expect.poll(linkOf).toBeNull()
+  await expect(hudLabel(page, 'detached')).toBeVisible()
+  await expect(status).toHaveText(/^Detached 02: it no longer follows its shape/)
+  await page.keyboard.press('ControlOrMeta+z')
+  await expect.poll(() => undoDepth(page)).toBe(linked)
+  expect(await linkOf()).toMatchObject({ kind: 'offset', distance: 12 })
+
+  // The L deleted: the copy keeps its outline and lets go in the same undo step, and says so.
+  await page.evaluate(() => {
+    const state = window.__marque.store.getState()
+    state.setSelection([state.illustrator.layers[0].id])
+  })
+  await page.keyboard.press('Delete')
+  await expect(status).toHaveText(/^Detached 01: the shape it followed is gone/)
+  await expect(hudLabel(page, 'detached')).toBeVisible()
+  expect(await undoDepth(page)).toBe(linked + 1)
+  const left = await page.evaluate(() => window.__marque.store.getState().vectorDocument.objects as Array<{ name: string; link?: unknown }>)
+  expect(left).toHaveLength(1)
+  expect(left[0].link).toBeUndefined()
+  expect(left[0].name).toMatch(/^Shape \d+$/)
+})

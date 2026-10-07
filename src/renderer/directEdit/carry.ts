@@ -10,7 +10,8 @@ function overlaps(a: paper.PathItem, b: paper.PathItem): boolean {
  * Cuts that belong to the shapes being moved: cuts above them that touch
  * them and no other material below. They travel (and turn) with their slab,
  * so a carved piece moves as one. Cuts shared with another shape stay put.
- * Cuts in `moving` move anyway, so they are not looked at.
+ * Cuts in `moving` move anyway, so they are not looked at, and nor are
+ * offset copies, which go where their sources put them.
  */
 export function carriedCuts(
   doc: IllustratorDocument,
@@ -22,7 +23,7 @@ export function carriedCuts(
   const skip = new Set(moving)
   const carried: string[] = []
   doc.layers.forEach((cut, cutIndex) => {
-    if (cut.operation !== 'subtract' || !cut.visible || cut.locked || moved.has(cut.id) || skip.has(cut.id)) return
+    if (cut.operation !== 'subtract' || !cut.visible || cut.locked || cut.link || moved.has(cut.id) || skip.has(cut.id)) return
     const cutItem = items.get(cut.id)
     if (!cutItem) return
     let touchesMoved = false

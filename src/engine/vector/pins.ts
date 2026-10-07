@@ -4,6 +4,7 @@ import { roundCarveSpec, type CarveSpec } from '../carve/spec.ts'
 import { translateCarve } from '../carve/edit.ts'
 import { segsToContour } from '../carve/sync.ts'
 import { asCircle, type CircleSource } from '../geometry/asCircle.ts'
+import { isEmptyCopy } from './offsets.ts'
 import type { PathObject, VectorObject } from './types.ts'
 
 /**
@@ -56,9 +57,12 @@ export function shapeCentre(source: CircleSource & { frame?: { rotation: number 
   return minX <= maxX ? rotate({ x: (minX + maxX) / 2, y: (minY + maxY) / 2 }, rotation) : null
 }
 
-/** Can an object take a pin: is it a recipe? A free shape stores no centre. */
+/**
+ * Can an object take a pin: is it a recipe? A free shape stores no centre,
+ * and an offset copy goes where its source puts it.
+ */
 export function takesPin(object: VectorObject | undefined): object is PathObject & { carve: CarveSpec } {
-  return object?.type === 'path' && object.carve !== undefined
+  return object?.type === 'path' && object.carve !== undefined && object.link?.kind !== 'offset'
 }
 
 /** How far a pinned centre may sit from its target and still be on it: past the rounding of stored recipes. */
@@ -128,12 +132,23 @@ function centredOn(object: PathObject & { carve: CarveSpec }, centre: Vec): Path
  * changed moves onto its centre, and anything pinned to it follows in turn.
  * A recipe whose own edit took its centre off its target's, which did not
  * change, lets go: dragging it away unpins it. A pin to an object that is
- * gone, or has no centre, goes. With `changed` null, as a document opens,
+ * gone, or has no centre, goes; one to an offset copy its source left empty
+ * stays, and the recipe waits where it is until the copy comes back, unless
+ * its own edit moved it (against `was`, the objects before the edit): then
+ * it lets go, as from any target. With `changed` null, as a document opens,
  * pins are only checked: nothing moves, and a pin whose recipe is not on
- * its target's centre goes, so what was stored is what is read.
+ * its target's centre goes, so what was stored is what is read. With
+ * `letGo` false, a recipe its own edit took off its target is held for now:
+ * the target may yet move onto it, as an offset copy does when its source
+ * moved in the same edit, and the follow pass decides once all has settled.
  * Returns the objects, the same array when nothing moved, and every id moved.
  */
-export function followPins(objects: VectorObject[], changed: ReadonlySet<string> | null): { objects: VectorObject[]; moved: Set<string> } {
+export function followPins(
+  objects: VectorObject[],
+  changed: ReadonlySet<string> | null,
+  letGo = true,
+  was: ReadonlyMap<string, VectorObject> | null = null,
+): { objects: VectorObject[]; moved: Set<string> } {
   const moved = new Set<string>()
   let next = breakPinLoops(objects)
   if (!next.some((object) => object.type === 'path' && object.pin)) return { objects: next, moved }
@@ -144,6 +159,12 @@ export function followPins(objects: VectorObject[], changed: ReadonlySet<string>
     const updated = next.map((object) => {
       if (object.type !== 'path' || !object.pin) return object
       const target = byId.get(object.pin.centreOf)
+      // An offset copy left empty by its source comes back when the source grows: the recipe waits where it is, unless it was moved.
+      if (takesPin(object) && target !== object && isEmptyCopy(target)) {
+        const before = was?.get(object.id)
+        const movedItself = letGo && changed?.has(object.id) && takesPin(before) && distance(recipeCentre(before.carve), recipeCentre(object.carve)) > PIN_SLACK
+        return movedItself ? unpinned(object) : object
+      }
       const centre = target?.type === 'path' && target !== object ? shapeCentre(target) : null
       if (!takesPin(object) || !centre) return unpinned(object)
       const own = recipeCentre(object.carve)
@@ -155,7 +176,7 @@ export function followPins(objects: VectorObject[], changed: ReadonlySet<string>
         return centred
       }
       // As a document opens, a recipe off its target's centre is not held there: its pin goes, and it stays where it was.
-      const lets = changed === null || changed.has(object.id)
+      const lets = changed === null || (letGo && changed.has(object.id))
       if (lets && distance(own, centre) > PIN_SLACK) return unpinned(object)
       return object
     })

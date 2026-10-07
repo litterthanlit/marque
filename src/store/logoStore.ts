@@ -21,6 +21,7 @@ import { carveFromCut, carveLayerName, clampSides, DEFAULT_SIDES, roundCarveSpec
 import { stepPolygonSides, translateCarve } from '../engine/carve/edit.ts'
 import { createEmptyVectorDocument, repairStructure, sanitizeVectorDocument } from '../engine/vector/document.ts'
 import { detachGuide, follow, type DocumentLists } from '../engine/vector/follow.ts'
+import { MAX_OFFSET, detachOffset, followsAnyOf, isEmptyCopy, isOffsetCopy, nameDetached, offsetName, offsetRoot, renameDetached } from '../engine/vector/offsets.ts'
 import { closedContourOf, constructionLines, makeGuide, moveGuideShape, respokeGuides, tangentFrame, type GuideShape, type GuideStyle } from '../engine/vector/guides.ts'
 import { asCircle, type Circle } from '../engine/geometry/asCircle.ts'
 import { composeVectorMarkCached } from '../engine/vector/export.ts'
@@ -105,8 +106,8 @@ export interface AnchorRef {
   contourIndex?: number
 }
 
-/** Key edits that run together into one undo step: arrow nudges, and turns and scales with Alt. */
-export type HistoryMergeKind = 'nudge' | 'key-turn' | 'key-scale'
+/** Key edits that run together into one undo step: arrow nudges, turns and scales with Alt, and arrow steps of an offset's distance. */
+export type HistoryMergeKind = 'nudge' | 'key-turn' | 'key-scale' | 'offset-distance'
 
 export type EditorTool = 'pen' | 'punch' | 'channel' | 'slice' | 'guide'
 
@@ -185,7 +186,8 @@ interface LogoStore {
   addSlab: (kind: SlabEntry) => void
   /**
    * A side more or fewer on every selected polygon, from 3 to 12: one undo
-   * step. With no polygon selected, a side more or fewer on the next one.
+   * step. A selected offset copy steps the polygon it follows. With no
+   * polygon selected, a side more or fewer on the next one.
    */
   stepPolygonSides: (delta: 1 | -1) => void
   /** A spark's shapes as layers under everything else, beside the ink: one undo step. */
@@ -202,6 +204,20 @@ interface LogoStore {
   setLayersOpen: (open: boolean) => void
   /** A cut drawn with a carve tool, on top and selected; `pinTo` pins a punch's centre to that object's centre. */
   addCarveCut: (spec: CutSpec, pinTo?: string | null) => void
+  /**
+   * A copy of an object `distance` larger (or, negative, smaller), linked to
+   * it so it follows it: directly above it, in its group, cutting with
+   * `asCut` or else adding or cutting as it does. Selected; one undo step.
+   */
+  addOffset: (id: string, distance: number, asCut: boolean) => void
+  /**
+   * How far an offset copy lies from its source: one undo step, or with
+   * `merge`, as arrow keys on the Distance slider give it, joined to the
+   * last such step on the same copy (see `HISTORY_MERGE_MS`).
+   */
+  setOffsetDistance: (id: string, distance: number, merge?: 'offset-distance') => void
+  /** The given offset copies, or the selected ones, stop following their sources and keep their geometry: an empty one, with none to keep, stays. */
+  detachOffsets: (ids?: string[]) => void
   /** Let go of the selected recipes' pins: one undo step. */
   unpinSelection: () => void
   /** Let go of every pin held to an object's centre: one undo step. */
@@ -360,9 +376,15 @@ export const useLogoStore = create<LogoStore>()((set) => ({
       const objects = state.vectorDocument.objects
       const index = objects.findIndex((candidate) => candidate.id === id)
       const original = objects[index]
-      if (!original || original.type !== 'path') return {}
-      // The copy sits just above, in the same group.
-      const copy: VectorObject = { ...objectFromLayer(duplicateLayer(vectorObjectToLayer(original))), parentId: original.parentId }
+      // An empty offset copy has no geometry to copy, as it has none to keep on Detach.
+      if (!original || original.type !== 'path' || isEmptyCopy(original)) return {}
+      // The copy sits just above, in the same group. A copy of an offset copy follows nothing, and is named so.
+      const layer = duplicateLayer(vectorObjectToLayer(original))
+      const named = isOffsetCopy(original) && original.name === offsetName(original.link.distance)
+      const copy: VectorObject = {
+        ...objectFromLayer(named ? { ...layer, name: nameDetached(original, original.link.distance, shapeNames(state)) } : layer),
+        parentId: original.parentId,
+      }
       return commitObjects(state, 'Duplicate layer', insertObjects(objects, [copy], index + 1), objectSelection([copy.id]))
     }),
 
@@ -404,11 +426,12 @@ export const useLogoStore = create<LogoStore>()((set) => ({
 
   stepPolygonSides: (delta) =>
     set((state) => {
-      const ids = new Set(state.illustrator.selectedLayerIds)
+      // An offset copy's sides are its source's: a step on the copy steps the shape it follows, as a nudge of it moves that shape.
+      const ids = new Set(state.illustrator.selectedLayerIds.map((id) => offsetRoot(state.vectorDocument.objects, id)))
       let sides: number | null = null
       const stepped: PathObject[] = []
       const objects = updateObjects(state.vectorDocument.objects, (object) => {
-        if (object.type !== 'path' || !ids.has(object.id) || !object.visible || object.locked || object.carve?.kind !== 'polygon') return object
+        if (object.type !== 'path' || !ids.has(object.id) || !object.visible || object.locked || object.link || object.carve?.kind !== 'polygon') return object
         const carve = stepPolygonSides(object.carve, delta)
         sides = carve.sides
         if (carve === object.carve) return object
@@ -418,8 +441,10 @@ export const useLogoStore = create<LogoStore>()((set) => ({
         stepped.push(named)
         return named
       })
-      // With none selected, the keys step the sides of the next polygon, as the punch's Sides control does.
+      // With none selected, the keys step the sides of the next polygon, as the punch's Sides control does;
+      // a copy of anything but a polygon keeps its source's shape, and steps nothing.
       if (sides === null) {
+        if (state.illustrator.selectedLayerIds.some((id) => isOffsetCopy(state.vectorDocument.objects.find((object) => object.id === id)))) return {}
         const next = clampSides(state.ui.carve.polygonSides + delta)
         return next === state.ui.carve.polygonSides ? {} : { ui: { ...state.ui, carve: { ...state.ui.carve, polygonSides: next } } }
       }
@@ -513,6 +538,52 @@ export const useLogoStore = create<LogoStore>()((set) => ({
       const cut = target ? writePin(made, target.id) : made
       // The carve tool stays active so cuts can be made one after another.
       return commitObjects(state, `Add ${layer.name}`, insertObjects(state.vectorDocument.objects, [cut], 'top'), objectSelection([cut.id]))
+    }),
+
+  addOffset: (id, distance, asCut) =>
+    set((state) => {
+      const objects = state.vectorDocument.objects
+      const index = objects.findIndex((object) => object.id === id)
+      const source = objects[index]
+      if (source?.type !== 'path' || !Number.isFinite(distance) || distance === 0) return {}
+      const within = withinOffsetReach(distance)
+      const copy: PathObject = {
+        id: crypto.randomUUID(),
+        type: 'path',
+        name: offsetName(within),
+        parentId: source.parentId,
+        visible: true,
+        locked: false,
+        operation: asCut ? 'subtract' : source.operation,
+        // The follow pass makes its geometry from the source, in this same edit.
+        contours: [],
+        fillRule: 'evenodd',
+        link: { kind: 'offset', of: source.id, distance: within },
+      }
+      return commitObjects(state, asCut ? 'Offset as cut' : 'Offset', insertObjects(objects, [copy], index + 1), objectSelection([copy.id]))
+    }),
+
+  setOffsetDistance: (id, distance, merge) =>
+    set((state) => {
+      if (!Number.isFinite(distance) || distance === 0) return {}
+      const within = withinOffsetReach(distance)
+      const objects = updateObject(state.vectorDocument.objects, id, (object) => {
+        if (!isOffsetCopy(object) || object.link.distance === within) return object
+        // A name the copy was given keeps; the name it was made with follows its distance.
+        const name = object.name === offsetName(object.link.distance) ? offsetName(within) : object.name
+        return { ...object, name, link: { ...object.link, distance: within } }
+      })
+      return commitObjects(state, 'Offset distance', objects, undefined, undefined, merge && `${merge} ${id}`)
+    }),
+
+  detachOffsets: (ids) =>
+    set((state) => {
+      const wanted = new Set(ids ?? state.illustrator.selectedLayerIds)
+      const objects = updateObjects(state.vectorDocument.objects, (object) =>
+        // An empty copy has no geometry to keep: it stays linked until its source grows back.
+        object.type === 'path' && wanted.has(object.id) && !isEmptyCopy(object) ? detachOffset(object) : object,
+      )
+      return commitObjects(state, 'Detach', objects)
     }),
 
   unpinSelection: () =>
@@ -859,6 +930,11 @@ function shapeNames(state: LogoStore): () => string {
 /** Vector Maker's own history is capped. A step holds two arrays of references, not two documents. */
 const MAX_VECTOR_HISTORY = 100
 
+/** A distance no further than a copy may lie from its source. */
+function withinOffsetReach(distance: number): number {
+  return Math.max(-MAX_OFFSET, Math.min(MAX_OFFSET, distance))
+}
+
 function capHistory<T>(stack: T[]): T[] {
   return stack.length > MAX_VECTOR_HISTORY ? stack.slice(stack.length - MAX_VECTOR_HISTORY) : stack
 }
@@ -873,7 +949,8 @@ export const HISTORY_MERGE_MS = 1000
  * every list holds the same items as before, the edit is no step: only a new
  * selection, if one is given, is applied. Otherwise one history step records
  * the lists and selections from both sides, and redo is cleared. `document`
- * replaces the whole document (its id, name, source and lists) along with them.
+ * replaces the whole document (its id, name, source and lists) along with
+ * them, and is followed as a document opens: its copies and pins as stored.
  *
  * A key edit with a `merge` key joins the newest step instead when that step
  * has the same key, its last edit came less than `HISTORY_MERGE_MS` ago,
@@ -892,12 +969,15 @@ function commitDocument(
   const current = state.vectorDocument
   const base = document ?? current
   const before = listsOf(current)
-  // Groups stay runs under their headers, as reading the document would make them.
-  const after = follow(before, {
+  // Groups stay runs under their headers, as reading the document would make them. A whole document opens as stored, not as an edit of the one it replaces.
+  const followed = follow(document ? null : before, {
     objects: repairStructure(written.objects ?? base.objects),
     guides: written.guides ?? base.guides,
     fillets: written.fillets ?? base.fillets,
   })
+  // A copy that stopped following no longer takes its name from what it followed.
+  let names: (() => string) | null = null
+  const after = document ? followed : { ...followed, objects: renameDetached(before.objects, followed.objects, () => (names ??= shapeNames(state))()) }
   const lists: DocumentLists = {
     objects: sameItems(before.objects, after.objects) ? before.objects : after.objects,
     guides: sameItems(before.guides, after.guides) ? before.guides : after.guides,
@@ -909,7 +989,7 @@ function commitDocument(
   freezeInDevelopment(before.objects, lists.objects)
   freezeInDevelopment(before.guides, lists.guides)
   freezeInDevelopment(before.fillets, lists.fillets)
-  const selectionAfter = selection ?? state.selection
+  const selectionAfter = withoutGone(selection ?? state.selection, lists.objects)
   const now = Date.now()
   const last = state.vectorUndoStack.at(-1)
   const joins =
@@ -944,6 +1024,14 @@ function commitDocument(
     vectorUndoStack: joins ? [...state.vectorUndoStack.slice(0, -1), step] : capHistory([...state.vectorUndoStack, step]),
     vectorRedoStack: [],
   }
+}
+
+/** A selection without objects an edit's follow pass took away, as an empty offset copy goes with its source. */
+function withoutGone(selection: VectorSelection, objects: readonly VectorObject[]): VectorSelection {
+  if (!selection.targets.some((target) => target.type !== 'guide')) return selection
+  const ids = new Set(objects.map((object) => object.id))
+  const targets = selection.targets.filter((target) => target.type === 'guide' || ids.has(target.objectId))
+  return targets.length === selection.targets.length ? selection : { targets }
 }
 
 /** An edit of the objects alone: see `commitDocument`. */
@@ -1054,7 +1142,8 @@ function layerUpdate(
     const next = update(layer)
     const sameGeometry =
       next.pathData === layer.pathData && next.carve === layer.carve && sameTransform(next.transform, layer.transform)
-    return sameGeometry ? writeLayerFields(object, next) : objectFromLayer(next, object)
+    // New geometry of its own: an offset copy stops following its source.
+    return sameGeometry ? writeLayerFields(object, next) : detachOffset(objectFromLayer(next, object))
   })
   return commitObjects(state, label, objects)
 }
@@ -1072,9 +1161,12 @@ function sameTransform(a: IllustratorLayer['transform'], b: IllustratorLayer['tr
 function applyLayerEdits(state: LogoStore, commit: LayerEditCommit): Partial<LogoStore> {
   const done = new Set<string>()
   let objects = state.vectorDocument.objects
+  // An offset copy edited with its source is left to follow it: the follow pass makes it again, still linked.
+  const editing = new Set(commit.edits.map((edit) => edit.layerId))
   for (const edit of commit.edits) {
     if (done.has(edit.layerId)) continue
     done.add(edit.layerId)
+    if (followsAnyOf(objects, edit.layerId, editing)) continue
     objects = updateObject(objects, edit.layerId, (object) => {
       if (object.type !== 'path') return object
       if (edit.carve) {

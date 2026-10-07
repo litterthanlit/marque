@@ -102,13 +102,27 @@ function App() {
           e.preventDefault()
           const { ui, illustrator, stepPolygonSides } = useLogoStore.getState()
           if (isEditorInteracting() || ui.activeTool === 'pen') return
-          stepPolygonSides(step)
-          // With no polygon selected the keys set the next one's sides, which nothing on the canvas shows: say so.
           const selected = illustrator.layers.filter((layer) => illustrator.selectedLayerIds.includes(layer.id))
-          if (!steppedPolygonSides(selected).length) {
-            const said = `Next polygon: ${useLogoStore.getState().ui.carve.polygonSides} sides`
+          const stepped = steppedPolygonSides(selected, illustrator.layers).length > 0
+          const copies = selected.some((layer) => layer.link?.kind === 'offset')
+          // A copy of anything but a polygon has no sides of its own to step, nor does it set the next polygon's.
+          if (!stepped && copies) {
+            const said = "Offset copies keep their source's shape"
             hud.hold(said, NEXT_SIDES_MS)
             hud.announce(said)
+            return
+          }
+          stepPolygonSides(step)
+          const sides = useLogoStore.getState().ui.carve.polygonSides
+          // With no polygon selected the keys set the next one's sides, which nothing on the canvas shows: say so.
+          if (!stepped) {
+            const said = `Next polygon: ${sides} sides`
+            hud.hold(said, NEXT_SIDES_MS)
+            hud.announce(said)
+          } else if (selected.every((layer) => layer.link?.kind === 'offset')) {
+            // A copy's sides are its source's, as a nudge of a copy moves its source: say which moved.
+            hud.hold('steps the source', NEXT_SIDES_MS)
+            hud.announce(`steps the source \u00b7 ${sides} sides`)
           }
           return
         }
