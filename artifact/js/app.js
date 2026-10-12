@@ -198,12 +198,16 @@ const META = {
   e: () => dispatch('setUI', { panel: 'export' }),
 };
 
+let tabbed = false;   // focus arrived by keyboard; a button focused by a mouse click must not swallow Space (it would press it)
+window.addEventListener('pointerdown', () => { tabbed = false; }, true);
+
 function onKey(e) {
   const { ui, selection } = st(), k = e.key.toLowerCase(), t = e.target;
+  if (e.key === 'Tab') tabbed = true;
   if (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) { if (e.key === 'Escape') t.blur(); return; }
   if (e.code === 'Space') {
     // Keyboard users keep Space as "press" on a button they tabbed to; otherwise it is pan mode.
-    if (t.matches?.(':focus-visible') && t.closest?.('button,a,summary,[role=button],[role=option]')) return;
+    if (tabbed && t.closest?.('button,a,summary,[role=button],[role=option]')) return;
     e.preventDefault();
     if (!space) { space = true; if (!panning) ctx.setCursor('grab'); }
     return;

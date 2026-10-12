@@ -413,6 +413,7 @@ export function mountUI({ store, bridge, io, assist }) {
     if (e.key === 'F2') { e.preventDefault(); L.renaming = b.dataset.id; schedule(true) }
     else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault()
+      e.stopPropagation()   // app.js would otherwise nudge the selection with the same key
       const all = $$('.layer-main', el.layersBody)
       all[all.indexOf(b) + (e.key === 'ArrowDown' ? 1 : -1)]?.focus()
     }
@@ -513,12 +514,12 @@ export function mountUI({ store, bridge, io, assist }) {
         const name = esc(it.name)
         const main = renaming
           ? `<div class="layer-main">${glyph(it.op)}<input class="rename" data-fk="rename" value="${name}" maxlength="80" spellcheck="false" aria-label="Layer name"></div>`
-          : `<button type="button" class="layer-main" data-action="layer" data-id="${it.id}" data-fk="m-${it.id}" aria-pressed="${isSel}" aria-label="${name}, ${it.op} layer">${glyph(it.op)}<span class="layer-name">${name}</span></button>`
+          : `<button type="button" class="layer-main" data-action="layer" data-id="${esc(it.id)}" data-fk="m-${esc(it.id)}" aria-pressed="${isSel}" aria-label="${name}, ${it.op} layer">${glyph(it.op)}<span class="layer-name">${name}</span></button>`
         html = {
           sig,
           s: `<li class="layer${isSel ? ' is-sel' : ''}${it.visible ? '' : ' is-off'}">${main}` +
-            `<button type="button" class="layer-btn${it.visible ? '' : ' is-on'}" data-action="eye" data-id="${it.id}" data-fk="e-${it.id}" aria-label="${it.visible ? 'Hide' : 'Show'} ${name}">${ic(it.visible ? 'eye' : 'eyeoff')}</button>` +
-            `<button type="button" class="layer-btn${it.locked ? ' is-on' : ''}" data-action="lock" data-id="${it.id}" data-fk="l-${it.id}" aria-label="${it.locked ? 'Unlock' : 'Lock'} ${name}">${ic(it.locked ? 'lock' : 'unlock')}</button></li>`,
+            `<button type="button" class="layer-btn${it.visible ? '' : ' is-on'}" data-action="eye" data-id="${esc(it.id)}" data-fk="e-${esc(it.id)}" aria-label="${it.visible ? 'Hide' : 'Show'} ${name}">${ic(it.visible ? 'eye' : 'eyeoff')}</button>` +
+            `<button type="button" class="layer-btn${it.locked ? ' is-on' : ''}" data-action="lock" data-id="${esc(it.id)}" data-fk="l-${esc(it.id)}" aria-label="${it.locked ? 'Unlock' : 'Lock'} ${name}">${ic(it.locked ? 'lock' : 'unlock')}</button></li>`,
         }
         rowCache.set(it.id, html)
       }

@@ -38,8 +38,8 @@ export function createStore({ bridge }) {
 
   function set(patch) {
     const prev = s, next = { ...s, ...patch };
-    if (next.doc !== prev.doc && next.selection.length) {            // drop ids that no longer exist
-      const have = new Set(next.doc.items.map(i => i.id));
+    if (next.doc !== prev.doc && next.selection.length) {            // drop ids that are gone, hidden or locked
+      const have = new Set(next.doc.items.filter(i => i.visible && !i.locked).map(i => i.id));
       if (!next.selection.every(id => have.has(id))) next.selection = next.selection.filter(id => have.has(id));
     }
     if (next.live && !('live' in patch) && (next.doc !== prev.doc || next.selection !== prev.selection) &&
