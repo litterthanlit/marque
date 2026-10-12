@@ -48,11 +48,22 @@ Publish `artifact/index.html` as a Claude artifact:
 
 `sample` powers Describe. `downloads` lets the page offer SVG and PNG files to save, which plain `<a download>` links cannot do inside the artifact viewer. If either capability is missing, the page still works: Describe is hidden, and Export falls back to Copy SVG.
 
+## Organic and asymmetric shapes
+
+- **Blob (O):** drag out a blob, then set Points, Wobble and Smoothness in the Inspector. Shuffle gives you another one.
+- **Bend:** in Edit points, grab any curve or edge and pull it. The point you grab follows your pointer exactly.
+- **Push (W):** a soft brush that moves nearby outline like clay. Size and strength are in the Inspector.
+- **Ink brush (B):** draws filled strokes with tapered ends. Faster strokes are thinner, and pen pressure works too.
+- **Smooth and Roughen:** in the Inspector, for any selection. Smooth turns corners into curves; Roughen adds irregular edges. Both stay adjustable until you make another edit, and amount 0 gives back the original.
+- **Distort:** a switch in Transform. Drag a corner to move it on its own, or drag a side to skew.
+
 ## Keys
 
 | Key | Action |
 |---|---|
-| V A P N R E Y L | Select, Edit points, Pen, Pencil, Rectangle, Ellipse, Polygon, Line |
+| V A W | Select, Edit points, Push (sculpt like clay) |
+| P N B | Pen, Pencil, Ink brush |
+| R E Y L O | Rectangle, Ellipse, Polygon, Line, Blob |
 | X | Switch the selection between add and cut |
 | G / S | Grid / snapping |
 | ⌘Z / ⇧⌘Z | Undo / redo |
