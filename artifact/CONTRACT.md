@@ -590,3 +590,149 @@ A 512 × 512 artboard, listed bottom to top. It shows that a cut only affects wh
 2. **Window** (`cut`): `ellipseContours(256, 256, 136, 136)`. This turns the disc into a ring.
 3. **Slit** (`cut`): a closed 4-node bar with corners (59.5, 427.1), (84.9, 452.5), (452.5, 84.9), (427.1, 59.5), along the 45° diagonal.
 4. **Core** (`add`): `ellipseContours(256, 256, 72, 72)`, fill `#384ecb`. It sits above both cuts, so it paints back over the hole and the slit.
+
+---
+
+# v2 addendum: organic and asymmetric shapes
+
+This section extends the contract above and wins wherever the two disagree. The thesis stays the same: every new feature only produces or moves nodes, so the result is always an ordinary editable path. There is no new primitive and no new render path.
+
+The new features are:
+- **Blob tool (O):** live Points, Wobble and Smoothness, plus Shuffle.
+- **Bend:** drag a segment in the Edit points tool.
+- **Push brush (W).**
+- **Ink brush (B):** filled, tapered strokes.
+- **Organic actions:** Smooth and Roughen, as live ops.
+- **Distort:** a Transform toggle. Corners move freely and sides skew.
+
+## Workstream ownership (v2)
+
+| WS | Files (create or edit ONLY these) | LOC budget |
+|---|---|---|
+| WS-A | `js/organic.js` (new, 230), `tests/organic.test.mjs` (new, 150), `js/tools/brush.js` (new, 60) | ~440 |
+| WS-B | `js/store.js` (+45), `js/app.js` (+8), `js/consts.js` (+3), `js/tools/shape.js` (+4), `js/tools/node.js` (+25), `js/tools/select.js` (+45), `js/tools/push.js` (new, 65) | ~195 |
+| WS-C | `js/ui.js` (+80), `index.html` (+22), `tests/smoke.mjs` (+90; case 3 becomes `live.targets[0].id`) | ~190 |
+
+- WS-A lands an identity stub of `organic.js` first, with every export present and returning its input or a trivial value, so WS-B and WS-C can import it at once.
+- WS-B and WS-C never import each other. They share only the names in this addendum.
+
+## `js/organic.js` (pure; imports only `./geometry.js`)
+```js
+export const MAX_NODES = 600
+export function rng(seed: number|string): () => number    // mulberry32; strings hashed (e.g. FNV-1a); ints pre-mixed; returns [0,1)
+export function blobContours(box, { points = 8, wobble = .35, smooth = .55, seed = 1 } = {}): Contour[]
+   // N = clamp(round(points), 3, 24). Random start angle; node i at angle start + 2πi/N + jitter(±.35·wobble·2π/N),
+   // radius ×(1 + (2u−1)·.6·wobble) on a unit circle. Handles: tangent = (next − prev), handle = ±tangent·.3·smooth
+   // (no handles when smooth = 0). Then affine-fit (translate + scale x/y) so contourBounds == box (within 1e-6).
+   // One closed contour. Deterministic for a given seed.
+export function smoothContours(contours, amount = 1): Contour[]
+   // amount ≤ 0 → same reference. Only NON-smooth nodes change: each handle = anchor + (H − anchor)·amount, where H is the
+   // handle setSmooth would compute from the ORIGINAL contour (a null handle is treated as the anchor). Anchors never move.
+   // Already-smooth nodes are untouched (circles and blobs don't deform). Open-path ends keep only their inward handle.
+export function subdivide(c, maxLen, { only = null, cap = MAX_NODES, smoothNew = false } = {}): Contour
+   // For each segment where only?.(cubic) !== false, split into ceil(len/maxLen) equal-t pieces via insertNode
+   // (len ≈ (chord + control-polygon length)/2). Shape unchanged. Never exceeds cap nodes. Same reference if nothing split.
+   // smoothNew: nodes cut from STRAIGHT (handle-less) segments get setSmooth after all splits.
+export function roughenContours(contours, { amount = .4, detail = 4, seed = 1 } = {}, size?): Contour[]
+   // amount ≤ 0 → same reference. size defaults to max(w,h) of the contours' bounds. Subdivide to maxLen = size/(3+4·detail),
+   // then anchor += unitNormal·(2u−1)·amount·size·.08, with handles riding along; u from rng(seed + 7919·ci).
+   // Nodes that were smooth are re-smoothed (setSmooth); corner nodes stay corners.
+export function bendSegment(c, seg, t, delta): Contour
+   // Clamp t to [.15,.85]. If both handles on the segment are null, first set them at the thirds (P1 = lerp(P0,P3,1/3), P2 = lerp(P0,P3,2/3)).
+   // k = 1/(3t(1−t)((1−t)²+t²)); P1 += k(1−t)·delta; P2 += k·t·delta, so B(t) moves exactly by delta.
+   // If a segment end node was smooth, keep it smooth by rotating its opposite handle (moveHandle with mirror:true).
+export function pushContours(contours, center, delta, radius, strength): Contour[]
+   // First subdivide(radius/3, { only: segments whose control-point bbox lies within 4·radius/3 of center, smoothNew: true }).
+   // Then each anchor and each handle moves by w·delta, w = strength·(1−s²)², s = dist(point, center)/radius, applied only where s < 1
+   // (the anchor's weight moves the anchor; each handle uses its own weight). Respect MAX_NODES. Same reference if nothing moves.
+export function distortContours(contours, rect, quad): Contour[]
+   // quad = [TL, TR, BR, BL]. Projective (Heckbert) map from rect to quad, applied to every anchor and handle.
+   // Same reference if rect.w or rect.h is 0, or if !isConvexQuad(quad).
+export function isConvexQuad(quad): boolean
+export function inkOutline(samples /* {x,y,t?,p?}[] */, { size = 16, thinning = .5, taper = .5, streamline = .5 } = {}): Vec[]
+   // Returns a closed polygon (first point not repeated). [] if no samples; 1 sample gives a 16-gon of r = size/2.
+   // Streamline: each point = lerp(prev, raw, 1 − .85·streamline).
+   // Pressure pr: the p values if they vary by more than .05, else 1 − clamp(speed / (.1·size)), low-passed by .25 (dt defaults to 16 ms).
+   // Radius r = (size/2)(1 − thinning(1 − pr)), floored at .05·size.
+   // Taper length = taper·min(L/2, 6·size), smoothstep to 0 at both ends.
+   // Left side forward, round cap (7 points), right side backward, round cap.
+```
+
+## State and actions (`js/store.js`)
+- **New `toolOpts` keys:** `{ points: 8, wobble: .35, smooth: .55, seed: 7, brushSize: 16, thinning: .5, taper: .5, pushSize: 80, pushStrength: .7 }`. `brushSize` and `pushSize` are **screen px**.
+- **`ui.distort: false`:** cleared by `set()` when the tool or the selection changes.
+- **Generalised `live`:** `null | { kind: 'rect'|'ellipse'|'polygon'|'blob'|'smooth'|'roughen', params, targets: [{ id, contours, box?, base?, size? }] }`.
+  - Shapes have exactly one target, with a `box`. Their `params` is a snapshot of `toolOpts`.
+  - Ops (`smooth`, `roughen`) have one target per selected item. `base` holds the contours when the op started, and `size` is max(w,h) of that item's bounds.
+  - `live` goes stale (becomes `null`) when the selection list changes, or when any target's item `contours !== target.contours`.
+- **`liveContours(kind, box, p)`** gains `'blob'`, which calls `blobContours(box, p)`.
+- **New export `regen(kind, params, target)`:**
+  - Shapes give `liveContours(kind, target.box, params)`.
+  - `'smooth'` gives `smoothContours(target.base, params.amount)`.
+  - `'roughen'` gives `roughenContours(target.base, params, target.size)`.
+- **`addItems{ …, live }`** builds `targets`. When the kind is `'blob'`, it also sets `toolOpts.seed = newSeed()`, so the next blob differs.
+- **`setLive{ kind?, params }`:**
+  - With no kind, or the same kind as `live.kind`: merge the params, regenerate every target, and commit with coalesce key `'live'`.
+  - With kind `'smooth'` or `'roughen'` different from the current kind: start a new op from the current selection (no selection means no-op). Defaults are `smooth { amount: 1 }` and `roughen { amount: .4, detail: 4, seed: newSeed() }`. This is its own undo step.
+  - If no contours changed, update only `live`.
+- **`shuffle{}`:** if `live?.params` has a `seed`, dispatch `setLive{ params: { seed: newSeed() } }`. Otherwise set `toolOpts.seed = newSeed()`.
+- **Updated shape tool payload:** `shape.js` still dispatches `addItems{ items, select: true, live: { kind, box, params } }`. The store turns that into `targets`.
+
+## Tools and events
+- **`consts.js` TOOLS** gains `{ id: 'push', key: 'w', label: 'Push' }`, `{ id: 'brush', key: 'b', label: 'Ink brush' }` and `{ id: 'blob', key: 'o', label: 'Blob' }`.
+- **`PointerEvt`** gains `pressure` (`e.pressure` when `pointerType === 'pen'`, else 0) and `time` (`e.timeStamp`).
+- **app.js** creates `brush` (`tools/brush.js`), `push` (`tools/push.js`), and shape kind `'blob'` via `createShape(ctx, 'blob')`.
+- **shape.js:** the blob kind is named "Blob", with the hint "Drag to draw a blob. Shuffle in the Inspector for another." It draws through `liveContours('blob', box, toolOpts)`.
+- **node.js, bend:**
+  - Trigger: after the anchor and handle tests, before the item hit and marquee, and not with Alt. If the pointer is within `ctx.px(e)` of a segment of a selected item (`nearestOnItem`), start a bend gesture.
+  - Drag: once the pointer has moved 3 px or more, `setDoc` with that contour replaced by `bendSegment(baseContour, seg, t, {x: e.x − e0.x, y: e.y − e0.y})`, always computed from the base. Commit as `'Bend'`.
+  - Release without moving: clear the picked anchors unless Shift is held.
+  - Hover over a segment shows the cursor `grab`.
+- **select.js, distort:** active when `ui.distort && selection.length`.
+  - **Overlay:** the quad outline (`ov-bbox`), four corner `handle()`s, four side `ctrl()` circles, and no rotate zones.
+  - **Gesture:**
+    - Start from `quad0` = the bounds corners `[TL, TR, BR, BL]`.
+    - A corner moves to `snap.point(pointer − grabOffset)`.
+    - A side handle shifts its two corners along that edge's axis, which is an exact skew.
+    - With Alt, the opposite corner or side moves by −Δ.
+    - Ignore moves that give `!isConvexQuad`.
+    - Apply `distortContours(item.contours, bounds0, quad)` to every selected item, computed from the base items. Commit as `'Distort'`.
+  - **Cursors:** corner `crosshair`, top and bottom `ew-resize`, left and right `ns-resize`.
+  - **Esc:** `setUI{ distort: false }`.
+- **tools/brush.js** (`create(ctx)`, WS-A):
+  - **Sampling:** like the pencil (samples at least 1.5 screen px apart), recording `{x, y, t: e.time, p: e.pressure}` in doc units.
+  - **Preview:** `outline([{ closed: true, nodes }], 'ov-ink')` from `inkOutline` on the SCREEN samples (size = `brushSize`).
+  - **On up:**
+    1. `poly = inkOutline(docSamples, { size: brushSize / zoom, thinning, taper })`.
+    2. `bridge.simplify(poly, { tolerance: 1 / zoom, close: true })`. If Paper is unavailable or the call throws, decimate the polygon to spacing of at least size/3, turn it into a closed corner contour, and apply `smoothContours(..., 1)`.
+    3. `dispatch('addItems', { items: [ctx.newItem([contour], 'Ink', { stroke: null })] })`, with the fill taken from `state.style.fill`.
+  - The tool stays active, and a tap makes a dot.
+- **tools/push.js** (`create(ctx)`, WS-B):
+  - **Down:** targets are the selection; otherwise the item under the pointer (`hit.item(e, 4)`), which is then selected; otherwise nothing. Then `store.begin()`.
+  - **Move:**
+    - `R = pushSize / 2 / zoom`.
+    - `n = ceil(|Δ| / (R/4))` sub-steps of `pushContours(current, center, Δ/n, R, pushStrength)`, accumulated per item.
+    - Then `setDoc(updateItems(...))`.
+  - **Up:** `commit('Push')` if anything changed. `cancel()` calls `store.cancel()`.
+  - **Overlay:** the selected outlines plus a brush ring, `outline(ellipse ring in screen px, 'ov-preview')`.
+
+## UI (`js/ui.js`, `index.html`)
+- **ICONS** add `blob`, `brush`, `push`, `shuffle`, `smooth` and `roughen`.
+- **Rail order:** [select, node, push] | [pen, pencil, brush] | [rect, ellipse, polygon, line, blob]. Each `data-tool` equals the tool id.
+- **LIVE_FIELDS** adds `points wobble smooth o-amount o-detail t-points t-wobble t-smooth t-brushSize t-thinning t-taper t-pushSize t-pushStrength`.
+- **Live blob section** (`live.kind === 'blob'` and the selection is that item): sliders `points` 3–16 (step 1), `wobble` 0–1 and `smooth` 0–1 (step .05). Each dispatches `setLive{ params: { [f]: v } }`, plus a Shuffle button.
+- **Tool options** (sliders dispatch `setToolOpt{ key: f.slice(2), value }`):
+  - Blob, when nothing is selected: `t-points`, `t-wobble`, `t-smooth`.
+  - Brush, **always shown while the tool is active**, even with a selection: `t-brushSize` 2–96, `t-thinning` 0–1, `t-taper` 0–1.
+  - Push, always shown while active: `t-pushSize` 20–240, `t-pushStrength` .05–1.
+- **Shuffle:** a button with `data-action="shuffle"` and `id="in-shuffle"` that dispatches `shuffle`. It appears in the live-blob, tool-blob and roughen sections.
+- **Organic section** (one or more selected, after the live-shape section):
+  - Buttons `data-action="organic" data-v="smooth"` and `data-v="roughen"` dispatch `setLive{ kind }`.
+  - A live smooth shows `o-amount` (0–1).
+  - A live roughen shows `o-amount` (0–1), `o-detail` (1–10, step 1) and Shuffle.
+  - Sliders dispatch `setLive{ params: { amount | detail } }`.
+- **Transform section:** a Distort switch `#in-distort` that toggles `setUI{ distort }`. Turning it on also dispatches `setTool{ id: 'select' }` and `setUI{ sheet: null }`.
+- When the tool changes, call `scrollIntoView({ block: 'nearest', inline: 'nearest' })` on the active tile.
+- **CSS:**
+  - `#overlay-layer .ov-ink { fill: var(--ov); fill-opacity: .85; stroke: none }`.
+  - At ≤720px: `.rail { overflow-x: auto; overflow-y: hidden; scroll-snap-type: x proximity; overscroll-behavior-x: contain; touch-action: pan-x }`, and tiles `flex: 1 0 44px; scroll-snap-align: start`. The page itself still never scrolls horizontally.
