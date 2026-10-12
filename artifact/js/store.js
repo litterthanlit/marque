@@ -3,30 +3,42 @@
 import { LIMITS, DEFAULT_STYLE, TOOLS } from './consts.js';
 import { findItem, itemIndex, makeDoc, addItems, updateItems, removeItems, reorder, reorderTo,
          duplicateItems, setArtboard, uid } from './model.js';
-import { mat, boundsOf, transformItem, rectContours, ellipseContours, polygonContours } from './geometry.js';
+import { mat, boundsOf, itemBounds, transformItem, rectContours, ellipseContours, polygonContours } from './geometry.js';
+import { blobContours, smoothContours, roughenContours } from './organic.js';
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const sameList = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 const TOOL_IDS = TOOLS.map(t => t.id);
 const NAMES = { union: 'Union', subtract: 'Subtract', intersect: 'Intersect', exclude: 'Exclude' };
 const NOOP = [1, 0, 0, 1, 0, 0];
+const newSeed = () => 1 + Math.floor(Math.random() * 999999);
+const OPS = { smooth: () => ({ amount: 1 }), roughen: () => ({ amount: 0.4, detail: 4, seed: newSeed() }) };   // live ops and their defaults
 
 // Contours of a live shape for a box and params. The shape tool uses it too, for its first draw and preview.
 export function liveContours(kind, box, p) {
   const cx = box.x + box.w / 2, cy = box.y + box.h / 2;
   if (kind === 'rect') return rectContours(box.x, box.y, box.w, box.h, p.radius || 0);
   if (kind === 'ellipse') return ellipseContours(cx, cy, box.w / 2, box.h / 2);
+  if (kind === 'blob') return blobContours(box, p);
   return polygonContours(cx, cy, box.w / 2, box.h / 2, p.sides, { star: p.star, inner: p.inner });
+}
+
+// What a live target's contours should be for these params: a shape from its box, or an op applied to its base.
+export function regen(kind, params, t) {
+  if (kind === 'smooth') return smoothContours(t.base, params.amount);
+  if (kind === 'roughen') return roughenContours(t.base, params, t.size);
+  return liveContours(kind, t.box, params);
 }
 
 export function createStore({ bridge }) {
   let s = {
     doc: makeDoc(), selection: [], tool: 'select', live: null,
-    toolOpts: { radius: 0, sides: 5, star: false, inner: 0.5 },
+    toolOpts: { radius: 0, sides: 5, star: false, inner: 0.5, points: 8, wobble: 0.35, smooth: 0.55, seed: 7,
+                brushSize: 16, thinning: 0.5, taper: 0.5, pushSize: 80, pushStrength: 0.7 },   // brushSize / pushSize: screen px
     style: { ...DEFAULT_STYLE },
     viewport: { zoom: 1, panX: 0, panY: 0, w: 0, h: 0, fitted: false },
     ui: { grid: false, snap: true, theme: 'system', sheet: null, panel: null, toast: null, example: false,
-          assist: 'unknown', busy: null },
+          assist: 'unknown', busy: null, distort: false },
     history: { canUndo: false, canRedo: false },
   };
   let undoStack = [], redoStack = [], gesture = null, last = { key: null, t: 0 };
@@ -42,9 +54,14 @@ export function createStore({ bridge }) {
       const have = new Set(next.doc.items.filter(i => i.visible && !i.locked).map(i => i.id));
       if (!next.selection.every(id => have.has(id))) next.selection = next.selection.filter(id => have.has(id));
     }
+    // A live shape / op goes stale when the selection changes or any target was edited by other means.
     if (next.live && !('live' in patch) && (next.doc !== prev.doc || next.selection !== prev.selection) &&
-        (!sameList(next.selection, prev.selection) || findItem(next.doc, next.live.id)?.contours !== next.live.contours)) {
+        (!sameList(next.selection, prev.selection) || next.live.targets.some(t => findItem(next.doc, t.id)?.contours !== t.contours))) {
       next.live = null;
+    }
+    // Distort mode belongs to the select tool and one selection.
+    if (next.ui.distort && (!sameList(next.selection, prev.selection) || (next.tool !== prev.tool && next.tool !== 'select'))) {
+      next.ui = { ...next.ui, distort: false };
     }
     s = next;
     flush();
@@ -151,7 +168,8 @@ export function createStore({ bridge }) {
       const doc = addItems(s.doc, items), ids = items.map(i => i.id), first = live && findItem(doc, ids[0]);
       edit(doc, {
         ...(select && { selection: ids }),
-        ...(first && { live: { id: first.id, kind: live.kind, box: live.box, params: { ...live.params }, contours: first.contours } }),
+        ...(first && { live: { kind: live.kind, params: { ...live.params }, targets: [{ id: first.id, contours: first.contours, box: live.box }] } }),
+        ...(first && live.kind === 'blob' && { toolOpts: { ...s.toolOpts, seed: newSeed() } }),   // so the next blob differs
       });
     },
     updateItems({ ids = s.selection, patch, coalesce }) { if (ids.length) edit(updateItems(s.doc, ids, patch), {}, coalesce); },
@@ -192,14 +210,27 @@ export function createStore({ bridge }) {
       combine(src, { contours: r.contours, name: 'Flattened', op: 'add', fillRule: 'evenodd' }, top);
     },
 
-    // Regenerate the live shape from its box and the new params.
-    setLive({ params }) {
-      const l = s.live;
-      if (!l) return;
-      const next = { ...l.params, ...params };
-      const doc = updateItems(s.doc, [l.id], { contours: liveContours(l.kind, l.box, next) });
-      const it = findItem(doc, l.id);
-      if (it) edit(doc, { live: { ...l, params: next, contours: it.contours } }, 'live');
+    // Tweak the live shape / op (same kind, or none), or start a smooth / roughen op from the selection (its own undo step).
+    setLive({ kind, params = {} }) {
+      let l = s.live, key = 'live';
+      if (kind && kind !== l?.kind) {
+        if (!OPS[kind] || !s.selection.length) return;
+        l = { kind, params: { ...OPS[kind](), ...params }, targets: selected().map(it => {
+          const b = itemBounds(it);
+          return { id: it.id, contours: it.contours, base: it.contours, size: Math.max(b.w, b.h) };
+        }) };
+        key = null;
+      } else if (l) l = { ...l, params: { ...l.params, ...params } };
+      else return;
+      const targets = l.targets.map(t => ({ ...t, contours: regen(l.kind, l.params, t) })), live = { ...l, targets };
+      const by = new Map(targets.filter(t => t.contours !== findItem(s.doc, t.id)?.contours).map(t => [t.id, t.contours]));
+      if (!by.size) return set({ live });
+      edit(updateItems(s.doc, [...by.keys()], it => ({ ...it, contours: by.get(it.id) })), { live }, key);
+    },
+    // A new random look: re-seed the live blob / roughen, else the seed the next blob will use.
+    shuffle() {
+      if (s.live && (s.live.kind === 'blob' || s.live.kind === 'roughen')) A.setLive({ params: { seed: newSeed() } });
+      else merge('toolOpts', { seed: newSeed() });
     },
 
     select({ ids = [], mode = 'set' }) {

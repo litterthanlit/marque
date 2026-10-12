@@ -15,6 +15,8 @@ import createNode from './tools/node.js';
 import createPen from './tools/pen.js';
 import createPencil from './tools/pencil.js';
 import createShape from './tools/shape.js';
+import createBrush from './tools/brush.js';
+import createPush from './tools/push.js';
 
 const $ = id => document.getElementById(id);
 const host = $('canvas-host'), docEl = $('doc'), viewportEl = $('viewport'), artboard = $('artboard'), gridEl = $('grid');
@@ -41,7 +43,8 @@ const ctx = {
 ctx.snap = createSnap(ctx);
 const tools = {
   select: createSelect(ctx), node: createNode(ctx), pen: createPen(ctx), pencil: createPencil(ctx),
-  ...Object.fromEntries(['rect', 'ellipse', 'polygon', 'line'].map(k => [k, createShape(ctx, k)])),
+  brush: createBrush(ctx), push: createPush(ctx),
+  ...Object.fromEntries(['rect', 'ellipse', 'polygon', 'line', 'blob'].map(k => [k, createShape(ctx, k)])),
 };
 let tool = tools.select;
 
@@ -108,7 +111,8 @@ const touches = new Map();
 function evt(e, down) {
   const r = host.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top, p = view.toDoc(sx, sy);
   return { x: p.x, y: p.y, sx, sy, shift: e.shiftKey, alt: e.altKey, meta: e.metaKey || e.ctrlKey, button: e.button,
-           down, pointerType: e.pointerType ?? 'mouse', detail: clicks.n };
+           down, pointerType: e.pointerType ?? 'mouse', detail: clicks.n,
+           pressure: e.pointerType === 'pen' ? e.pressure : 0, time: e.timeStamp };
 }
 function pinchState() {
   const [a, b] = [...touches.values()], r = host.getBoundingClientRect();

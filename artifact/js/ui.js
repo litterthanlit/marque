@@ -33,6 +33,12 @@ const ICONS = {
   ellipse: '<circle cx="10" cy="10" r="6.5"/>',
   polygon: '<path d="M10 3 16 6.5v7L10 17l-6-3.5v-7z"/>',
   line: '<path d="M4.5 15.5 15.5 4.5"/>',
+  blob: '<path d="M3.9 10.4C3.4 6.8 5.8 3.7 9.3 3.8c2.4.1 3.2 1.5 5.2 2.1 2.2.7 2.9 3.2 2.3 5.4-.8 2.9-2.5 5.1-5.7 5.3-3.4.2-6.7-1.1-7.2-6.2z"/>',
+  brush: '<path d="M16.5 3.5c-3 1-6 3-7.7 5.9C7.5 9.4 4 11 4 14.2c0 1.8 1.2 2.6 2.8 2.4 3-.4 4-3.6 3.8-5 2.2-2.1 4.4-5.1 5.9-8.1z"/>',
+  push: '<circle cx="5.7" cy="10" r="3.4"/><path d="M9.8 10h3.4M11.6 8.2l1.8 1.8-1.8 1.8"/><path d="M14.4 3.6c2.2 2.4 2.2 10.4 0 12.8"/>',
+  shuffle: '<path d="M3 6h2.6c4 0 4.8 8 8.8 8h2.1M3 14h2.6c1.4 0 2.4-.7 3.2-1.7M11.2 7.7C11.9 6.7 12.9 6 14.4 6h2.1"/><path d="m14.8 3.5 2.2 2.5-2.2 2.5M14.8 11.5l2.2 2.5-2.2 2.5"/>',
+  smooth: '<path d="M4 16V5h12" opacity=".4"/><path d="M4 16v-5a6 6 0 0 1 6-6h6"/>',
+  roughen: '<path d="M2.5 11 4.8 7l2.3 6.5L9.6 5.5l2.3 8.5 2.2-6 1.4 3.2h1.2"/>',
   undo: '<path d="M4.5 8H12a4 4 0 0 1 0 8H8"/><path d="M7.5 4.5 4 8l3.5 3.5"/>',
   redo: '<path d="M15.5 8H8a4 4 0 0 0 0 8h4"/><path d="M12.5 4.5 16 8l-3.5 3.5"/>',
   grid: '<rect x="3.5" y="3.5" width="13" height="13" rx="1.5"/><path d="M7.8 3.5v13M12.2 3.5v13M3.5 7.8h13M3.5 12.2h13"/>',
@@ -83,6 +89,12 @@ const sw = (action, id, label, on, off = false) => `<button type="button" role="
 const iconBtn = (action, v, icon, label) => `<button type="button" class="btn icon" data-action="${action}" data-v="${v}" aria-label="${label}" title="${label}">${ic(icon)}</button>`
 // v: a colour, null (none) or undefined (mixed across the selection)
 const colourCtl = (k, label, v, memo) => `<div class="colour"><label class="swatch${v ? '' : v === null ? ' is-none' : ' is-mixed'}" style="--c:${v || 'transparent'}"><input type="color" id="in-${k}" data-f="${k}" value="${v || memo}" aria-label="${label} colour"></label><input type="text" id="in-${k}-hex" class="hex" data-f="${k}-hex" value="${v || ''}" placeholder="${v === undefined ? 'Mixed' : 'None'}" maxlength="7" spellcheck="false" autocomplete="off" aria-label="${label} hex"><button type="button" class="none" data-action="${k}-none" aria-pressed="${v === null}" aria-label="No ${label.toLowerCase()}">None</button></div>`
+
+// Tool options and live blob params share one table: [label, min, max, step]
+const OPT = { points: ['Points', 3, 16, 1], wobble: ['Wobble', 0, 1, 0.05], smooth: ['Smoothness', 0, 1, 0.05], brushSize: ['Size', 2, 96, 1], thinning: ['Thinning', 0, 1, 0.05], taper: ['Taper', 0, 1, 0.05], pushSize: ['Size', 20, 240, 1], pushStrength: ['Strength', 0.05, 1, 0.05] }
+const opt = (k, v, t = '') => { const [l, lo, hi, st] = OPT[k]; return row(l, slider(t + k, l, nv(v ?? lo), lo, hi, st), `in-${t}${k}`) }
+const shuffleBtn = () => `<button type="button" class="btn line wide" id="in-shuffle" data-action="shuffle">${ic('shuffle')}Shuffle</button>`
+const optVal = (k, n) => { const [, lo, hi, st] = OPT[k]; return clamp(st === 1 ? Math.round(n) : n, lo, hi) }
 
 // ---- In-place patching: same-shaped markup updates attributes and text, so focus and carets survive ----
 const fkey = (e) => e.id || e.dataset?.fk || [e.dataset?.action, e.dataset?.k, e.dataset?.v ?? e.dataset?.id].filter(Boolean).join(':')
@@ -147,6 +159,16 @@ export function mountUI({ store, bridge, io, assist }) {
     b?.setAttribute('aria-label', label)
     if (b) b.title = label
   }
+  // On the mobile bottom bar, edges that have more tools beyond them fade out instead of showing a scrollbar
+  const rail = $('#tools')
+  const fade = () => {
+    const { scrollLeft: l, scrollWidth: w, clientWidth: c } = rail
+    rail.style.setProperty('--fl', l > 2 ? '28px' : '0px')
+    rail.style.setProperty('--fr', l + c < w - 2 ? '28px' : '0px')
+  }
+  on(rail, 'scroll', fade, { passive: true })
+  on(window, 'resize', fade)
+  fade()
   for (const [a, label] of [['undo', `Undo (${key('Z')})`], ['redo', `Redo (${key('Z', true)})`], ['grid', 'Grid (G)'], ['snap', 'Snap (S)']]) {
     $$(`.btn.icon[data-action="${a}"]`).forEach((b) => { b.setAttribute('aria-label', label); b.title = label })
   }
@@ -250,7 +272,8 @@ export function mountUI({ store, bridge, io, assist }) {
     dispatch('setStyle', { patch })
     if (getState().selection.length) dispatch('updateItems', { patch, coalesce })
   }
-  const LIVE_FIELDS = new Set(['fill', 'stroke', 'sw', 'opacity', 'radius', 'sides', 'inner', 't-radius', 't-sides', 't-inner'])
+  const LIVE_FIELDS = new Set(['fill', 'stroke', 'sw', 'opacity', 'radius', 'sides', 'inner', 't-radius', 't-sides', 't-inner',
+    'points', 'wobble', 'smooth', 'o-amount', 'o-detail', 't-points', 't-wobble', 't-smooth', 't-brushSize', 't-thinning', 't-taper', 't-pushSize', 't-pushStrength'])
   function apply(f, t) {
     const s = getState()
     const n = parseFloat(t.value)
@@ -271,6 +294,15 @@ export function mountUI({ store, bridge, io, assist }) {
         return
       case 't-radius': case 't-sides': case 't-inner':
         if (Number.isFinite(n)) dispatch('setToolOpt', { key: f.slice(2), value: f === 't-sides' ? clamp(Math.round(n), 3, 24) : Math.max(0, n) })
+        return
+      case 'points': case 'wobble': case 'smooth':
+        if (s.live && Number.isFinite(n)) dispatch('setLive', { params: { [f]: optVal(f, n) } })
+        return
+      case 't-points': case 't-wobble': case 't-smooth': case 't-brushSize': case 't-thinning': case 't-taper': case 't-pushSize': case 't-pushStrength':
+        if (Number.isFinite(n)) dispatch('setToolOpt', { key: f.slice(2), value: optVal(f.slice(2), n) })
+        return
+      case 'o-amount': case 'o-detail':
+        if (s.live && Number.isFinite(n)) dispatch('setLive', { params: f === 'o-amount' ? { amount: clamp(n, 0, 100) / 100 } : { detail: clamp(Math.round(n), 1, 10) } })
         return
       case 'aw': case 'ah': {
         const w = parseFloat($('#in-aw').value), h = parseFloat($('#in-ah').value)
@@ -320,6 +352,14 @@ export function mountUI({ store, bridge, io, assist }) {
     'stroke-none': noneToggle('stroke'),
     'live-star': () => { const lv = getState().live; if (lv) dispatch('setLive', { params: { ...lv.params, star: !lv.params.star } }) },
     'tool-star': () => dispatch('setToolOpt', { key: 'star', value: !getState().toolOpts.star }),
+    shuffle: () => dispatch('shuffle'),
+    organic: (t) => dispatch('setLive', { kind: t.dataset.v }),
+    // setTool first: the store clears ui.distort whenever the tool changes
+    distort: () => {
+      if (ui().distort) return dispatch('setUI', { distort: false })
+      dispatch('setTool', { id: 'select' })
+      dispatch('setUI', { distort: true, sheet: null })
+    },
     rot: () => dispatch('rotate', { deg: 90 }),
     flip: (t) => dispatch('flip', { axis: t.dataset.v }),
     arrange: (t) => dispatch('reorder', { to: t.dataset.v }),
@@ -456,7 +496,7 @@ export function mountUI({ store, bridge, io, assist }) {
 
   // ---- Markup for the panels ----
   function inspectorHtml(s) {
-    const { doc, selection, tool, live, toolOpts, style } = s
+    const { doc, selection, tool, live, toolOpts, style, ui: u } = s
     const sel = selection.map((id) => findItem(doc, id)).filter(Boolean)
     const one = sel.length === 1 ? sel[0] : null
     const same = (k) => (sel.every((it) => it[k] === sel[0][k]) ? sel[0][k] : undefined)
@@ -465,32 +505,49 @@ export function mountUI({ store, bridge, io, assist }) {
     if (v.stroke) L.memo.stroke = v.stroke
     const look = row('Fill', colourCtl('fill', 'Fill', v.fill, L.memo.fill), 'in-fill-hex') + row('Stroke', colourCtl('stroke', 'Stroke', v.stroke, L.memo.stroke), 'in-stroke-hex') +
       (v.stroke !== null ? row('Width', slider('sw', 'Stroke width', nv(v.strokeWidth ?? 0), 0, 64, 0.5), 'in-sw') : '')
+    // Brush and Push options show whenever the tool is active, even with a selection
+    const toolCard = tool === 'brush'
+      ? sec('Brush', opt('brushSize', toolOpts.brushSize, 't-') + opt('thinning', toolOpts.thinning, 't-') + opt('taper', toolOpts.taper, 't-') + '<p class="note">Size is in screen pixels. Thinning slims fast strokes; taper points the ends.</p>')
+      : tool === 'push'
+        ? sec('Push', opt('pushSize', toolOpts.pushSize, 't-') + opt('pushStrength', toolOpts.pushStrength, 't-') + '<p class="note">Drag across an outline to push it. Size is in screen pixels.</p>')
+        : ''
     if (!sel.length) {
       const opts = tool === 'rect'
         ? sec('Rectangle', row('Corner radius', slider('t-radius', 'Corner radius', toolOpts.radius, 0, 128), 'in-t-radius'))
         : tool === 'polygon'
           ? sec('Polygon', row('Sides', slider('t-sides', 'Sides', toolOpts.sides, 3, 24), 'in-t-sides') + row('Star', sw('tool-star', 'in-t-star', 'Star', !!toolOpts.star)) +
             row('Inner', slider('t-inner', 'Inner radius', toolOpts.inner, 0.1, 0.9, 0.05), 'in-t-inner'))
-          : ''
-      return '<p class="note">Nothing selected. These settings apply to new shapes.</p>' + sec('New shapes', look) +
+          : tool === 'blob'
+            ? sec('Blob', opt('points', toolOpts.points, 't-') + opt('wobble', toolOpts.wobble, 't-') + opt('smooth', toolOpts.smooth, 't-') + shuffleBtn())
+            : ''
+      return '<p class="note">Nothing selected. These settings apply to new shapes.</p>' + toolCard + sec('New shapes', look) +
         sec('Artboard', `<div class="grid2">${nf('aw', 'aw', 'W', 'Artboard width', doc.w)}${nf('ah', 'ah', 'H', 'Artboard height', doc.h)}</div>`) + opts
     }
     const b = boundsOf(sel)
-    const lv = live && one && live.id === one.id ? live : null
+    const lv = live && one && live.targets?.length === 1 && live.targets[0].id === one.id ? live : null
+    const box = lv?.targets[0].box
     const shape = !lv ? '' : lv.kind === 'rect'
-      ? sec('Rectangle', row('Corner radius', slider('radius', 'Corner radius', lv.params.radius, 0, Math.max(1, Math.floor(Math.min(lv.box.w, lv.box.h) / 2))), 'in-radius'))
+      ? sec('Rectangle', row('Corner radius', slider('radius', 'Corner radius', lv.params.radius, 0, Math.max(1, Math.floor(Math.min(box.w, box.h) / 2))), 'in-radius'))
       : lv.kind === 'polygon'
         ? sec('Polygon', row('Sides', slider('sides', 'Sides', lv.params.sides, 3, 24), 'in-sides') + row('Star', sw('live-star', 'in-star', 'Star', !!lv.params.star)) +
           row('Inner', slider('inner', 'Inner radius', lv.params.inner, 0.1, 0.9, 0.05), 'in-inner'))
-        : ''
+        : lv.kind === 'blob'
+          ? sec('Blob', opt('points', lv.params.points) + opt('wobble', lv.params.wobble) + opt('smooth', lv.params.smooth) + shuffleBtn())
+          : ''
+    const og = live && (live.kind === 'smooth' || live.kind === 'roughen') ? live : null
+    const organic = sec('Organic', `<div class="acts">${['smooth', 'roughen'].map((k) => `<button type="button" class="btn line" data-action="organic" data-v="${k}" aria-pressed="${og?.kind === k}">${ic(k)}${k[0].toUpperCase() + k.slice(1)}</button>`).join('')}</div>` +
+      (og ? row('Amount', slider('o-amount', 'Amount (%)', Math.round((og.params.amount ?? 0) * 100), 0, 100), 'in-o-amount') : '') +
+      (og?.kind === 'roughen' ? row('Detail', slider('o-detail', 'Detail', og.params.detail ?? 4, 1, 10), 'in-o-detail') + shuffleBtn() : '') +
+      '<p class="note">Smooth turns corners into curves. Roughen adds irregular edges.</p>')
     const combine = sel.length < 2 ? '' : sec('Combine', `<div class="combine" role="group" aria-label="Combine shapes">${['union', 'subtract', 'intersect', 'exclude'].map((k) =>
       `<button type="button" class="cmb" data-action="bool" data-v="${k}"${bridge.available ? '' : ' disabled title="Needs Paper.js, which did not load."'}>${ic(k)}<span>${k[0].toUpperCase() + k.slice(1)}</span></button>`).join('')}</div>` +
       `<button type="button" class="btn line wide" data-action="flatten"${bridge.available ? '' : ' disabled'}>${ic('layers')}Flatten to one path</button>`)
-    return `<div class="sum"><span class="sum-name">${one ? esc(one.name) : 'Selection'}</span><span class="sum-meta">${one ? `${nv(b.w)} × ${nv(b.h)}` : `${sel.length} selected`}</span></div>` + combine +
+    return toolCard + `<div class="sum"><span class="sum-name">${one ? esc(one.name) : 'Selection'}</span><span class="sum-meta">${one ? `${nv(b.w)} × ${nv(b.h)}` : `${sel.length} selected`}</span></div>` + combine +
       sec('Stack', row('Mode', seg('op', 'Add or cut', [['add', 'Add'], ['cut', 'Cut']], v.op)) + '<p class="note">Cut erases only what lies beneath it.</p>') +
       sec('Transform', `<div class="grid2">${nf('x', 'x', 'X', 'X position', b.x)}${nf('y', 'y', 'Y', 'Y position', b.y)}${nf('w', 'w', 'W', 'Width', b.w)}${nf('h', 'h', 'H', 'Height', b.h)}</div>` +
-        `<div class="ibar">${iconBtn('rot', '', 'rotate', 'Rotate 90°')}${iconBtn('flip', 'x', 'flipx', 'Flip horizontally')}${iconBtn('flip', 'y', 'flipy', 'Flip vertically')}</div>`) +
-      shape +
+        `<div class="ibar">${iconBtn('rot', '', 'rotate', 'Rotate 90°')}${iconBtn('flip', 'x', 'flipx', 'Flip horizontally')}${iconBtn('flip', 'y', 'flipy', 'Flip vertically')}</div>` +
+        row('Distort', sw('distort', 'in-distort', 'Distort', !!u.distort)) + '<p class="note">Drag a corner to distort, a side to skew.</p>') +
+      shape + organic +
       sec('Appearance', look + (v.stroke !== null ? row('Cap', seg('cap', 'Line cap', [['butt', 'Butt'], ['round', 'Round'], ['square', 'Square']], v.cap)) + row('Join', seg('join', 'Line join', [['miter', 'Miter'], ['round', 'Round'], ['bevel', 'Bevel']], v.join)) : '') +
         row('Opacity', slider('opacity', 'Opacity', Math.round(v.opacity * 100), 0, 100), 'in-opacity') +
         row('Fill rule', seg('fillRule', 'Fill rule', [['nonzero', 'Non-zero'], ['evenodd', 'Even-odd']], v.fillRule))) +
@@ -568,7 +625,10 @@ export function mountUI({ store, bridge, io, assist }) {
     L.dirty = false
 
     if (diff((x) => x.ui.theme)) applyTheme(u.theme ?? 'system')
-    if (diff((x) => x.tool)) tools.forEach((b) => b.setAttribute('aria-pressed', b.dataset.tool === s.tool))
+    if (diff((x) => x.tool)) {
+      tools.forEach((b) => b.setAttribute('aria-pressed', b.dataset.tool === s.tool))
+      if (p) tools.find((b) => b.dataset.tool === s.tool)?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    }
     if (diff((x) => x.history.canUndo)) undoBtns.forEach((b) => (b.disabled = !s.history.canUndo))
     if (diff((x) => x.history.canRedo)) redoBtns.forEach((b) => (b.disabled = !s.history.canRedo))
     if (diff((x) => x.viewport.zoom)) bind('zoom', Math.round(s.viewport.zoom * 100) + '%')
@@ -591,7 +651,7 @@ export function mountUI({ store, bridge, io, assist }) {
     el.shadow.hidden = !(v.w > 0) || pw > 16000 || ph > 16000
     if (!el.shadow.hidden) Object.assign(el.shadow.style, { width: pw + 'px', height: ph + 'px', transform: `translate(${v.panX}px,${v.panY}px)` })
 
-    const content = dirty || ['doc', 'selection', 'live', 'tool', 'toolOpts', 'style'].some((k) => s[k] !== p[k])
+    const content = dirty || ['doc', 'selection', 'live', 'tool', 'toolOpts', 'style'].some((k) => s[k] !== p[k]) || u.distort !== pu.distort
     if (content) {
       patch(el.inspectorBody, inspectorHtml(s), typing)
       patch(el.layersBody, layersHtml(s), typing)

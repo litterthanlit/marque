@@ -107,6 +107,18 @@ const luminance = (rgb) => rgb.match(/[\d.]+/g).slice(0, 3).reduce((sum, v, i) =
 const bodyBg = (page) => page.evaluate(() => getComputedStyle(document.body).backgroundColor)
 const shot = async (page, name) => { await page.waitForTimeout(350); const f = path.join(SHOTS, name + '.png'); await page.screenshot({ path: f }); shots.push(f) }
 const shots = []
+// v2 helpers: exact curve bounds and smoothness come from the page's own geometry module
+const geo = (page, fn) => page.evaluate(async (src) => (0, eval)(src)(await import('/js/geometry.js'), window.__marque.store.getState()), fn.toString())
+const curveBox = (page) => geo(page, (g, st) => g.itemBounds(st.doc.items.at(-1)))
+const allSmooth = (page) => geo(page, (g, st) => st.doc.items.at(-1).contours.every((c) => c.nodes.every(g.isSmooth)))
+const bare = (it) => it.contours[0].nodes.every((n) => n.hi === null && n.ho === null)
+const pos = (it) => JSON.stringify(it.contours.map((c) => c.nodes.map((n) => [n.x, n.y])))
+const press = async (page, a, b, steps = 8) => {   // drag in SCREEN px offsets from a doc point
+  const p = await scr(page, a)
+  await page.mouse.move(p.x, p.y); await page.mouse.down()
+  await page.mouse.move(p.x + b[0], p.y + b[1], { steps }); await page.mouse.up()
+  await settle(page)
+}
 const clean = async (page) => { await dispatch(page, 'newDoc'); await dispatch(page, 'setTool', { id: 'select' }); await settle(page) }
 const draw = async (page, k, a, b) => { await key(page, k); await drag(page, [a, b]) }
 
@@ -145,7 +157,7 @@ await run('3  rectangle tool and live corner radius', async () => {
   eq(s.doc.items.length, 1, 'items')
   eq(s.doc.items[0].contours[0].nodes.length, 4, 'rect nodes')
   eq(s.tool, 'select', 'tool after drawing')
-  ok(s.live && s.live.id === s.doc.items[0].id, 'state.live set')
+  ok(s.live && s.live.targets[0].id === s.doc.items[0].id, 'state.live set')
   await page.fill('#in-radius-n', '24')
   await settle(page)
   s = await state(page)
@@ -372,6 +384,174 @@ await run('14 no capabilities: Describe hidden, Save falls back to copy', async 
   ok((await c.page.inputValue('#exp-text')).startsWith('<svg'), 'textarea holds the SVG')
   await c.context.close()
 })
+
+// ---- v2: organic and asymmetric shapes (fresh desktop page) ----
+const { page: dk } = await open()
+const last = async () => (await items(dk)).at(-1)
+
+await run('15 blob: draw, Shuffle, points, a second blob differs', async () => {
+  await clean(dk)
+  await draw(dk, 'o', [120, 140], [360, 300])
+  let s = await state(dk)
+  eq(s.doc.items.length, 1, 'items')
+  eq(s.live?.kind, 'blob', 'live.kind')
+  const first = s.doc.items[0], c = first.contours[0]
+  ok(first.contours.length === 1 && c.closed, 'one closed contour')
+  eq(c.nodes.length, 8, 'blob nodes')
+  ok(c.nodes.every((n) => n.hi && n.ho), 'every node has handles')
+  const box = async () => { const b = await curveBox(dk); near(b.x, 120, 1, 'x'); near(b.y, 140, 1, 'y'); near(b.w, 240, 1, 'w'); near(b.h, 160, 1, 'h') }
+  await box()
+  await dk.click('#in-shuffle')
+  await settle(dk)
+  ok(JSON.stringify((await last()).contours) !== JSON.stringify(first.contours), 'Shuffle changes the contours')
+  await box()
+  await dk.fill('#in-points-n', '5')
+  await settle(dk)
+  eq((await last()).contours[0].nodes.length, 5, 'nodes after points = 5')
+  await key(dk, 'Escape')
+  await draw(dk, 'o', [120, 140], [360, 300])
+  s = await state(dk)
+  eq(s.doc.items.length, 2, 'second blob added')
+  ok(JSON.stringify(s.doc.items[1].contours) !== JSON.stringify(first.contours), 'second blob differs from the first')
+})
+
+await run('16 bend: dragging a segment moves it, undo restores', async () => {
+  await clean(dk)
+  await draw(dk, 'r', [120, 140], [320, 280])
+  const before = (await items(dk))[0], zoom = (await state(dk)).viewport.zoom
+  const mid = () => geo(dk, (g, st) => { const c = st.doc.items[0].contours[0], i = c.nodes.findIndex((n, k) => n.y === Math.min(...c.nodes.map((m) => m.y)) && c.nodes[(k + 1) % c.nodes.length].y === n.y), [a, b, d, e] = g.segmentCubic(c, i); return { x: (a.x + 3 * b.x + 3 * d.x + e.x) / 8, y: (a.y + 3 * b.y + 3 * d.y + e.y) / 8 } })
+  const m0 = await mid()
+  await key(dk, 'a')
+  await press(dk, [220, 140], [0, -40])
+  const after = (await items(dk))[0]
+  eq(after.contours[0].nodes.length, 4, 'still 4 nodes')
+  const m1 = await mid()
+  near(m1.y - m0.y, -40 / zoom, 1, 'top segment midpoint moved up'); near(m1.x, m0.x, 1, 'and stayed put in x')
+  await key(dk, 'Control+z')
+  eq((await items(dk))[0].contours, before.contours, 'one undo restores the rect')
+})
+
+await run('17 push: dragging across an edge adds nodes and moves some', async () => {
+  await clean(dk)
+  await draw(dk, 'r', [120, 140], [320, 280])
+  const before = (await items(dk))[0]
+  await key(dk, 'w')
+  await drag(dk, [[220, 110], [220, 190]])
+  const after = (await items(dk))[0], n = after.contours[0].nodes
+  ok(n.length > 4, `node count grew (${n.length})`)
+  for (const o of before.contours[0].nodes) ok(n.some((m) => Math.hypot(m.x - o.x, m.y - o.y) < 1e-6), `corner (${o.x}, ${o.y}) unchanged`)
+  ok(n.some((m) => m.y > 141), 'some node moved down')
+  await key(dk, 'Control+z')
+  eq((await items(dk))[0].contours, before.contours, 'one undo restores the rect')
+})
+
+await run('18 ink brush: one tapered, filled, closed item', async () => {
+  await clean(dk)
+  await key(dk, 'b')
+  await drag(dk, Array.from({ length: 40 }, (_, i) => [80 + i * 8, 256 + 60 * Math.sin(i / 6)]), 1)
+  const s = await state(dk), it = s.doc.items[0]
+  eq(s.doc.items.length, 1, 'one new item')
+  ok(it.contours.length === 1 && it.contours[0].closed, 'one closed contour')
+  ok(it.fill, 'fill set'); eq(it.stroke, null, 'stroke')
+  ok(it.contours[0].nodes.length <= 80, `nodes ≤ 80 (got ${it.contours[0].nodes.length})`)
+  eq(s.tool, 'brush', 'tool stays brush')
+  ok(await dk.isVisible('#in-t-brushSize'), 'Inspector shows the brush size')
+})
+
+await run('19 smooth: polygon corners become curves, amount scrubs back', async () => {
+  await clean(dk)
+  await dispatch(dk, 'setToolOpt', { key: 'sides', value: 3 })
+  await draw(dk, 'y', [120, 120], [360, 360])
+  ok(bare(await last()), 'triangle starts handle-less')
+  await dk.click('[data-action="organic"][data-v="smooth"]')
+  await settle(dk)
+  ok(await allSmooth(dk), 'every node smooth')
+  await dk.fill('#in-o-amount-n', '0')
+  await settle(dk)
+  ok(bare(await last()), 'amount 0 is handle-less again')
+  await dk.fill('#in-o-amount-n', '100')
+  await settle(dk)
+  ok(await allSmooth(dk), 'amount 100 is smooth again')
+  await key(dk, 'Escape')
+})
+
+await run('20 roughen: adds nodes, amount 0 undoes it, Shuffle moves them', async () => {
+  await clean(dk)
+  await draw(dk, 'r', [120, 140], [320, 280])
+  const orig = (await items(dk))[0]
+  await dk.click('[data-action="organic"][data-v="roughen"]')
+  await settle(dk)
+  ok((await last()).contours[0].nodes.length > 4, `node count grew (${(await last()).contours[0].nodes.length})`)
+  await dk.fill('#in-o-amount-n', '0')
+  await settle(dk)
+  eq(pos(await last()), pos(orig), 'amount 0 restores the 4 original nodes')
+  await dk.fill('#in-o-amount-n', '40')
+  await settle(dk)
+  const a = pos(await last())
+  await dk.click('#in-shuffle')
+  await settle(dk)
+  ok(pos(await last()) !== a, 'Shuffle moves the nodes')
+  await key(dk, 'Escape')
+})
+
+await run('21 distort: a corner moves one node, a side skews two, Esc and selection end it', async () => {
+  await clean(dk)
+  await draw(dk, 'r', [120, 140], [320, 280])
+  const zoom = (await state(dk)).viewport.zoom
+  const at = async (x, y) => (await last()).contours[0].nodes.find((n) => Math.hypot(n.x - x, n.y - y) < 1.5)
+  await dk.click('#in-distort')
+  await settle(dk)
+  let s = await state(dk)
+  ok(s.ui.distort && s.tool === 'select', 'Distort switch turns it on')
+  await press(dk, [320, 280], [30, 25])                      // bottom-right corner, away from every snap target
+  const br = await at(320 + 30 / zoom, 280 + 25 / zoom)
+  ok(br, 'bottom-right moved by the drag')
+  for (const [x, y] of [[120, 140], [320, 140], [120, 280]]) ok(await at(x, y), `corner (${x}, ${y}) unchanged`)
+  await key(dk, 'Control+z')
+  if (!(await state(dk)).ui.distort) { await dk.click('#in-distort'); await settle(dk) }
+  await press(dk, [220, 140], [30, 0])                       // top side handle: a skew
+  for (const [x, y] of [[120 + 30 / zoom, 140], [320 + 30 / zoom, 140], [120, 280], [320, 280]]) ok(await at(x, y), `node near (${x.toFixed(1)}, ${y}) after the skew`)
+  await key(dk, 'Escape')
+  eq((await state(dk)).ui.distort, false, 'Esc turns Distort off')
+  await draw(dk, 'r', [60, 330], [160, 430])
+  await dk.click('#in-distort')
+  await settle(dk)
+  ok((await state(dk)).ui.distort, 'Distort on again')
+  await dk.click('.layers .layer:nth-child(2) .layer-main')
+  await settle(dk)
+  s = await state(dk)
+  ok(s.selection.length === 1 && s.selection[0] === s.doc.items[0].id, 'selected the other item')
+  eq(s.ui.distort, false, 'changing the selection turns Distort off')
+})
+
+await run('22 layout: bottom bar scrolls inside itself at 400, every tile fits at 1280', async () => {
+  const m = await open({ viewport: { width: 400, height: 800 }, hasTouch: true, isMobile: true })
+  const hscroll = () => m.page.evaluate(() => [document.documentElement.scrollWidth, innerWidth])
+  let [sw, iw] = await hscroll()
+  ok(sw <= iw, `no horizontal scroll (scrollWidth ${sw} > innerWidth ${iw})`)
+  const ids = await m.page.$$eval('[data-tool]', (els) => els.map((e) => e.dataset.tool))
+  eq(ids.length, 11, 'tool count')
+  for (const id of ids) {
+    const b = await m.page.locator(`[data-tool="${id}"]`).boundingBox()
+    ok(b.width >= 44 && b.height >= 44, `${id} tile is ${b.width} × ${b.height}`)
+  }
+  const [sc, cw] = await m.page.evaluate(() => [document.getElementById('tools').scrollWidth, document.getElementById('tools').clientWidth])
+  ok(sc > cw, `the bar scrolls (scrollWidth ${sc}, clientWidth ${cw})`)
+  for (const id of ids) {
+    await m.page.evaluate((id) => document.querySelector(`[data-tool="${id}"]`).scrollIntoView({ block: 'nearest', inline: 'nearest' }), id)
+    await m.page.tap(`[data-tool="${id}"]`)
+    await settle(m.page)
+    eq((await state(m.page)).tool, id, `tapping ${id}`)
+  }
+  ;[sw, iw] = await hscroll()
+  ok(sw <= iw, `still no horizontal scroll after scrolling the bar (${sw} > ${iw})`)
+  await m.context.close()
+  for (const id of ids) {
+    const b = await dk.locator(`[data-tool="${id}"]`).boundingBox()
+    ok(b.x >= 0 && b.y >= 0 && b.x + b.width <= 1280 && b.y + b.height <= 800, `${id} tile inside 1280 × 800 (${JSON.stringify(b)})`)
+  }
+})
+await dk.context().close()
 
 // ---- Screenshots (fresh page each, example drawing with the Disc selected so the Inspector shows) ----
 await run('   screenshots: desktop, mobile, light and dark, export popover', async () => {

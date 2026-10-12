@@ -1,10 +1,11 @@
-// Shape tool (rect, ellipse, polygon, line): drag to draw, click to place a default size.
+// Shape tool (rect, ellipse, polygon, line, blob): drag to draw, click to place a default size.
 import { constrain45, dragRect, lineContours } from '../geometry.js';
 import { liveContours } from '../store.js';
 import { outline, toScreenContours } from '../overlay.js';
 
-const NAMES = { rect: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon', line: 'Line' };
+const NAMES = { rect: 'Rectangle', ellipse: 'Ellipse', polygon: 'Polygon', line: 'Line', blob: 'Blob' };
 const HINTS = {
+  blob: 'Drag to draw a blob. Shuffle in the Inspector for another.',
   line: 'Drag to draw a line · Shift snaps to 45° · click to place one',
   polygon: 'Drag to draw · Shift keeps it regular · Alt draws from the centre · click to place one',
 };

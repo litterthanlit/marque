@@ -1,13 +1,18 @@
-// Select tool: click, marquee, move (snapped), 8 scale handles, rotate zones, arrow nudges.
+// Select tool: click, marquee, move (snapped), 8 scale handles, rotate zones, arrow nudges. Distort mode swaps
+// the scale handles for a free quad: drag a corner anywhere, or a side to skew it.
 import { boundsOf, mat, transformItem } from '../geometry.js';
+import { distortContours, isConvexQuad } from '../organic.js';
 import { findItem, updateItems } from '../model.js';
-import { box, handle, outline, toScreenContours } from '../overlay.js';
+import { box, ctrl, handle, outline, toScreenContours } from '../overlay.js';
 
 const HANDLES = [[0, 0], [.5, 0], [1, 0], [1, .5], [1, 1], [.5, 1], [0, 1], [0, .5]];   // [fx, fy] on the bbox
 const RESIZE = ['nwse', 'ns', 'nesw', 'ew', 'nwse', 'ns', 'nesw', 'ew'].map(c => c + '-resize');
 const ROTATE = `url("data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" stroke="#16181d" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 6.5A6.5 6.5 0 1 0 16 11"/><path d="M16 3v4h-4"/></svg>')}") 10 10, crosshair`;
 const ARROWS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
-const LABEL = { move: 'Move', scale: 'Resize', rotate: 'Rotate' };
+const LABEL = { move: 'Move', scale: 'Resize', rotate: 'Rotate', distort: 'Distort' };
+const DISTORT_CURSOR = ['crosshair', 'crosshair', 'crosshair', 'crosshair', 'ew-resize', 'ns-resize', 'ew-resize', 'ns-resize'];
+// Distort handles of a quad [TL, TR, BR, BL]: 0-3 its corners, 4-7 the midpoints of its edges (top, right, bottom, left).
+const quadPoints = q => [...q, ...q.map((p, i) => ({ x: (p.x + q[(i + 1) % 4].x) / 2, y: (p.y + q[(i + 1) % 4].y) / 2 }))];
 const nonZero = s => Math.abs(s) < 1e-3 ? (s < 0 ? -1e-3 : 1e-3) : s;
 
 export default function create(ctx) {
@@ -24,6 +29,14 @@ export default function create(ctx) {
     return { b, x: a.x, y: a.y, w: b.w * z, h: b.h * z };
   }
 
+  const distorting = () => st().ui.distort && st().selection.length > 0;
+  // The distort quad in doc units: the dragged one, else the selection bounds.
+  function quad() {
+    if (g?.kind === 'distort') return g.quad;
+    const b = boundsOf(items());
+    return b && [{ x: b.x, y: b.y }, { x: b.x + b.w, y: b.y }, { x: b.x + b.w, y: b.y + b.h }, { x: b.x, y: b.y + b.h }];
+  }
+
   // Scale handles that make sense at this size: none that would sit on top of each other or scale a zero extent.
   function handles(sb) {
     if (!sb) return [];
@@ -36,6 +49,11 @@ export default function create(ctx) {
     const sb = sbox();
     if (!sb) return null;
     const r = ctx.px(e);
+    if (distorting()) {   // nearest of the 8 distort handles: { d: index }
+      let d = -1, best = r;
+      quadPoints(quad()).forEach((q, i) => { const s = view.toScreen(q.x, q.y), m = Math.hypot(s.x - e.sx, s.y - e.sy); if (m <= best) { d = i; best = m; } });
+      return d < 0 ? null : { d };
+    }
     let h = null, hd = Infinity;
     for (const c of handles(sb)) {
       const d = Math.hypot(c.x - e.sx, c.y - e.sy);
@@ -70,13 +88,27 @@ export default function create(ctx) {
   function hover(e) {
     const p = pick(e);
     const id = p ? null : hit.item(e, ctx.px(e) / 2);
-    const c = p?.rotate ? ROTATE : p ? RESIZE[p.h.i] : id && st().selection.includes(id) ? 'move' : 'default';
+    const c = p?.rotate ? ROTATE : p?.d != null ? DISTORT_CURSOR[p.d] : p ? RESIZE[p.h.i] : id && st().selection.includes(id) ? 'move' : 'default';
     if (c !== cursor) ctx.setCursor(cursor = c);
+  }
+
+  // The quad for the current distort drag: a corner follows the pointer; a side slides both its corners along its
+  // own axis (an exact skew). With Alt the opposite corner / side mirrors by -delta.
+  function dragQuad(e) {
+    const { i, q0, off } = g, h = quadPoints(q0)[i], p = snap.point({ x: e.x - off.x, y: e.y - off.y }, { meta: e.meta });
+    const d = { x: p.x - h.x, y: p.y - h.y }, own = i < 4 ? [i] : [i - 4, (i - 3) % 4];
+    if (i > 3) d[i % 2 ? 'x' : 'y'] = 0;
+    return q0.map((c, k) => {
+      const m = own.includes(k) ? 1 : e.alt && own.some(o => (o + 2) % 4 === k) ? -1 : 0;
+      return { x: c.x + m * d.x, y: c.y + m * d.y };
+    });
   }
 
   return {
     id: 'select', cursor: 'default',
-    hint: () => st().selection.length
+    hint: () => distorting()
+      ? 'Drag a corner to distort · drag a side to skew · Alt mirrors the opposite side · Esc to finish'
+      : st().selection.length
       ? 'Drag to move · handles resize (Shift keeps proportions, Alt from centre) · outside a corner rotates'
       : 'Click to select · drag for a marquee · Shift adds · double-click edits points',
     deactivate: cancel,
@@ -84,6 +116,10 @@ export default function create(ctx) {
 
     onPointerDown(e) {
       const p = pick(e);
+      if (p?.d != null) {
+        const q0 = quad(), h = quadPoints(q0)[p.d];
+        return begin('distort', e, { i: p.d, q0, quad: q0, off: { x: e.x - h.x, y: e.y - h.y } });
+      }
       if (p?.rotate) {
         const b = sbox().b, c = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
         return begin('rotate', e, { c, a0: Math.atan2(e.y - c.y, e.x - c.x) });
@@ -124,6 +160,12 @@ export default function create(ctx) {
           sy = fy === .5 ? u : (Math.sign(sy) || 1) * u;
         }
         apply(mat.scale(nonZero(sx), nonZero(sy), ax, ay));
+      } else if (g.kind === 'distort') {
+        const q = dragQuad(e);
+        if (isConvexQuad(q)) {   // a move that folds the quad over itself is ignored
+          g.quad = q;
+          store.setDoc(updateItems(g.base, g.ids, it => ({ ...it, contours: distortContours(it.contours, g.b, q) })));
+        }
       } else if (g.kind === 'rotate') {
         let da = Math.atan2(e.y - g.c.y, e.x - g.c.x) - g.a0;
         if (e.shift) da = Math.round(da / (Math.PI / 12)) * (Math.PI / 12);
@@ -158,6 +200,10 @@ export default function create(ctx) {
     },
 
     onKeyDown(k) {
+      if (k.key === 'Escape' && st().ui.distort) {   // first Esc drops a drag, the next leaves distort mode
+        if (!cancel()) store.dispatch('setUI', { distort: false });
+        return true;
+      }
       const d = ARROWS[k.key], ids = st().selection;
       if (!d || g || !ids.length || k.metaKey || k.ctrlKey || k.altKey) return false;
       const n = k.shiftKey ? 10 : 1, m = mat.translate(d[0] * n, d[1] * n);
@@ -170,7 +216,11 @@ export default function create(ctx) {
     renderOverlay() {
       const v = st().viewport, sb = sbox();
       let out = items().map(it => outline(toScreenContours(it.contours, v))).join('');
-      if (sb) out += box(sb) + handles(sb).map(h => handle(h.x, h.y)).join('');
+      if (sb && distorting()) {
+        const pts = quadPoints(quad()).map(q => view.toScreen(q.x, q.y));
+        out += outline([{ closed: true, nodes: pts.slice(0, 4).map(q => ({ ...q, hi: null, ho: null })) }], 'ov-bbox')
+          + pts.slice(0, 4).map(q => handle(q.x, q.y)).join('') + pts.slice(4).map(q => ctrl(q.x, q.y)).join('');
+      } else if (sb) out += box(sb) + handles(sb).map(h => handle(h.x, h.y)).join('');
       if (g?.kind === 'marquee' && g.moved) {
         const a = g.e0, b = g.cur;
         out += box({ x: Math.min(a.sx, b.sx), y: Math.min(a.sy, b.sy), w: Math.abs(a.sx - b.sx), h: Math.abs(a.sy - b.sy) }, 'ov-marquee');

@@ -1,8 +1,10 @@
 // Node tool: edit the anchors and handles of the selected items.
 import { insertNode, isSmooth, moveHandle, moveNode, nearestOnItem, removeNode, setSmooth } from '../geometry.js';
+import { bendSegment } from '../organic.js';
 import { findItem, removeItems, updateItems } from '../model.js';
 import { anchor, box, ctrl, line, outline, toScreenContours } from '../overlay.js';
 
+const LABELS = { handle: 'Move handle', bend: 'Bend', move: 'Move points' };
 const ARROWS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
 
 // Apply fn to one contour of one item / to all contours of one item.
@@ -32,6 +34,16 @@ export default function create(ctx) {
     for (const a of list) { const d = Math.hypot(a.x - e.sx, a.y - e.sy); if (d <= bd) { best = a; bd = d; } }
     return best;
   };
+  // The segment of a selected item within pick range of the pointer: { id, h } with h from nearestOnItem.
+  function segAt(e) {
+    const { doc, selection } = st(), r = ctx.px(e);
+    let best = null;
+    for (const id of selection) {
+      const h = nearestOnItem(findItem(doc, id), e);
+      if (h && h.dist * view.zoom() <= r && (!best || h.dist < best.h.dist)) best = { id, h };
+    }
+    return best;
+  }
   // Handles of the picked anchors (only those that exist), with screen positions.
   const handlesOf = list => list.flatMap(a => ['hi', 'ho'].filter(w => a.n[w])
     .map(w => ({ ...a, w, anchor: { x: a.x, y: a.y }, ...view.toScreen(a.n[w].x, a.n[w].y) })));
@@ -88,6 +100,8 @@ export default function create(ctx) {
         g = { kind: 'move', a, list: all.filter(x => picked.has(x.k)), e0: e, base: st().doc, moved: false, shift: e.shift };
         return ctx.requestOverlay();
       }
+      const sg = !e.alt && segAt(e);                      // press on a segment of a selected item: bend it
+      if (sg) { g = { kind: 'bend', id: sg.id, ci: sg.h.ci, seg: sg.h.seg, t: sg.h.t, e0: e, base: st().doc, moved: false, shift: e.shift }; return; }
       const id = hit.item(e, r / 2);
       if (id && !st().selection.includes(id)) {
         picked.clear();
@@ -98,7 +112,7 @@ export default function create(ctx) {
 
     onPointerMove(e) {
       if (!g) {
-        const c = near(anchors(), e, ctx.px(e)) ? 'move' : 'default';
+        const c = near(anchors(), e, ctx.px(e)) ? 'move' : segAt(e) ? 'grab' : 'default';
         if (c !== cursor) ctx.setCursor(cursor = c);
         return;
       }
@@ -107,12 +121,14 @@ export default function create(ctx) {
       if (!g.moved) {
         if (Math.hypot(e.sx - g.e0.sx, e.sy - g.e0.sy) < 3) return;
         g.moved = true;
-        if (g.kind !== 'marquee') { store.begin(); snap.setTargets(g.kind === 'move' ? g.list.map(a => a.id) : [g.a.id]); }
+        if (g.kind !== 'marquee') { store.begin(); snap.setTargets(g.kind === 'move' ? g.list.map(a => a.id) : [g.a?.id ?? g.id]); }
       }
       const dx = e.x - g.e0.x, dy = e.y - g.e0.y;
       if (g.kind === 'handle') {
         const { a } = g, p0 = a.n[a.w], p = snap.point({ x: p0.x + dx, y: p0.y + dy }, { meta: e.meta });
         store.setDoc(mapContour(g.base, a.id, a.ci, c => moveHandle(c, a.ni, a.w, p, { mirror: !e.alt })));
+      } else if (g.kind === 'bend') {
+        store.setDoc(mapContour(g.base, g.id, g.ci, c => bendSegment(c, g.seg, g.t, { x: dx, y: dy })));   // always from the base contour
       } else if (g.kind === 'move') {
         const q = snap.point({ x: g.a.n.x + dx, y: g.a.n.y + dy }, { meta: e.meta });
         store.setDoc(moveAll(g.base, g.list, q.x - g.a.n.x, q.y - g.a.n.y));
@@ -131,22 +147,18 @@ export default function create(ctx) {
           const inside = anchors().filter(a => a.x >= x0 && a.x <= x1 && a.y >= y0 && a.y <= y1).map(a => a.k);
           picked = new Set([...(e.shift ? picked : []), ...inside]);
         } else if (!e.shift) picked.clear();
-      } else if (q.moved) store.commit(q.kind === 'handle' ? 'Move handle' : 'Move points');
+      } else if (q.moved) store.commit(LABELS[q.kind]);
       else if (q.kind === 'move' && !q.shift) picked = new Set([q.a.k]);
+      else if (q.kind === 'bend' && !q.shift) picked.clear();
       ctx.requestOverlay();
     },
 
     onDoubleClick(e) {
-      const r = ctx.px(e), { doc, selection } = st();
-      if (near(anchors(), e, r)) return;
-      let best = null;
-      for (const id of selection) {
-        const h = nearestOnItem(findItem(doc, id), e);
-        if (h && h.dist * view.zoom() <= r && (!best || h.dist < best.h.dist)) best = { id, h };
-      }
+      if (near(anchors(), e, ctx.px(e))) return;
+      const best = segAt(e);
       if (!best) return;
       const { id, h } = best;
-      commit('Add point', mapContour(doc, id, h.ci, c => insertNode(c, h.seg, h.t)));
+      commit('Add point', mapContour(st().doc, id, h.ci, c => insertNode(c, h.seg, h.t)));
       picked = new Set([key(id, h.ci, h.seg + 1)]);
       ctx.requestOverlay();
     },

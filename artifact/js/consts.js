@@ -9,6 +9,9 @@ export const TOOLS = [
   { id: 'ellipse', key: 'e', label: 'Ellipse' },
   { id: 'polygon', key: 'y', label: 'Polygon' },
   { id: 'line', key: 'l', label: 'Line' },
+  { id: 'push', key: 'w', label: 'Push' },
+  { id: 'brush', key: 'b', label: 'Ink brush' },
+  { id: 'blob', key: 'o', label: 'Blob' },
 ]
 
 export const ARTBOARDS = [
